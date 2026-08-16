@@ -286,13 +286,13 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <h2 id="window">Window</h2>
 <p>CRW uses a <strong>token-bucket rate limiter</strong> scoped to the server process. Tokens refill continuously at the configured rate (<code>rate_limit_rps</code>). A burst can drain the bucket immediately; tokens replenish every second proportional to elapsed time.</p>
 <p>Self-hosted instances set <code>[server].rate_limit_rps</code> in their config (default: 10 RPS, 0 = unlimited). Cloud plans (fastcrw.com) enforce per-API-key plan limits instead.</p>
-<h2 id="concurrency-is-the-real-entitlement-rpm-is-an-abuse-guard">Concurrency is the real entitlement, RPM is an abuse guard</h2>
+<h2 id="concurrency-is-the-public-entitlement">Concurrency is the public entitlement</h2>
 <p>Cloud plans are governed by two different caps, and they are not interchangeable:</p>
 <ul>
 <li><strong>Concurrency</strong>: how many of your requests may be in flight (POSTed and not yet completed) at the same moment. This is what you are actually paying for when you pick a plan; it is the number that decides how much parallel work you can run.</li>
-<li><strong>Requests per minute (RPM)</strong>: a secondary, looser abuse guard sized well above what a client would hit while legitimately using its full concurrency at normal scrape latency. It exists to catch a client cycling requests pathologically fast, not to throttle normal parallel usage.</li>
+<li><strong>Request-rate guard</strong>: a secondary abuse control sized above ordinary use at the advertised concurrency. It is operational protection, not a per-plan product entitlement.</li>
 </ul>
-<p>If you are designing for throughput, size your worker pool against the concurrency limit below, not the RPM number.</p>
+<p>If you are designing for throughput, size your worker pool against the concurrency limit below. Internal abuse-control thresholds may change and are intentionally not published as a per-plan contract.</p>
 <div class="callout callout-note"><div class="callout-icon"></div><div class="callout-content">Cloud only (fastcrw.com) -- self-hosted instances can configure their own rate limits and have no concurrency cap of this kind.</div></div><h2 id="concurrency-limits-simultaneous-in-flight-requests">Concurrency limits (simultaneous in-flight requests)</h2>
 <table>
 <thead>
@@ -323,39 +323,10 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 </tr>
 </tbody></table>
 <p>A batch request (for example a batch scrape) counts as one POST for this limit: it does not itself grant extra parallelism beyond what the plan allows for other in-flight requests.</p>
-<h2 id="requests-per-minute-limits-abuse-guard">Requests-per-minute limits (abuse guard)</h2>
-<table>
-<thead>
-<tr>
-<th>Plan</th>
-<th>Requests / minute</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>FREE</td>
-<td>120</td>
-</tr>
-<tr>
-<td>HOBBY</td>
-<td>300</td>
-</tr>
-<tr>
-<td>STANDARD</td>
-<td>1500</td>
-</tr>
-<tr>
-<td>GROWTH</td>
-<td>3000</td>
-</tr>
-<tr>
-<td>SCALE</td>
-<td>6000</td>
-</tr>
-</tbody></table>
 <h2 id="three-429-causes-and-one-402">Three <code>429</code> causes, and one <code>402</code></h2>
 <p>A <code>429</code> response can mean three different things on the cloud API, and a <code>402</code> means a fourth. None of these currently carry a machine-readable <code>error_code</code> (or <code>errorCode</code>) field in the response body, only a human-readable <code>error</code> string. Do not write client logic that branches on an error code for these; branch on the HTTP status and, if you need to tell the causes apart, on the response headers noted below.</p>
-<h3 id="cause-1-rpm-exceeded">Cause 1: RPM exceeded</h3>
-<p>You exceeded the plan&#39;s requests-per-minute cap. The response includes <code>Retry-After</code>, <code>X-RateLimit-Limit</code>, and <code>X-RateLimit-Remaining</code> headers.</p>
+<h3 id="cause-1-request-rate-guard-exceeded">Cause 1: Request-rate guard exceeded</h3>
+<p>You exceeded the Cloud request-rate guard. The response includes <code>Retry-After</code>, <code>X-RateLimit-Limit</code>, and <code>X-RateLimit-Remaining</code> headers. Treat those response headers as the authority for that request; do not hard-code an internal threshold.</p>
 <p><strong>Action:</strong> back off and retry. Apply exponential backoff starting at 1 second:</p>
 <pre data-lang="ts"><code class="language-ts">async function callWithRetry(fn: () =&gt; Promise&lt;Response&gt;, maxRetries = 5): Promise&lt;Response&gt; {
   for (let attempt = 0; attempt &lt; maxRetries; attempt++) {
@@ -391,7 +362,7 @@ if (res.status === 402) {
   const body = await res.json();
   throw new Error(`Auto-recharge stopped: ${body.error}`);
 }
-// Otherwise a 429 is RPM or concurrency: backoff and retry (see above).</code></pre>
+// Otherwise a 429 is request-rate or concurrency: backoff and retry (see above).</code></pre>
 <h2 id="handling-503">Handling <code>503</code></h2>
 <p>A <code>503 Service Unavailable</code> response means the server is up but a dependency is temporarily unavailable. Two cases:</p>
 <table>
@@ -423,7 +394,7 @@ if (res.status === 402) {
 <p>A well-behaved client should:</p>
 <ul>
 <li>inspect the response headers on every <code>429</code>/<code>402</code> to tell RPM, concurrency, and credit exhaustion apart (there is no machine-readable error code to branch on),</li>
-<li>use exponential backoff (not a fixed delay) for <code>429</code> RPM, <code>429</code> concurrency, and <code>503</code> responses,</li>
+<li>use exponential backoff (not a fixed delay) for request-rate <code>429</code>, concurrency <code>429</code>, and <code>503</code> responses,</li>
 <li>NOT retry on a credit-exhaustion <code>429</code> or on a <code>402</code> (alert and halt instead),</li>
 <li>centralize throttling when multiple workers share one API key.</li>
 </ul>
@@ -446,7 +417,7 @@ if (res.status === 402) {
 <ul>
 <li>Retrying a credit-exhaustion <code>429</code> or a <code>402</code> -- the request will keep failing until you top up or fix the payment method.</li>
 <li>Assuming a <code>429</code> response carries a machine-readable <code>error_code</code> field -- it does not; branch on headers or HTTP status instead.</li>
-<li>Sizing a worker pool against the RPM number instead of the concurrency limit, which is the entitlement that actually caps parallel throughput.</li>
+<li>Hard-coding an observed request-rate threshold instead of using response headers and the published concurrency entitlement.</li>
 <li>Confusing API plan limits with the target website&#39;s own anti-bot or rate-limit behavior.</li>
 </ul>
 <p>For rollout work, pair this page with <a href="/docs/credit-costs">credit costs</a> so request throttling and credit monitoring stay aligned.</p>

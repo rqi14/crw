@@ -6,14 +6,14 @@ CRW uses a **token-bucket rate limiter** scoped to the server process. Tokens re
 
 Self-hosted instances set `[server].rate_limit_rps` in their config (default: 10 RPS, 0 = unlimited). Cloud plans (fastcrw.com) enforce per-API-key plan limits instead.
 
-## Concurrency is the real entitlement, RPM is an abuse guard
+## Concurrency is the public entitlement
 
 Cloud plans are governed by two different caps, and they are not interchangeable:
 
 - **Concurrency**: how many of your requests may be in flight (POSTed and not yet completed) at the same moment. This is what you are actually paying for when you pick a plan; it is the number that decides how much parallel work you can run.
-- **Requests per minute (RPM)**: a secondary, looser abuse guard sized well above what a client would hit while legitimately using its full concurrency at normal scrape latency. It exists to catch a client cycling requests pathologically fast, not to throttle normal parallel usage.
+- **Request-rate guard**: a secondary abuse control sized above ordinary use at the advertised concurrency. It is operational protection, not a per-plan product entitlement.
 
-If you are designing for throughput, size your worker pool against the concurrency limit below, not the RPM number.
+If you are designing for throughput, size your worker pool against the concurrency limit below. Internal abuse-control thresholds may change and are intentionally not published as a per-plan contract.
 
 :::note
 Cloud only (fastcrw.com) -- self-hosted instances can configure their own rate limits and have no concurrency cap of this kind.
@@ -31,23 +31,13 @@ Cloud only (fastcrw.com) -- self-hosted instances can configure their own rate l
 
 A batch request (for example a batch scrape) counts as one POST for this limit: it does not itself grant extra parallelism beyond what the plan allows for other in-flight requests.
 
-## Requests-per-minute limits (abuse guard)
-
-| Plan | Requests / minute |
-| --- | --- |
-| FREE | 120 |
-| HOBBY | 300 |
-| STANDARD | 1500 |
-| GROWTH | 3000 |
-| SCALE | 6000 |
-
 ## Three `429` causes, and one `402`
 
 A `429` response can mean three different things on the cloud API, and a `402` means a fourth. None of these currently carry a machine-readable `error_code` (or `errorCode`) field in the response body, only a human-readable `error` string. Do not write client logic that branches on an error code for these; branch on the HTTP status and, if you need to tell the causes apart, on the response headers noted below.
 
-### Cause 1: RPM exceeded
+### Cause 1: Request-rate guard exceeded
 
-You exceeded the plan's requests-per-minute cap. The response includes `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers.
+You exceeded the Cloud request-rate guard. The response includes `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Remaining` headers. Treat those response headers as the authority for that request; do not hard-code an internal threshold.
 
 **Action:** back off and retry. Apply exponential backoff starting at 1 second:
 
@@ -98,7 +88,7 @@ if (res.status === 402) {
   const body = await res.json();
   throw new Error(`Auto-recharge stopped: ${body.error}`);
 }
-// Otherwise a 429 is RPM or concurrency: backoff and retry (see above).
+// Otherwise a 429 is request-rate or concurrency: backoff and retry (see above).
 ```
 
 ## Handling `503`
@@ -125,7 +115,7 @@ if (res.status === 503) {
 A well-behaved client should:
 
 - inspect the response headers on every `429`/`402` to tell RPM, concurrency, and credit exhaustion apart (there is no machine-readable error code to branch on),
-- use exponential backoff (not a fixed delay) for `429` RPM, `429` concurrency, and `503` responses,
+- use exponential backoff (not a fixed delay) for request-rate `429`, concurrency `429`, and `503` responses,
 - NOT retry on a credit-exhaustion `429` or on a `402` (alert and halt instead),
 - centralize throttling when multiple workers share one API key.
 
@@ -152,7 +142,7 @@ Those are different problems and should be handled differently.
 
 - Retrying a credit-exhaustion `429` or a `402` -- the request will keep failing until you top up or fix the payment method.
 - Assuming a `429` response carries a machine-readable `error_code` field -- it does not; branch on headers or HTTP status instead.
-- Sizing a worker pool against the RPM number instead of the concurrency limit, which is the entitlement that actually caps parallel throughput.
+- Hard-coding an observed request-rate threshold instead of using response headers and the published concurrency entitlement.
 - Confusing API plan limits with the target website's own anti-bot or rate-limit behavior.
 
 For rollout work, pair this page with [credit costs](/docs/credit-costs) so request throttling and credit monitoring stay aligned.
