@@ -1,6 +1,6 @@
 //! Browser engine setup (LightPanda, Chrome).
 
-use crate::commands::setup::shell::local_bin_dir;
+use crate::commands::setup::shell::home_dir;
 use crate::commands::setup::ui;
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
@@ -80,6 +80,11 @@ pub fn get_platform_info() -> Option<PlatformInfo> {
             arch_label: "x86_64",
             binary_name: "lightpanda-x86_64-linux",
         }),
+        ("linux", "aarch64") => Some(PlatformInfo {
+            os_label: "Linux",
+            arch_label: "aarch64",
+            binary_name: "lightpanda-aarch64-linux",
+        }),
         ("macos", "aarch64") => Some(PlatformInfo {
             os_label: "macOS",
             arch_label: "aarch64 (Apple Silicon)",
@@ -132,9 +137,14 @@ pub fn detect_chrome() -> Option<PathBuf> {
 
 /// Check if LightPanda is already installed.
 pub fn detect_lightpanda() -> Option<PathBuf> {
-    let local_path = local_bin_dir().join("lightpanda");
-    if local_path.exists() && local_path.is_file() {
-        return Some(local_path);
+    // Keep setup and the runtime on the same managed location. The runtime
+    // checks ~/.crw/lightpanda directly, so no PATH or shell-rc mutation is
+    // required after setup.
+    if let Some(managed_path) = lightpanda_managed_path()
+        && managed_path.exists()
+        && managed_path.is_file()
+    {
+        return Some(managed_path);
     }
 
     // Check PATH using platform-specific lookup
@@ -155,11 +165,14 @@ pub async fn download_lightpanda() -> Result<PathBuf, String> {
         platform.os_label, platform.arch_label
     ));
 
-    let install_dir = local_bin_dir();
-    let install_path = install_dir.join("lightpanda");
+    let install_path = lightpanda_managed_path()
+        .ok_or_else(|| "Could not determine home directory for LightPanda install".to_string())?;
+    let install_dir = install_path
+        .parent()
+        .expect("managed LightPanda path always has a parent");
 
     // Create install directory
-    std::fs::create_dir_all(&install_dir)
+    std::fs::create_dir_all(install_dir)
         .map_err(|e| format!("Failed to create {}: {}", install_dir.display(), e))?;
 
     // Download binary
@@ -204,6 +217,10 @@ pub async fn download_lightpanda() -> Result<PathBuf, String> {
     ui::print_success(&format!("Installed to {}", install_path.display()));
 
     Ok(install_path)
+}
+
+fn lightpanda_managed_path() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".crw").join("lightpanda"))
 }
 
 /// Download a file with progress bar.

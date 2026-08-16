@@ -171,6 +171,20 @@ fn merge_llm(base: Option<LlmSection>, update: Option<LlmSection>) -> Option<Llm
 ///
 /// Returns the final path so callers can show it to the user.
 pub fn write_user_config(update: UserConfig) -> Result<PathBuf, String> {
+    write_user_config_inner(update, false)
+}
+
+/// Write a Local-mode config and remove persisted Cloud routing credentials.
+/// Selecting Local is an explicit mode switch; keeping `[client]` would make
+/// `crw search` continue to prefer Cloud even after Local setup completed.
+pub fn write_local_user_config(update: UserConfig) -> Result<PathBuf, String> {
+    write_user_config_inner(update, true)
+}
+
+fn write_user_config_inner(
+    update: UserConfig,
+    clear_cloud_client: bool,
+) -> Result<PathBuf, String> {
     let path = user_config_path()?;
 
     if let Some(parent) = path.parent() {
@@ -178,7 +192,16 @@ pub fn write_user_config(update: UserConfig) -> Result<PathBuf, String> {
     }
     reject_symlink(&path)?;
 
-    let merged = merge_config(read_user_config(&path)?, update);
+    let local_search_selection = clear_cloud_client.then(|| update.search.clone());
+    let mut merged = merge_config(read_user_config(&path)?, update);
+    if clear_cloud_client {
+        merged.client = None;
+    }
+    if let Some(search) = local_search_selection {
+        // In Local mode, None means the user explicitly skipped local search;
+        // keeping a stale URL would contradict the completion summary.
+        merged.search = search;
+    }
     let body = render(&merged);
 
     let tmp = path.with_extension("toml.tmp");
@@ -410,6 +433,56 @@ mod tests {
         );
         let llm = merged.extraction.unwrap().llm.unwrap();
         assert_eq!(llm.provider.as_deref(), Some("deepseek"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn local_mode_switch_removes_cloud_credentials() {
+        let _g = env_lock();
+        let dir = isolated_dir("local-mode-switch");
+
+        write_user_config(UserConfig {
+            client: Some(ClientSection {
+                api_url: Some("https://api.fastcrw.com".into()),
+                api_key: Some("fc-test".into()),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let path = write_local_user_config(UserConfig {
+            search: Some(SearchSection {
+                search_backend_url: Some("http://127.0.0.1:8080".into()),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let switched = read_user_config(&path).unwrap();
+        assert!(switched.client.is_none());
+        assert_eq!(
+            switched.search.unwrap().search_backend_url.as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn local_skip_removes_stale_search_backend() {
+        let _g = env_lock();
+        let dir = isolated_dir("local-search-skip");
+
+        write_user_config(UserConfig {
+            search: Some(SearchSection {
+                search_backend_url: Some("http://old-search:8080".into()),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let path = write_local_user_config(UserConfig::default()).unwrap();
+        let switched = read_user_config(&path).unwrap();
+        assert!(switched.search.is_none());
         cleanup(&dir);
     }
 

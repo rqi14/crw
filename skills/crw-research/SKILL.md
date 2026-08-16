@@ -25,6 +25,13 @@ ids; extra ids never hurt, so cast wide but on-topic. The
 Firecrawl-research-compatible surface — your job is **query strategy + intent
 routing**, the endpoints do the retrieval.
 
+This skill reaches 61.0% recall on the 191-question ArXivQA benchmark, a number
+fastCRW measured directly. Firecrawl publishes 53.3% for its own Research Index
+on the same benchmark in their [Research Index launch
+post](https://www.firecrawl.dev/blog/research-index-launch) (2026-06-17): "On
+arXivQA, the index hits 53.3% recall at $0.32 per task, against 45.4% for the
+next best provider."
+
 Set `FASTCRW_API_KEY` (a `crw_live_…` key from https://fastcrw.com/dashboard).
 Base URL `https://api.fastcrw.com`. Every endpoint is a GET; pull arXiv ids out
 of `results[].ids.arxiv` / `results[].primaryId`.
@@ -32,11 +39,11 @@ of `results[].ids.arxiv` / `results[].primaryId`.
 ```bash
 # search: ranked papers for one query
 curl -s -H "Authorization: Bearer $FASTCRW_API_KEY" \
-  "https://api.fastcrw.com/v2/search/research/papers?query=$(jq -rn --arg q "QUERY" '$q|@uri')&k=40"
+  "https://api.fastcrw.com/v1/search/research/papers?query=$(jq -rn --arg q "QUERY" '$q|@uri')&k=40"
 
 # references / citers / similar of a seed paper (citation graph)
 curl -s -H "Authorization: Bearer $FASTCRW_API_KEY" \
-  "https://api.fastcrw.com/v2/search/research/papers/arxiv:1706.03762/similar?intent=related%20work&mode=references&k=40"
+  "https://api.fastcrw.com/v1/search/research/papers/arxiv:1706.03762/similar?intent=related%20work&mode=references&k=40"
 ```
 
 ## The whole game: classify the query, apply the matching method

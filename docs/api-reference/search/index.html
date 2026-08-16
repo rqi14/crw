@@ -1,90 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<title>CRW /v1/search — endpoint reference</title>
-<meta name="description" content="CRW web search endpoint. Hosted: https://api.fastcrw.com/v1/search. Self-hosted: http://localhost:3000/v1/search.">
-<link rel="canonical" href="https://docs.fastcrw.com/api-reference/search/">
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "APIReference",
-  "name": "CRW POST /v1/search",
-  "description": "CRW web search endpoint. Hosted: https://api.fastcrw.com/v1/search. Self-hosted: http://localhost:3000/v1/search.",
-  "url": "https://docs.fastcrw.com/api-reference/search/",
-  "about": {
-    "@type": "WebAPI",
-    "name": "CRW Search API",
-    "documentation": "https://docs.fastcrw.com/api-reference/search/",
-    "termsOfService": "https://fastcrw.com/terms",
-    "provider": {"@type":"Organization","name":"CRW","url":"https://fastcrw.com"},
-    "programmingModel": "REST"
-  }
-}
-</script>
+  <meta charset="UTF-8">
+  <title>Redirecting…</title>
+  <link rel="canonical" href="https://docs.fastcrw.com/search">
+  <meta name="robots" content="noindex, follow">
+  <meta http-equiv="refresh" content="0; url=https://docs.fastcrw.com/search">
+  <script>location.replace("https://docs.fastcrw.com/search");</script>
 </head>
-<body>
-<h1>POST /v1/search</h1>
-<p>Hosted: <code>https://api.fastcrw.com</code> · Self-hosted: <code>http://localhost:3000</code></p>
-<p><strong>Auth (hosted only):</strong> <code>Authorization: Bearer $CRW_API_KEY</code></p>
-<p><em>Self-hosted: no auth required by default. See <a href="/configuration">configuration</a>.</em></p>
-<p><strong>Body:</strong> <code>{"query": string, "limit": number}</code></p>
-
-<h2>Response shape</h2>
-<pre><code class="language-json">{
-  "success": true,
-  "data": [
-    {
-      "url": "https://...",
-      "title": "...",
-      "snippet": "LLM-ready summary line (same value as description)",
-      "description": "LLM-ready summary line (same value as snippet)",
-      "position": 1,
-      "score": 9.5,
-      "category": "general"
-    }
-  ]
-}</code></pre>
-<p>Results are nested under <code>response["data"]</code> — iterate that array.
-Each row has <code>title</code>, <code>url</code>, <code>snippet</code>,
-<code>description</code>, <code>position</code>, <code>score</code>,
-<code>category</code>. <code>snippet</code> is the LLM-ready summary line
-(Firecrawl-compatible name); <code>description</code> is the same value
-under the backend-native name.</p>
-
-<h2>Python (stdlib)</h2>
-<pre><code class="language-python"># Run with: python3 search.py
-import json, os, urllib.request
-
-req = urllib.request.Request(
-    "https://api.fastcrw.com/v1/search",
-    data=json.dumps({"query": "...", "limit": 3}).encode(),
-    headers={
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {os.environ['CRW_API_KEY']}",
-    },
-    method="POST",
-)
-with urllib.request.urlopen(req) as r:
-    body = json.loads(r.read())  # body == {"success": true, "data": [...]}
-
-print(json.dumps(
-    [{"title": x["title"], "url": x["url"], "snippet": x["snippet"]}
-     for x in body["data"]],
-    indent=2,
-))
-</code></pre>
-
-<h2>Related endpoints</h2>
-<ul>
-  <li><a href="/api-reference/scrape/">POST /v1/scrape</a> — single-URL extraction</li>
-  <li><a href="/api-reference/extract/">POST /v1/extract</a> — structured extraction</li>
-  <li><a href="/api-reference/map/">POST /v1/map</a> — URL discovery</li>
-  <li><a href="/api-reference/crawl/">POST /v1/crawl</a> — multi-page crawl</li>
-  <li><a href="/openapi.json">openapi.json</a></li>
-  <li><a href="/rest-api">REST API guide</a></li>
-</ul>
-
-<p><a href="/">← CRW docs home</a></p>
-</body>
+<body>This page moved to <a href="https://docs.fastcrw.com/search">https://docs.fastcrw.com/search</a>.</body>
 </html>

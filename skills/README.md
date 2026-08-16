@@ -2,7 +2,7 @@
 
 Reusable [agent skills](https://www.skills.sh) that teach AI coding agents how
 to use **fastCRW** — the open-source, self-hostable Firecrawl alternative
-(single Rust binary, ~6 MB RAM, Firecrawl-compatible `/v1` + `/v2` API, bundled
+(single Rust binary, ~14 MB RAM, Firecrawl-compatible `/v1` + `/v2` API, bundled
 search backend, first-class MCP).
 
 Works with Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Windsurf, and any

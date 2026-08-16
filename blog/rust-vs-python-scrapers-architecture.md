@@ -72,7 +72,7 @@ Rust vs Python for scrapers isn't a speed race on the network-bound part — it'
 ## Try the Rust engine from your Python stack
 
 ```
-docker compose up   # ~6MB binary, no Chromium resident, AGPL-3.0
+docker compose up   # ~10MB download, no Chromium resident, AGPL-3.0
 ```
 
 Managed Cloud: one-time lifetime 500 free credits, no card. [fastcrw.com](https://fastcrw.com) · [GitHub](https://github.com/us/crw)

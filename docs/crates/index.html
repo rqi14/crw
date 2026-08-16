@@ -292,6 +292,18 @@ use crw_core::types::{OutputFormat, ScrapeData};
 
 let config = AppConfig::load()?;
 println!(&quot;Server port: {}&quot;, config.server.port);</code></pre>
+<h2 id="crw-mcp-proto">crw-mcp-proto</h2>
+<p>Shared MCP (Model Context Protocol) JSON-RPC 2.0 types and tool definitions, used by <code>crw-server</code>&#39;s HTTP MCP endpoint, <code>crw-mcp</code>, and <code>crw-browse</code>.</p>
+<pre data-lang="bash"><code class="language-bash">cargo add crw-mcp-proto</code></pre>
+<pre data-lang="rust"><code class="language-rust">use crw_mcp_proto::{JsonRpcRequest, PROTOCOL_VERSION};</code></pre>
+<h2 id="crw-diff">crw-diff</h2>
+<p>Stateless change-tracking diff engine used by monitors: given a current scrape and a caller-supplied previous snapshot, classifies the page as same/changed and computes the requested diff surfaces.</p>
+<pre data-lang="bash"><code class="language-bash">cargo add crw-diff</code></pre>
+<pre data-lang="rust"><code class="language-rust">use crw_diff::{DiffLimits, DEFAULT_MAX_DIFF_CHANGES};</code></pre>
+<h2 id="crw-search">crw-search</h2>
+<p>SearXNG-backed search client and result transforms for the CRW web scraper.</p>
+<pre data-lang="bash"><code class="language-bash">cargo add crw-search</code></pre>
+<pre data-lang="rust"><code class="language-rust">use crw_search::{SearxngClient, SearxngParams, transform_flat};</code></pre>
 <h2 id="crw-renderer">crw-renderer</h2>
 <p>HTTP fetcher and CDP-based headless browser rendering with automatic SPA detection.</p>
 <pre data-lang="bash"><code class="language-bash">cargo add crw-renderer                # HTTP only
@@ -359,7 +371,108 @@ axum::serve(listener, app).await?;</code></pre>
 <pre data-lang="bash"><code class="language-bash">crw https://example.com              # markdown to stdout
 crw https://example.com --format json
 crw https://example.com -o page.md</code></pre>
+<p><code>crw</code> also has <code>crawl</code>, <code>map</code>, and <code>browse</code> subcommands:</p>
+<pre data-lang="bash"><code class="language-bash">crw crawl https://example.com -d 2 -l 10        # BFS crawl, depth 2, 10 pages max
+crw crawl https://example.com --js --format json
+
+crw map https://example.com                     # discover URLs, one per line
+crw map https://example.com --sitemap-only --format json
+
+crw browse                                      # interactive MCP server over CDP (stdio), ws://localhost:9222 by default
+crw browse --ws-url ws://localhost:9222</code></pre>
+<p><code>crw browse</code> wraps the same interactive browser-automation MCP server as the standalone <code>crw-browse</code> binary below (same tool, invoked through <code>crw</code> instead of directly).</p>
 <p>This is a standalone binary, not a library. See <a href="/quick-start">Quick Start</a> for usage examples.</p>
+<h3 id="crw-bench">crw bench</h3>
+<p><code>crw bench</code> is an internal benchmarking tool: it runs a question-answering
+dataset through a running crw server&#39;s <code>/v1/search</code> answer path and grades
+each response with an LLM judge, writing a reproducible run snapshot (results
+JSONL + <code>report.json</code> / <code>report.md</code>) to disk. It needs a running crw server
+(with search and an LLM answer path configured) and an LLM judge key, so it is
+a local/release tool, not something that runs in CI.</p>
+<pre data-lang="bash"><code class="language-bash">crw bench                                       # FRAMES dataset against http://localhost:3000
+crw bench --dataset-file my-questions.jsonl --limit 50
+crw bench --multi-round --query-expand 3 --concurrency 4</code></pre>
+<p>Flags:</p>
+<ul>
+<li><code>--dataset</code>: dataset to run; <code>frames</code> auto-downloads the FRAMES benchmark. Default <code>frames</code>.</li>
+<li><code>--dataset-file</code>: use a local TSV/JSONL file instead of downloading (TSV needs <code>Prompt</code>/<code>Answer</code> columns; JSONL needs <code>prompt</code>/<code>answer</code> keys).</li>
+<li><code>--server</code>: base URL of the crw server under test. Default <code>http://localhost:3000</code>.</li>
+<li><code>--api-key</code>: bearer key for the server under test, if required. Env <code>CRW_API_KEY</code>.</li>
+<li><code>--limit</code>: cap the number of questions run; <code>0</code> runs the full dataset. Default <code>0</code>.</li>
+<li><code>--search-limit</code>: number of search results the answer leg may draw from. Default <code>10</code>.</li>
+<li><code>--judge-model</code>: overrides the configured <code>extraction.llm</code> model for grading.</li>
+<li><code>--output</code>: output directory root for run snapshots. Default <code>bench/runs</code>.</li>
+<li><code>--timeout-secs</code>: per-request timeout to the server under test, in seconds. Default <code>120</code>.</li>
+<li><code>--seed</code>: RNG seed for the bootstrap confidence interval, for reproducibility. Default <code>42</code>.</li>
+<li><code>--multi-round</code>: enable adaptive multi-round retrieval (a second evidence-scout round fires when round one abstains). Off by default.</li>
+<li><code>--query-expand</code>: number of diverse query rewrites fetched and unioned per question. Omitted uses the server default (off).</li>
+<li><code>--concurrency</code>: number of questions to run concurrently; <code>1</code> is sequential. Default <code>1</code>.</li>
+</ul>
+<h3 id="crw-doctor">crw doctor</h3>
+<p><code>crw doctor</code> is read-only diagnostics: it never installs, starts, repairs, or
+rewrites anything. When a check fails it points at <code>crw setup</code> or names the
+exact fix, rather than attempting one itself.</p>
+<pre data-lang="bash"><code class="language-bash">crw doctor                                      # diagnose whatever config.toml resolves to
+crw doctor --target cloud                       # force the cloud-API checks
+crw doctor --json                                # machine-readable output</code></pre>
+<p>Bare <code>crw doctor</code> (no <code>--target</code>) resolves which backend to diagnose from
+<code>config.toml</code>: no <code>[client].api_url</code> configured resolves to <code>local</code> (this is
+also what a fresh install with no config file resolves to); a configured
+<code>[client].api_url</code> with no local renderer configured resolves to <code>cloud</code>;
+configuring both at once is ambiguous, and the command exits <code>2</code> naming the
+exact <code>--target local</code> / <code>--target cloud</code> choice. <code>--target mcp</code> is never
+auto-resolved.</p>
+<p>Local checks make no internet request. Cloud checks only call the
+non-billable <code>GET /v1/capabilities</code> endpoint. Each reachability probe
+(renderer, search backend, proxy, cloud API) is capped at 5 seconds; a run
+where every configured probe times out (up to four renderer entries, plus
+search, plus proxy) takes on the order of 30 seconds in the worst case.</p>
+<p>Flags:</p>
+<ul>
+<li><code>--target local|cloud|mcp</code>: which backend to diagnose. Auto-resolved from config when omitted.</li>
+<li><code>--json</code>: emit machine-readable JSON instead of human-readable text.</li>
+</ul>
+<p>Check IDs (stable, appear as-is in <code>--json</code> output): <code>binary.build</code>,
+<code>config.load</code>, <code>config.source</code>, <code>config.unknown-fields</code>, <code>fs.cache-writable</code>,
+<code>renderer.connectivity</code>, <code>renderer.screenshot</code>, <code>search.reachability</code>,
+<code>llm.configured</code>, <code>proxy.parse</code>, <code>proxy.reachability</code>, <code>server.listen-port</code>,
+<code>capabilities.snapshot</code>, <code>cloud.api-key</code>, <code>cloud.reachability</code>, <code>mcp.mode</code>.
+<code>config.unknown-fields</code>
+currently always reports <code>skip</code>: the config loader merges layers
+(<code>config.default.toml</code>, the user config, <code>CRW_*</code> env vars) without tracking
+per-field provenance, so a stale or renamed key is silently dropped rather
+than reported.</p>
+<p>Exit codes (shared with <code>crw smoke</code>): <code>0</code> every check passed (warnings and
+skips are informational and do not affect the exit code), <code>1</code> at least one
+check failed, <code>2</code> a usage error, a <code>--target</code> ambiguity, or a refused
+billable operation.</p>
+<p><code>crw doctor</code> never prints a stored credential — an API key or proxy password
+is redacted before it reaches the report.</p>
+<h3 id="crw-smoke">crw smoke</h3>
+<p><code>crw smoke</code> runs deterministic sanity checks across the cli/server/mcp
+surfaces. Bare <code>crw smoke</code> is exactly <code>crw smoke --offline --surface cli</code>: no
+network, never billable.</p>
+<pre data-lang="bash"><code class="language-bash">crw smoke                                        # offline, cli surface only
+crw smoke --surface all                          # cli + server + mcp
+crw smoke --live https://example.com --allow-billable</code></pre>
+<p>Flags:</p>
+<ul>
+<li><code>--offline</code>: run against local fixtures only. Deterministic, no network, never billable. Default when neither this nor <code>--live</code> is given.</li>
+<li><code>--live URL</code>: run a real scrape of <code>URL</code> through every selected surface instead of the offline fixture. <code>server</code> posts through <code>/v1/scrape</code>; <code>mcp</code> calls the <code>crw_scrape</code> tool rather than stopping at <code>tools/list</code>.</li>
+<li><code>--surface cli|server|mcp|all</code>: which surface(s) to smoke-test. Default <code>cli</code>.</li>
+<li><code>--allow-billable</code>: required before a <code>--live</code> run against the managed fastCRW API; without it that combination is refused with exit <code>2</code> rather than silently spending credits. Each selected live surface performs its own scrape and may consume one credit. Custom <code>CRW_API_URL</code> self-hosted servers are never assumed billable.</li>
+<li><code>--json</code>: emit machine-readable JSON instead of human-readable text.</li>
+</ul>
+<p><code>crw smoke</code> resolves config the same way <code>crw doctor</code> does and has no
+<code>--target</code> flag of its own — it diagnoses whichever backend the config
+resolves to.</p>
+<p>Check IDs: <code>smoke.cli.scrape</code>, <code>smoke.server.boot</code>, <code>smoke.mcp.protocol</code>.</p>
+<p>Exit codes: the same contract as <code>crw doctor</code> (<code>0</code>/<code>1</code>/<code>2</code> above).</p>
+<p>Like <code>crw doctor</code>, <code>crw smoke</code> never prints a stored credential.</p>
+<h2 id="crw-browse">crw-browse</h2>
+<p>Standalone MCP server for interactive browser automation over CDP: stateful multi-step sessions (click, fill, read the DOM) rather than one-shot scraping.</p>
+<pre data-lang="bash"><code class="language-bash">cargo install crw-browse</code></pre>
+<p>This is a standalone binary, not a library. See <a href="/docs/crw-browse">Browser Automation (crw-browse)</a> for setup instructions.</p>
 <h2 id="crw-mcp">crw-mcp</h2>
 <p>MCP stdio proxy binary — connects AI assistants to a running crw server.</p>
 <pre data-lang="bash"><code class="language-bash">cargo install crw-mcp</code></pre>

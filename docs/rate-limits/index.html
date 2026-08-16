@@ -286,8 +286,45 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <h2 id="window">Window</h2>
 <p>CRW uses a <strong>token-bucket rate limiter</strong> scoped to the server process. Tokens refill continuously at the configured rate (<code>rate_limit_rps</code>). A burst can drain the bucket immediately; tokens replenish every second proportional to elapsed time.</p>
 <p>Self-hosted instances set <code>[server].rate_limit_rps</code> in their config (default: 10 RPS, 0 = unlimited). Cloud plans (fastcrw.com) enforce per-API-key plan limits instead.</p>
-<h2 id="current-per-plan-limits">Current per-plan limits</h2>
-<div class="callout callout-note"><div class="callout-icon"></div><div class="callout-content">Cloud only (fastcrw.com) -- self-hosted instances can configure their own rate limits.</div></div><table>
+<h2 id="concurrency-is-the-real-entitlement-rpm-is-an-abuse-guard">Concurrency is the real entitlement, RPM is an abuse guard</h2>
+<p>Cloud plans are governed by two different caps, and they are not interchangeable:</p>
+<ul>
+<li><strong>Concurrency</strong>: how many of your requests may be in flight (POSTed and not yet completed) at the same moment. This is what you are actually paying for when you pick a plan; it is the number that decides how much parallel work you can run.</li>
+<li><strong>Requests per minute (RPM)</strong>: a secondary, looser abuse guard sized well above what a client would hit while legitimately using its full concurrency at normal scrape latency. It exists to catch a client cycling requests pathologically fast, not to throttle normal parallel usage.</li>
+</ul>
+<p>If you are designing for throughput, size your worker pool against the concurrency limit below, not the RPM number.</p>
+<div class="callout callout-note"><div class="callout-icon"></div><div class="callout-content">Cloud only (fastcrw.com) -- self-hosted instances can configure their own rate limits and have no concurrency cap of this kind.</div></div><h2 id="concurrency-limits-simultaneous-in-flight-requests">Concurrency limits (simultaneous in-flight requests)</h2>
+<table>
+<thead>
+<tr>
+<th>Plan</th>
+<th>Concurrent requests</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>FREE</td>
+<td>3</td>
+</tr>
+<tr>
+<td>HOBBY</td>
+<td>10</td>
+</tr>
+<tr>
+<td>STANDARD</td>
+<td>50</td>
+</tr>
+<tr>
+<td>GROWTH</td>
+<td>100</td>
+</tr>
+<tr>
+<td>SCALE</td>
+<td>150</td>
+</tr>
+</tbody></table>
+<p>A batch request (for example a batch scrape) counts as one POST for this limit: it does not itself grant extra parallelism beyond what the plan allows for other in-flight requests.</p>
+<h2 id="requests-per-minute-limits-abuse-guard">Requests-per-minute limits (abuse guard)</h2>
+<table>
 <thead>
 <tr>
 <th>Plan</th>
@@ -296,55 +333,65 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 </thead>
 <tbody><tr>
 <td>FREE</td>
-<td>10</td>
+<td>120</td>
 </tr>
 <tr>
 <td>HOBBY</td>
-<td>30</td>
+<td>300</td>
 </tr>
 <tr>
 <td>STANDARD</td>
-<td>200</td>
+<td>1500</td>
 </tr>
 <tr>
 <td>GROWTH</td>
-<td>400</td>
+<td>3000</td>
 </tr>
 <tr>
 <td>SCALE</td>
-<td>600</td>
+<td>6000</td>
 </tr>
 </tbody></table>
-<h2 id="two-distinct-429-branches">Two distinct <code>429</code> branches</h2>
-<p>A <code>429</code> response means one of two different things. Handle them differently.</p>
-<h3 id="branch-1-rpm-rate-limit-exceeded">Branch 1 — RPM rate limit exceeded</h3>
-<p>Your request rate exceeded the plan&#39;s requests-per-minute cap (or the self-hosted <code>rate_limit_rps</code> setting). The response body carries <code>error_code: &quot;rate_limited&quot;</code>.</p>
+<h2 id="three-429-causes-and-one-402">Three <code>429</code> causes, and one <code>402</code></h2>
+<p>A <code>429</code> response can mean three different things on the cloud API, and a <code>402</code> means a fourth. None of these currently carry a machine-readable <code>error_code</code> (or <code>errorCode</code>) field in the response body, only a human-readable <code>error</code> string. Do not write client logic that branches on an error code for these; branch on the HTTP status and, if you need to tell the causes apart, on the response headers noted below.</p>
+<h3 id="cause-1-rpm-exceeded">Cause 1: RPM exceeded</h3>
+<p>You exceeded the plan&#39;s requests-per-minute cap. The response includes <code>Retry-After</code>, <code>X-RateLimit-Limit</code>, and <code>X-RateLimit-Remaining</code> headers.</p>
 <p><strong>Action:</strong> back off and retry. Apply exponential backoff starting at 1 second:</p>
 <pre data-lang="ts"><code class="language-ts">async function callWithRetry(fn: () =&gt; Promise&lt;Response&gt;, maxRetries = 5): Promise&lt;Response&gt; {
   for (let attempt = 0; attempt &lt; maxRetries; attempt++) {
     const res = await fn();
     if (res.status !== 429) return res;
 
-    const body = await res.json();
-    // Only retry on RPM rate limit, not credit exhaustion.
-    if (body.error_code !== &quot;rate_limited&quot;) throw new Error(body.error ?? &quot;unknown error&quot;);
+    // Distinguish by header, not by a machine-readable error code (none exists
+    // for any 429 cause today). Credit exhaustion carries an
+    // X-FASTCRW-Credits-Available header; do not retry that one.
+    if (res.headers.has(&quot;X-FASTCRW-Credits-Available&quot;)) {
+      throw new Error(&quot;Credit balance exhausted, top up at fastcrw.com/billing&quot;);
+    }
 
     const backoffMs = Math.min(1000 * 2 ** attempt, 30_000);
     await new Promise(r =&gt; setTimeout(r, backoffMs));
   }
   throw new Error(&quot;Max retries exceeded&quot;);
 }</code></pre>
-<div class="callout callout-note"><div class="callout-icon"></div><div class="callout-content">The open-source server does not currently send `Retry-After`, `X-RateLimit-Limit`, or `X-RateLimit-Remaining` response headers. Use client-side exponential backoff instead of reading a header.</div></div><h3 id="branch-2-credits-exhausted-cloud-only">Branch 2 — Credits exhausted (cloud only)</h3>
-<p>On fastcrw.com, once your account balance reaches zero the API returns <code>429</code> with <code>error_code: &quot;insufficient_credits&quot;</code>.</p>
-<div class="callout callout-note"><div class="callout-icon"></div><div class="callout-content">`insufficient_credits` is a fastcrw.com-only error code added by the SaaS billing layer. The open-source engine does not produce this code — it is not part of `CrwError::error_code()` in crw-core.</div></div><p><strong>Action:</strong> do NOT retry. Retrying burns no credits (the request is rejected before processing) but creates noise in your logs and may hide the real cause. Alert or pause your pipeline and top up your balance.</p>
-<pre data-lang="ts"><code class="language-ts">if (res.status === 429) {
+<h3 id="cause-2-concurrency-cap-reached">Cause 2: Concurrency cap reached</h3>
+<p>You already have as many requests in flight as your plan allows. The response includes a <code>Retry-After</code> header and an <code>X-Concurrency-Limit</code> header naming your plan&#39;s cap.</p>
+<p><strong>Action:</strong> retry once an in-flight request completes, or reduce your worker pool&#39;s parallelism to stay under the cap. This is not a request-rate problem, so simply slowing down your request rate without also lowering concurrency will not fix it.</p>
+<h3 id="cause-3-credits-exhausted">Cause 3: Credits exhausted</h3>
+<p>Once your available balance reaches zero, the API returns <code>429</code>. This covers a FREE account that has spent its lifetime 500 credits, and a paid account that is out of credits without an active auto-recharge attempt in progress. The response includes <code>X-FASTCRW-Credits-Available</code>, <code>X-FASTCRW-Included-Remaining</code>, <code>X-FASTCRW-Purchased-Remaining</code>, and <code>X-FASTCRW-Upgrade-Url</code> headers. There is no reset header: a FREE account&#39;s 500 credits are a one-time lifetime grant, not a monthly allowance, so there is nothing to reset.</p>
+<p><strong>Action:</strong> do NOT retry. Retrying burns no credits (the request is rejected before processing) but creates noise in your logs and may hide the real cause. Alert or pause your pipeline and top up your balance or upgrade your plan.</p>
+<h3 id="cause-4-402-paid-account-with-auto-recharge-stopped">Cause 4: <code>402</code>, paid account with auto-recharge stopped</h3>
+<p>A paid account whose auto-recharge attempted to run and stopped (spending cap reached, card declined, bank confirmation required, or no payment method on file) gets <code>402</code>, not <code>429</code>. This is a distinct, retryable-after-payment signal. The response includes the same credit headers plus <code>X-FASTCRW-Stop-Reason</code> naming why auto-recharge stopped.</p>
+<p><strong>Action:</strong> do NOT retry as-is. Resolve the payment issue (raise the spending cap, update the card, authorize the charge) and retry after.</p>
+<pre data-lang="ts"><code class="language-ts">if (res.status === 429 &amp;&amp; res.headers.has(&quot;X-FASTCRW-Credits-Available&quot;)) {
+  // Alert your team, halt the pipeline.
+  throw new Error(&quot;Credit balance exhausted, top up at fastcrw.com/billing&quot;);
+}
+if (res.status === 402) {
   const body = await res.json();
-  if (body.error_code === &quot;insufficient_credits&quot;) {
-    // Alert your team, halt the pipeline.
-    throw new Error(&quot;Credit balance exhausted — top up at fastcrw.com/billing&quot;);
-  }
-  // Otherwise it's an RPM limit — backoff and retry (see above).
-}</code></pre>
+  throw new Error(`Auto-recharge stopped: ${body.error}`);
+}
+// Otherwise a 429 is RPM or concurrency: backoff and retry (see above).</code></pre>
 <h2 id="handling-503">Handling <code>503</code></h2>
 <p>A <code>503 Service Unavailable</code> response means the server is up but a dependency is temporarily unavailable. Two cases:</p>
 <table>
@@ -375,9 +422,9 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <h2 id="practical-client-behavior">Practical Client Behavior</h2>
 <p>A well-behaved client should:</p>
 <ul>
-<li>inspect <code>error_code</code> in every non-2xx response body before deciding whether to retry,</li>
-<li>use exponential backoff (not a fixed delay) for <code>429</code> RPM and <code>503</code> responses,</li>
-<li>NOT retry on <code>429</code> with <code>error_code: &quot;insufficient_credits&quot;</code> — alert and halt instead,</li>
+<li>inspect the response headers on every <code>429</code>/<code>402</code> to tell RPM, concurrency, and credit exhaustion apart (there is no machine-readable error code to branch on),</li>
+<li>use exponential backoff (not a fixed delay) for <code>429</code> RPM, <code>429</code> concurrency, and <code>503</code> responses,</li>
+<li>NOT retry on a credit-exhaustion <code>429</code> or on a <code>402</code> (alert and halt instead),</li>
 <li>centralize throttling when multiple workers share one API key.</li>
 </ul>
 <p>The problem with per-worker retry logic is that it reacts too late. A central limiter prevents avoidable <code>429</code>s in the first place.</p>
@@ -397,8 +444,9 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <p>Those are different problems and should be handled differently.</p>
 <h2 id="common-mistakes">Common Mistakes</h2>
 <ul>
-<li>Retrying on <code>429</code> with <code>error_code: &quot;insufficient_credits&quot;</code> -- the request will keep failing until you top up.</li>
-<li>Reading <code>Retry-After</code> or <code>X-RateLimit-Remaining</code> headers that the server does not send.</li>
+<li>Retrying a credit-exhaustion <code>429</code> or a <code>402</code> -- the request will keep failing until you top up or fix the payment method.</li>
+<li>Assuming a <code>429</code> response carries a machine-readable <code>error_code</code> field -- it does not; branch on headers or HTTP status instead.</li>
+<li>Sizing a worker pool against the RPM number instead of the concurrency limit, which is the entitlement that actually caps parallel throughput.</li>
 <li>Confusing API plan limits with the target website&#39;s own anti-bot or rate-limit behavior.</li>
 </ul>
 <p>For rollout work, pair this page with <a href="/docs/credit-costs">credit costs</a> so request throttling and credit monitoring stay aligned.</p>

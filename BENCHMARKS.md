@@ -8,12 +8,13 @@
 | **Truth-recall** (522/819 labeled URLs) | **63.74%** | 59.95% | 56.04% |
 | p50 latency | **1914 ms** | 1916 ms | 2305 ms |
 | Thrown errors (3,000 requests) | 0 | 0 | 0 |
+| Scrape success (fastCRW, reachable URLs) | **877/921 (95.2%)** | not reframed | not reframed |
 
 fastCRW leads on the accuracy metric that matters for agents: **truth-recall (63.74%, +3.79pp over
 crawl4ai, +7.7pp over Firecrawl)**, and it uniquely recovers **34 URLs the other two miss** (70% more
 than crawl4ai and Firecrawl combined). Its **p50 latency is the fastest of the three** (a statistical
-tie with crawl4ai, ahead of Firecrawl), across **3,000 requests with 0 thrown errors**. The 63.74%
-denominator is 819 labeled/matchable URLs.
+tie with crawl4ai, ahead of Firecrawl), across **3,000 requests with 0 thrown errors and an 877/921
+(95.2%) scrape success rate on reachable URLs**. The 63.74% denominator is 819 labeled/matchable URLs.
 
 **Two modes, one config toggle.** *Recall mode* (the full renderer ladder — the numbers above)
 maximizes truth-recall. *Fast mode* (LightPanda-only, no Chrome tier) trades the recall tail for
@@ -25,12 +26,16 @@ lower latency. Same binary, same API; pick accuracy or latency per workload.
 |---|---|---|---|
 | Language | Rust | Node.js + Playwright | Python + Playwright |
 | License | AGPL-3.0 (commercial avail.) | AGPL-3.0 (commercial avail.) | Apache-2.0 |
-| Self-host install size | Single binary (~8 MB) | Multi-container (~500 MB+) | ~2 GB (browser bundled) |
-| Memory baseline (idle) | ~50 MB | Large (Chromium heap) | Large (Chromium heap) |
+| Self-host download | Single binary (~10 MB) | Multi-container (~500 MB+) | ~2 GB (browser bundled) |
+| Memory baseline (idle) | ~14 MB | Large (Chromium heap) | Large (Chromium heap) |
 | Firecrawl migration | Yes — `/firecrawl/v2/*` compat layer | Native | No |
 | MCP server | Built-in (`crw-mcp`) | Separate package | Community add-on |
 | Hosted option | `api.fastcrw.com` | firecrawl.dev | None official |
 | Reproducible public benchmark | Yes | Vendor-published only | Vendor-published only |
+
+fastCRW's idle memory baseline was measured with `docker top <container> -eo rss`, 15 seconds
+after `docker run -p 3000:3000 ghcr.io/us/crw:latest` (crw v0.30.0). `docker stats` under-reports
+at this scale and should not be used for this measurement.
 
 ## Reproduce it yourself
 

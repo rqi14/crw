@@ -60,10 +60,10 @@ crw scrape "report.pdf"                              # local PDF auto-detected
 **Use CLI when:** the binary is on PATH and you're in a Bash context. Especially
 good for the dynamic-search pattern (pipe into Python subprocess).
 
-### MCP tools (`crw_search`, `crw_scrape`, `crw_map`, `crw_crawl`, `crw_parse_file`)
+### MCP tools (`crw_scrape`, `crw_crawl`, `crw_check_crawl_status`, `crw_map`, `crw_extract`, `crw_check_extract_status`, `crw_cancel_extract`, `crw_search`, `crw_parse_file`)
 
 Best inside an MCP-capable agent harness. The MCP server runs the engine either
-in-process (embedded mode, ~6 MB RAM, no server) or as a proxy to a REST endpoint.
+in-process (embedded mode, ~14 MB RAM, no server) or as a proxy to a REST endpoint.
 
 ```
 crw_scrape(url="https://example.com", formats=["markdown"], onlyMainContent=true)

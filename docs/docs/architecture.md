@@ -2,19 +2,31 @@
 
 ## Crate Structure
 
-crw is a Rust workspace with 6 crates, each with a focused responsibility:
+crw is a Rust workspace with 11 crates, each with a focused responsibility:
 
 ```
-crw-server (Axum HTTP API — main binary)
-├── crw-crawl (BFS crawler, single-page scraper)
-│   ├── crw-extract (HTML cleaning, format conversion)
-│   │   └── crw-core (types, config, errors)
-│   └── crw-renderer (HTTP + CDP fetcher)
-│       └── crw-core
-└── crw-core
-
-crw-mcp (Stdio MCP proxy — standalone binary)
+crw-mcp-proto   shared MCP JSON-RPC types                    (leaf)
+crw-core        types, config, errors                        → crw-mcp-proto
+crw-diff        change-tracking diff engine                  → crw-core
+crw-extract     HTML cleaning, format conversion              → crw-core
+crw-renderer    HTTP + CDP fetcher                            → crw-core, crw-extract
+crw-search      search client and result transforms           → crw-core
+crw-crawl       BFS crawler, single-page scraper               → crw-core, crw-diff, crw-extract, crw-renderer
+crw-server      Axum HTTP API (library + own binary)          → crw-core, crw-crawl, crw-diff, crw-extract, crw-renderer, crw-search
+crw-browse      interactive browser-automation MCP server      → crw-core, crw-renderer
+crw-mcp         stdio MCP proxy                                → crw-core, crw-renderer, crw-server
+crw-cli         command-line binary                            → crw-browse, crw-core, crw-crawl, crw-extract, crw-renderer, crw-search, crw-server
 ```
+
+`crw-server` has no explicit `[[bin]]` section in its `Cargo.toml`, but it does
+have a `src/main.rs`, so Cargo auto-discovers a `crw-server` binary target
+alongside the library. That binary is the production container entrypoint
+(`Dockerfile` `CMD ["crw-server"]`). The `crw` binary is a separate build, from
+`crw-cli`, which embeds the `crw-server` library for `crw serve`. The workspace
+produces four binaries: `crw` (from `crw-cli`), `crw-server` (from
+`crw-server`), `crw-mcp` (from `crw-mcp`), and `crw-browse` (from `crw-browse`,
+a separate standalone MCP server for interactive browser automation, see
+[crw-browse](/docs/crw-browse)).
 
 ## Request Flow
 

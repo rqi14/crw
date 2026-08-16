@@ -14,14 +14,14 @@
 <p>Traditional scrapers return raw HTML or markdown and leave parsing to the caller. AI-driven extraction shifts the parse step to the server: you pass a JSON Schema (or a natural-language prompt, or both), and the service returns a JSON object validated against that schema. The model is constrained either by tool-calling, JSON-mode, or grammar-guided sampling so the output is machine-consumable on the first try. This collapses three engineering jobs — fetch, render, parse — into one HTTP call.</p>
 
 <h2>Five systems worth knowing in 2026</h2>
-<p><strong>fastCRW.</strong> Rust-native, ~50 MB RAM idle, Firecrawl-compatible REST API. Accepts both a JSON Schema and an optional prompt on <code>/v1/extract</code>, and is BYOK across OpenAI, Anthropic, Groq, and OpenRouter via <code>llmApiKey</code> / <code>llmProvider</code> / <code>llmModel</code>. Self-hostable under AGPL-3.0; managed at <code>api.fastcrw.com</code>.</p>
+<p><strong>fastCRW.</strong> Rust-native, ~14 MB RAM idle, Firecrawl-compatible REST API. Accepts both a JSON Schema and an optional prompt on <code>/v1/extract</code>, and is BYOK across OpenAI, Anthropic, Groq, and OpenRouter via <code>llmApiKey</code> / <code>llmProvider</code> / <code>llmModel</code>. Self-hostable under AGPL-3.0; managed at <code>api.fastcrw.com</code>.</p>
 <p><strong>Firecrawl.</strong> The pattern-setter for the schema + prompt pair on <code>/v1/extract</code>. Hosted-only by default; SDKs in Python and Node. Pricing is credit-based and LLM usage is bundled rather than BYOK by default.</p>
 <p><strong>Apify.</strong> Actor model: each scraper is a containerized program you can fork. Strong for long-running crawls and proxy rotation; the AI-extraction layer is a separate actor rather than a first-class endpoint.</p>
 <p><strong>Diffbot.</strong> Knowledge-graph oriented — its "Article", "Product", and "Discussion" automatic extractors return typed JSON without a schema. Less flexible when your schema doesn't match one of their built-in types.</p>
 <p><strong>ScrapegraphAI.</strong> Open-source Python library that wires graph-of-thought prompting onto a scraper. You bring your own model and infrastructure; lower throughput than the hosted options.</p>
 
 <h2>How fastCRW does it</h2>
-<p>POST a JSON body with <code>url</code> (or <code>urls</code>), a <code>schema</code>, an optional <code>prompt</code>, and BYOK fields to <a href="/api-reference/extract/">/v1/extract</a>. The response is <code>{"success": true, "data": {...}}</code> where <code>data</code> matches your schema. Minimum 2 credits per call covers the LLM round-trip. The Firecrawl-compatible request shape means you can swap base URLs without changing client code.</p>
+<p>POST a JSON body with <code>url</code> (or <code>urls</code>), a <code>schema</code>, an optional <code>prompt</code>, and BYOK fields to <a href="/extract/">/v1/extract</a>. The response is <code>{"success": true, "data": {...}}</code> where <code>data</code> matches your schema. Minimum 2 credits per call covers the LLM round-trip. The Firecrawl-compatible request shape means you can swap base URLs without changing client code.</p>
 
 <h2>Frequently asked</h2>
 <dl>

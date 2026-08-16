@@ -345,9 +345,9 @@ class CrwClient:
         from_: str | None = None,
         to: str | None = None,
     ) -> dict:
-        """Ranked paper search over `/v2/search/research/papers`."""
+        """Ranked paper search over `/v1/search/research/papers`."""
         return self._research_get(
-            "/v2/search/research/papers",
+            "/v1/search/research/papers",
             {
                 "query": query,
                 "k": k,
@@ -361,7 +361,7 @@ class CrwClient:
     def get_paper(self, paper_id: str, *, query: str | None = None, k: int | None = None) -> dict:
         """Inspect metadata, or (with `query`) read top passages for a paper."""
         return self._research_get(
-            f"/v2/search/research/papers/{quote(paper_id, safe='')}",
+            f"/v1/search/research/papers/{quote(paper_id, safe='')}",
             {"query": query, "k": k},
         )
 
@@ -375,13 +375,13 @@ class CrwClient:
     ) -> dict:
         """Citation-graph expansion (mode=similar|citers|references)."""
         return self._research_get(
-            f"/v2/search/research/papers/{quote(paper_id, safe='')}/similar",
+            f"/v1/search/research/papers/{quote(paper_id, safe='')}/similar",
             {"intent": intent, "mode": mode, "k": k},
         )
 
     def search_github(self, query: str, *, k: int | None = None) -> dict:
-        """GitHub history/README search over `/v2/search/research/github`."""
-        return self._research_get("/v2/search/research/github", {"query": query, "k": k})
+        """GitHub history/README search over `/v1/search/research/github`."""
+        return self._research_get("/v1/search/research/github", {"query": query, "k": k})
 
     def parse_file(
         self,

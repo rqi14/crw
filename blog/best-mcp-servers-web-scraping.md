@@ -385,7 +385,7 @@ Yes. MCP is an open standard supported by Claude Desktop, Cursor, Windsurf, and 
 
 ### Which tools does the fastCRW MCP server expose?
 
-The crw-mcp server exposes eight tools: scrape, search, crawl, check_crawl_status, map, extract, check_extract_status, and parse_file. Single-URL JSON extraction runs through the scrape tool's json format with a schema; the `extract` tool adds native async multi-URL extraction. Register it in Claude Code with: claude mcp add fastcrw -- npx -y crw-mcp.
+The crw-mcp server exposes nine tools: scrape, search, crawl, check_crawl_status, map, extract, check_extract_status, cancel_extract, and parse_file. Single-URL JSON extraction runs through the scrape tool's json format with a schema; the `extract` tool adds native async multi-URL extraction. Register it in Claude Code with: claude mcp add fastcrw -- npx -y crw-mcp.
 
 ### What's the difference between Playwright MCP and fastCRW MCP?
 
@@ -397,4 +397,4 @@ Yes, and it's recommended for flexible agents. A common setup is fastCRW (fast s
 
 ### How accurate is the fastCRW MCP scraper compared to alternatives?
 
-On the public 3-way scrape benchmark — Firecrawl's own scrape-content-dataset-v1, 1,000 URLs with 819 labeled, harness diagnose_3way.py, run 2026-05-08 — fastCRW reached 63.74% truth-recall (522 of 819 labeled URLs), ahead of Crawl4AI at 59.95% and Firecrawl at 56.04%. Its p50 latency was 1914ms — the fastest of the three. In fast mode, its p90 is 4348ms, the lowest of the three (Crawl4AI 4754ms, Firecrawl 6937ms).
+On the public 3-way scrape benchmark — Firecrawl's own scrape-content-dataset-v1, 1,000 URLs with 819 labeled, harness diagnose_3way.py, run 2026-05-08 — fastCRW reached 63.74% truth-recall (522 of 819 labeled URLs), ahead of Crawl4AI at 59.95% and Firecrawl at 56.04%. Its p50 latency was 1914ms — the fastest of the three.

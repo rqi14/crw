@@ -14,13 +14,13 @@
 
 ## API endpoints (live HTML, agent-facing)
 
-- [POST /v1/search](https://docs.fastcrw.com/api-reference/search/): Web search via our own search backend, returns ranked results
-- [POST /v1/scrape](https://docs.fastcrw.com/api-reference/scrape/): Single-URL content extraction; add `formats:["json"]` + `jsonSchema` for structured JSON extraction
-- [POST /v1/map](https://docs.fastcrw.com/api-reference/map/): URL discovery without scraping bodies
-- [POST /v1/crawl](https://docs.fastcrw.com/api-reference/crawl/) + GET /v1/crawl/{id}: Async multi-page crawl
-- [POST /v1/change-tracking/diff](https://docs.fastcrw.com/api-reference/change-tracking/): Stateless per-page diff; accepts single item or batch
-- [GET /v1/capabilities](https://docs.fastcrw.com/api-reference/capabilities/): Surface what this instance supports (renderers, search, features)
-- [API reference index](https://docs.fastcrw.com/api-reference/): One-page chooser
+- [POST /v1/search](https://docs.fastcrw.com/search/): Web search via our own search backend, returns ranked results
+- [POST /v1/scrape](https://docs.fastcrw.com/scraping/): Single-URL content extraction; add `formats:["json"]` + `jsonSchema` for structured JSON extraction
+- [POST /v1/map](https://docs.fastcrw.com/map/): URL discovery without scraping bodies
+- [POST /v1/crawl](https://docs.fastcrw.com/crawling/) + GET /v1/crawl/{id}: Async multi-page crawl
+- [POST /v1/change-tracking/diff](https://docs.fastcrw.com/monitoring/): Stateless per-page diff; accepts single item or batch
+- [GET /v1/capabilities](https://docs.fastcrw.com/capabilities/): Surface what this instance supports (renderers, search, features)
+- [API reference index](https://docs.fastcrw.com/rest-api/): One-page chooser
 
 ## Glossary
 

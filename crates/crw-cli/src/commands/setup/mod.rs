@@ -105,9 +105,24 @@ pub async fn run(args: SetupArgs) {
         // Non-interactive cloud connect (--api-key / installer pass-through).
         cloud::run_with_key(key).await
     } else if args.cloud {
-        cloud::run().await
+        if args.non_interactive {
+            // Cloud setup has no safe default for the API key prompt — fail
+            // fast instead of guessing or hanging on stdin.
+            Err(ui::SetupError::Other(
+                "cloud setup needs an API key in --non-interactive mode: pass --api-key <KEY> \
+                 (get one at https://fastcrw.com/dashboard) or drop --non-interactive."
+                    .to_string(),
+            ))
+        } else {
+            cloud::run().await
+        }
     } else if args.local {
-        local::run().await
+        local::run(args.non_interactive).await
+    } else if args.non_interactive {
+        Err(ui::SetupError::Other(
+            "--non-interactive needs --local, or --cloud with --api-key, to know which setup to run."
+                .to_string(),
+        ))
     } else {
         // Interactive wizard
         wizard::run_wizard().await

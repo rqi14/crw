@@ -166,7 +166,7 @@ const TIMEOUT_CRAWL_STATUS: std::time::Duration = std::time::Duration::from_secs
 const TIMEOUT_MAP: std::time::Duration = std::time::Duration::from_secs(180);
 const TIMEOUT_SEARCH: std::time::Duration = std::time::Duration::from_secs(120);
 
-async fn proxy_call_tool(
+pub(crate) async fn proxy_call_tool(
     client: &reqwest::Client,
     base_url: &str,
     api_key: &Option<String>,

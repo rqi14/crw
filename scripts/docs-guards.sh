@@ -23,7 +23,11 @@
 #   kept byte-for-byte identical. A diff here means one copy was updated
 #   without syncing the other.
 #
-# Portable: bash + standard POSIX tools (grep, diff). Works on ubuntu-latest
+# Guard 5 — renderer credit-cost truth
+#   Derives the current flat renderer price from `credit_for` and rejects stale
+#   per-renderer prices in the two user-facing billing/reference pages.
+#
+# Portable: bash + standard POSIX tools plus python3. Works on ubuntu-latest
 # and macOS without extra dependencies.
 
 set -euo pipefail
@@ -257,12 +261,70 @@ done
 
 if [ -n "$stale" ]; then
   echo "FAIL: a retired capability claim is back in the docs." >&2
-  echo "      These features ship today — see scripts/docs-guards.sh Guard 3." >&2
+  echo "      These features ship today — see scripts/docs-guards.sh Guard 4." >&2
   echo >&2
   echo "$stale" | sed '/^$/d; s/^/  /' >&2
   FAIL=1
 else
   echo "ok: no retired capability claims"
+fi
+
+# ---------------------------------------------------------------------------
+# Guard 5: renderer credit-cost truth
+# ---------------------------------------------------------------------------
+
+echo "==> Guard 5: renderer credit-cost truth"
+
+if ! python3 - <<'PY'
+import re
+import sys
+from pathlib import Path
+
+renderer = Path("crates/crw-renderer/src/lib.rs").read_text()
+match = re.search(
+    r"fn\s+credit_for\s*\([^)]*\)\s*->\s*u32\s*\{\s*(\d+)\s*\}",
+    renderer,
+    re.DOTALL,
+)
+if not match:
+    print("FAIL: could not derive the flat renderer price from credit_for", file=sys.stderr)
+    sys.exit(1)
+
+expected = int(match.group(1))
+docs = [
+    Path("docs/docs/credit-costs.md"),
+    Path("docs/docs/output-formats.md"),
+]
+problems = []
+for path in docs:
+    text = path.read_text()
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        if "credit" not in line.lower() or "render" not in line.lower():
+            continue
+        for found in re.findall(r"(?:costs?|=)\s*\*?\*?(\d+)\s+credit", line, re.I):
+            if int(found) != expected:
+                problems.append(f"{path}:{line_no}: renderer price {found}, runtime is {expected}")
+
+    # These pages must state the shared flat price explicitly, so deleting the
+    # conflicting line cannot make this guard pass vacuously.
+    flat_claim = re.search(
+        rf"(?:every|any)[^.\n]{{0,100}}renderer[^.\n]{{0,100}}(?:costs?|cost)[^.\n]{{0,40}}{expected}\s+credit",
+        text,
+        re.I,
+    )
+    if not flat_claim:
+        problems.append(f"{path}: missing explicit flat renderer price of {expected} credit")
+
+if problems:
+    print("FAIL: renderer credit docs drifted from credit_for:", file=sys.stderr)
+    for problem in problems:
+        print(f"  {problem}", file=sys.stderr)
+    sys.exit(1)
+
+print(f"ok: renderer credit docs match runtime flat price ({expected})")
+PY
+then
+  FAIL=1
 fi
 
 # ---------------------------------------------------------------------------

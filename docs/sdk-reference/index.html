@@ -517,6 +517,7 @@ console.log(result.markdown);</code></pre>
 <h3 id="crawl">crawl</h3>
 <p>Starts an async crawl, polls for completion, and returns all page results.
 The SDK handles polling internally.</p>
+<p>Both SDKs default and always send <code>maxDepth: 2</code> / <code>maxPages: 10</code> for a crawl, and always send them explicitly. This is a client-side default, not the server&#39;s: a raw HTTP call to <code>POST /v1/crawl</code> that omits <code>maxPages</code> gets <code>100</code> from the server instead — see <a href="/docs/crawling#parameters">Crawling</a>.</p>
 <pre data-lang="python"><code class="language-python"># Python
 pages = client.crawl(
     &quot;https://example.com&quot;,

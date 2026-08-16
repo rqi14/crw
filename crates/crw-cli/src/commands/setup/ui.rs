@@ -284,7 +284,7 @@ pub fn print_summary(title: &str, items: &[SummaryItem]) {
 }
 
 /// Print the final success banner with next steps.
-pub fn print_completion_banner(source_cmd: Option<&str>, quick_start: &[&str], extras: &[&str]) {
+pub fn print_completion_banner(quick_start: &[&str], extras: &[&str]) {
     println!();
     if colors_enabled() {
         println!(
@@ -302,16 +302,6 @@ pub fn print_completion_banner(source_cmd: Option<&str>, quick_start: &[&str], e
     }
     println!();
 
-    if let Some(cmd) = source_cmd {
-        println!("  Run this to apply changes (or restart your terminal):");
-        if colors_enabled() {
-            println!("    {}", style(cmd).cyan());
-        } else {
-            println!("    {}", cmd);
-        }
-        println!();
-    }
-
     if !quick_start.is_empty() {
         println!("  Quick start:");
         for line in quick_start {
@@ -323,15 +313,6 @@ pub fn print_completion_banner(source_cmd: Option<&str>, quick_start: &[&str], e
         }
         println!();
     }
-
-    // Verification hint
-    println!("  Verify your setup:");
-    if colors_enabled() {
-        println!("    {}", style("crw --version").cyan());
-    } else {
-        println!("    crw --version");
-    }
-    println!();
 
     if !extras.is_empty() {
         for line in extras {

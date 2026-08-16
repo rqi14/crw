@@ -146,11 +146,15 @@ Poll response:
 
 ## Parameters
 
+> **Defaults depend on how you call it.** The server defaults `maxDepth` to `2` and `maxPages` to `100` when a raw HTTP request omits them (the table below). The official Python and TypeScript SDKs use lower client-side defaults instead (`maxDepth: 2`, `maxPages: 10`) and always send them explicitly — see [SDK Reference](/docs/sdk-reference#crawl). Neither number is wrong; they are just set at different layers.
+
+> **Ceilings are clamped, not rejected.** `maxDepth` above `10` is silently clamped to `10`, and `maxPages` above `1000` is silently clamped to `1000` — the request still succeeds, it just runs at the ceiling instead of the value you sent.
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `url` | string | required | Starting URL |
-| `maxDepth` | number | `2` | Maximum depth from the start URL |
-| `maxPages` | number | `100` | Maximum number of pages to crawl |
+| `maxDepth` | number | `2` | Maximum depth from the start URL (raw HTTP default; clamped to 10 if higher) |
+| `maxPages` | number | `100` | Maximum number of pages to crawl (raw HTTP default; clamped to 1000 if higher) |
 | `limit` | number | alias | Firecrawl-compatible alias for `maxPages` |
 | `max_pages` | number | alias | Snake_case alias for `maxPages` |
 | `formats` | string[] | `["markdown"]` | Output formats for each page |

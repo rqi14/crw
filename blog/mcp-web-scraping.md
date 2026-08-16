@@ -64,7 +64,7 @@ The AI client receives the `text` content and injects it into the model's contex
 
 ## What Tools Does CRW's MCP Server Expose?
 
-Eight tools:
+Nine tools:
 
 - **crw_scrape** — Fetches a single URL and returns clean markdown (and optionally HTML, links, or structured JSON)
 - **crw_crawl** — Crawls a site up to a page limit, returning markdown for each discovered page
@@ -72,6 +72,7 @@ Eight tools:
 - **crw_map** — Returns all URLs found on a site, useful for site discovery without full content extraction
 - **crw_extract** — Starts an async multi-URL structured-extraction job
 - **crw_check_extract_status** — Checks an async extract job and returns its per-URL results
+- **crw_cancel_extract** — Idempotently cancels an extract job and returns its canonical status
 - **crw_search** — Searches the web and returns content from matching pages
 - **crw_parse_file** — Parses a file (including PDFs) and returns its content as markdown
 
@@ -117,7 +118,7 @@ The `crw-mcp` npm package is a thin MCP wrapper that proxies tool calls to the f
 
 This is the right choice when you want better success rates on bot-protected sites, don't want to manage a local binary, or are using CRW from a machine that can't run Docker (some locked-down corporate environments).
 
-The tool interface is identical between both options — the same eight tools with the same parameters. Switching between them is a config-file change.
+The tool interface is identical between both options — the same nine tools with the same parameters. Switching between them is a config-file change.
 
 ## Option 1: Connect to Claude Desktop
 
@@ -482,7 +483,7 @@ The self-hosted binary (`crw-mcp`) does not require an API key by default — it
 
 ### What tools does CRW expose via MCP?
 
-Eight tools: **crw_scrape** (fetch a single URL and return markdown, HTML, or links), **crw_crawl** (crawl a site up to a page limit, returning markdown for each page), **crw_check_crawl_status** (check an async crawl job), **crw_map** (return all URLs found on a site without fetching full content), **crw_extract** (async multi-URL structured extraction), **crw_check_extract_status** (poll an extract job), **crw_search** (search the web and return content from matching pages), and **crw_parse_file** (parse files including PDFs to markdown). These correspond directly to CRW's REST endpoints.
+Nine tools: **crw_scrape** (fetch a single URL and return markdown, HTML, or links), **crw_crawl** (crawl a site up to a page limit, returning markdown for each page), **crw_check_crawl_status** (check an async crawl job), **crw_map** (return all URLs found on a site without fetching full content), **crw_extract** (async multi-URL structured extraction), **crw_check_extract_status** (poll an extract job), **crw_cancel_extract** (cancel an extract job), **crw_search** (search the web and return content from matching pages), and **crw_parse_file** (parse files including PDFs to markdown). These correspond directly to CRW's REST endpoints.
 
 ### How do I debug MCP connection issues?
 

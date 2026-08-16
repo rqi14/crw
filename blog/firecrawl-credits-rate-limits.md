@@ -66,7 +66,7 @@ Forecast the worst month, not the average. Spiky workloads are where surprise ov
 
 All of the above assumes the only lever you have is "pick a bigger tier." That's true for hosted-only products. It is not true if your engine is open-core.
 
-fastCRW uses a 1-credit-per-page model with no separate extract subscription — JSON extraction is part of the scrape call under the same credit — so the credit estimate *is* the bill, not a floor. Its launch tiers undercut Firecrawl tier-for-tier ($13 vs $16 Hobby, $69 vs $83 Standard, $279 vs $333 Growth, $549 vs $599 Scale; launch pricing expires 2026-06-01). More importantly, the same engine is a single ~6MB AGPL-3.0 Rust binary you can self-host with **unlimited requests and no per-request credit at all**. That converts the "what if we blow the cap" risk from a budgeting problem into a deployment choice: when metering stops making sense, run the same Firecrawl-compatible API yourself.
+fastCRW uses a 1-credit-per-page model with no separate extract subscription — JSON extraction is part of the scrape call under the same credit — so the credit estimate *is* the bill, not a floor. Its launch tiers undercut Firecrawl tier-for-tier ($13 vs $16 Hobby, $69 vs $83 Standard, $279 vs $333 Growth, $549 vs $599 Scale; launch pricing expires 2026-06-01). More importantly, the same engine is a single ~10MB (compressed download) AGPL-3.0 Rust binary you can self-host with **unlimited requests and no per-request credit at all**. That converts the "what if we blow the cap" risk from a budgeting problem into a deployment choice: when metering stops making sense, run the same Firecrawl-compatible API yourself.
 
 ## Practical guardrails regardless of vendor
 
@@ -99,7 +99,7 @@ Because concurrency is often the binding limit before credits, treat it as a kno
 
 ## The structural fix, restated as a principle
 
-Every guardrail above manages a meter you do not control. The principle worth internalizing: *a cost model with no floor is a risk, not a budget.* An open-core engine puts a floor under the model — when credits or concurrency stop making economic sense, the same Firecrawl-compatible API runs on a single ~6MB AGPL-3.0 binary with no per-page meter and concurrency limited only by hardware you provision. You keep the credit model for convenience and keep the self-host option as the cap. That combination — predictable per-page credits with no extract dual-billing, plus an unmetered escape valve — is what turns credit and rate-limit planning from a recurring fire drill into a one-time architectural decision.
+Every guardrail above manages a meter you do not control. The principle worth internalizing: *a cost model with no floor is a risk, not a budget.* An open-core engine puts a floor under the model — when credits or concurrency stop making economic sense, the same Firecrawl-compatible API runs on a single ~10MB (compressed download) AGPL-3.0 binary with no per-page meter and concurrency limited only by hardware you provision. You keep the credit model for convenience and keep the self-host option as the cap. That combination — predictable per-page credits with no extract dual-billing, plus an unmetered escape valve — is what turns credit and rate-limit planning from a recurring fire drill into a one-time architectural decision.
 
 ## Sources
 

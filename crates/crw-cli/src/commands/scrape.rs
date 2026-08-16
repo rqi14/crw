@@ -111,7 +111,7 @@ pub async fn run(mut args: ScrapeArgs) -> Result<(), CmdError> {
         ..Default::default()
     };
 
-    // Load app config (config.toml) so we can pick up the user's LLM setup from `crw setup`.
+    // Load app config (config.toml) so we can pick up persisted LLM settings.
     let app_config = crw_core::config::AppConfig::load().unwrap_or_default();
     let mut cli_extraction_cfg = app_config.extraction.clone();
     let env_cdp_url = std::env::var("CRW_CDP_URL").ok();
@@ -199,8 +199,8 @@ pub async fn run(mut args: ScrapeArgs) -> Result<(), CmdError> {
                 Err(e) => {
                     eprintln!("error: LLM setup failed: {e}");
                     eprintln!(
-                        "hint: run `crw setup` to configure manually, \
-                         or pass --llm-provider/--llm-key/--llm-model."
+                        "hint: pass --llm-provider/--llm-key/--llm-model, \
+                         or add [extraction.llm] to config.toml."
                     );
                     return Err(CmdError::code_only(1));
                 }
@@ -511,9 +511,9 @@ pub async fn run(mut args: ScrapeArgs) -> Result<(), CmdError> {
     Ok(())
 }
 
-/// Print a one-line nudge to run `crw setup` the first time someone scrapes
-/// without a config.toml. Idempotent across runs via a dotfile sentinel so
-/// long-time CLI-only users (who never want setup) don't get nagged.
+/// Print one optional-capabilities hint after the first config-free scrape.
+/// Idempotent across runs via a dotfile sentinel so users who only need basic
+/// scraping are not repeatedly nudged toward setup.
 fn maybe_show_first_run_hint() {
     let Some(cfg_path) = crw_core::config::user_config_path() else {
         return;
@@ -525,11 +525,7 @@ fn maybe_show_first_run_hint() {
     if sentinel.exists() {
         return;
     }
-    eprintln!();
-    eprintln!(
-        "  Tip: run `crw setup` to enable AI features (--summary, --extract) and web search."
-    );
-    eprintln!();
+    eprintln!("  Optional: `crw setup` connects Cloud or adds local JS/search capabilities.");
     if let Some(parent) = sentinel.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -605,7 +601,7 @@ async fn run_inline_llm_setup()
 
 /// Parse a local document file (PDF) directly, bypassing the network fetch.
 /// Supports markdown/json/text/links output plus `--summary`/`--extract` when a
-/// server-side LLM is configured (via `crw setup`).
+/// server-side LLM is configured.
 async fn run_local_file(args: &ScrapeArgs) -> Result<(), CmdError> {
     let path = args.url.clone();
     let bytes = match std::fs::read(&path) {
@@ -702,7 +698,9 @@ async fn run_local_file(args: &ScrapeArgs) -> Result<(), CmdError> {
                 .await
     {
         eprintln!("error: {e}");
-        eprintln!("hint: run `crw setup` to configure an LLM for --summary/--extract.");
+        eprintln!(
+            "hint: pass --llm-provider/--llm-key/--llm-model, or add [extraction.llm] to config.toml."
+        );
         return Err(CmdError::code_only(1));
     }
 

@@ -94,106 +94,6 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Get ~/.local/bin directory (creating if needed).
-pub fn local_bin_dir() -> PathBuf {
-    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
-    home.join(".local").join("bin")
-}
-
-/// Configuration entry to add to shell RC file.
-#[derive(Clone)]
-pub struct ShellConfig {
-    /// Comment header for the config block.
-    pub header: String,
-    /// Lines to add (each line is a full shell command/export).
-    pub lines: Vec<String>,
-}
-
-impl ShellConfig {
-    /// Create a new shell config for CRW.
-    pub fn new() -> Self {
-        Self {
-            header: "CRW Configuration (added by crw setup)".to_string(),
-            lines: Vec::new(),
-        }
-    }
-
-    /// Add an export line.
-    pub fn export(&mut self, key: &str, value: &str) -> &mut Self {
-        self.lines.push(format!("export {}=\"{}\"", key, value));
-        self
-    }
-
-    /// Add a PATH modification.
-    pub fn add_to_path(&mut self, path: &str) -> &mut Self {
-        self.lines.push(format!("export PATH=\"{}:$PATH\"", path));
-        self
-    }
-
-    /// Generate the shell config block as a string.
-    pub fn generate(&self, shell: Shell) -> String {
-        let comment_prefix = match shell {
-            Shell::Fish => "#",
-            _ => "#",
-        };
-
-        let mut output = String::new();
-        output.push('\n');
-        output.push_str(&format!("{} {}\n", comment_prefix, self.header));
-
-        for line in &self.lines {
-            // Convert to fish syntax if needed
-            let converted = if shell == Shell::Fish {
-                convert_to_fish(line)
-            } else {
-                line.clone()
-            };
-            output.push_str(&converted);
-            output.push('\n');
-        }
-
-        output
-    }
-
-    /// Check if the config is already present in a file.
-    #[allow(dead_code)]
-    pub fn is_present_in(&self, content: &str) -> bool {
-        // Check if ALL lines are already present (line-based matching)
-        let content_lines: Vec<&str> = content.lines().map(|l| l.trim()).collect();
-        self.lines.iter().all(|line| {
-            let trimmed = line.trim();
-            content_lines.contains(&trimmed)
-        })
-    }
-
-    /// Filter out lines that are already present in content.
-    /// Uses line-based matching to avoid substring false positives.
-    pub fn filter_existing(&mut self, content: &str) {
-        let content_lines: Vec<&str> = content.lines().map(|l| l.trim()).collect();
-        self.lines.retain(|line| {
-            let trimmed = line.trim();
-            // Check if this exact line already exists
-            !content_lines.contains(&trimmed)
-        });
-    }
-}
-
-/// Convert bash export syntax to fish set syntax.
-fn convert_to_fish(line: &str) -> String {
-    if let Some(rest) = line.strip_prefix("export ")
-        && let Some((key, value)) = rest.split_once('=')
-    {
-        let value = value.trim_matches('"');
-        // Handle PATH specially
-        if key == "PATH" && value.contains("$PATH") {
-            let new_path = value.replace(":$PATH", "").replace("$PATH:", "");
-            return format!("fish_add_path {}", new_path);
-        }
-        return format!("set -gx {} {}", key, value);
-    }
-    line.to_string()
-}
-
 /// Write content to a file with secure permissions (0600 on Unix).
 #[cfg(unix)]
 fn write_secure(path: &PathBuf, content: &str) -> std::io::Result<()> {
@@ -215,41 +115,6 @@ fn write_secure(path: &PathBuf, content: &str) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn write_secure(path: &PathBuf, content: &str) -> std::io::Result<()> {
     std::fs::write(path, content)
-}
-
-/// Append configuration to a shell RC file (idempotent).
-pub fn append_to_rc(shell: Shell, config: &ShellConfig) -> Result<PathBuf, String> {
-    let rc_path =
-        get_rc_file(shell).ok_or_else(|| "Could not determine RC file path".to_string())?;
-
-    // Read existing content
-    let existing = if rc_path.exists() {
-        fs::read_to_string(&rc_path)
-            .map_err(|e| format!("Failed to read {}: {}", rc_path.display(), e))?
-    } else {
-        // Create parent directories if needed
-        if let Some(parent) = rc_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create {}: {}", parent.display(), e))?;
-        }
-        String::new()
-    };
-
-    // Filter out lines that already exist (idempotent)
-    let mut config = config.clone();
-    config.filter_existing(&existing);
-
-    // If all lines already exist, nothing to do
-    if config.lines.is_empty() {
-        return Ok(rc_path);
-    }
-
-    // Append only the new lines with secure permissions
-    let new_content = format!("{}{}", existing, config.generate(shell));
-    write_secure(&rc_path, &new_content)
-        .map_err(|e| format!("Failed to write {}: {}", rc_path.display(), e))?;
-
-    Ok(rc_path)
 }
 
 /// Result of `reset_rc`.
@@ -346,8 +211,8 @@ fn strip_crw_blocks(input: &str) -> (String, usize) {
     (cleaned, removed)
 }
 
-/// Recognize the exact line shapes `ShellConfig::generate` emits, plus the
-/// fish-syntax variants from `convert_to_fish`. Anything else stops the scan.
+/// Recognize the legacy line shapes older setup versions emitted. Anything
+/// else stops the scan so reset never consumes unrelated shell configuration.
 fn is_setup_generated_line(line: &str) -> bool {
     let l = line.trim_start();
     // bash/zsh
@@ -367,17 +232,6 @@ fn is_setup_generated_line(line: &str) -> bool {
     false
 }
 
-/// Get the source command for applying RC file changes.
-pub fn source_command(shell: Shell) -> Option<String> {
-    let rc_path = get_rc_file(shell)?;
-    let rc_str = rc_path.to_str()?;
-
-    match shell {
-        Shell::Fish => Some(format!("source {}", rc_str)),
-        _ => Some(format!("source {}", rc_str)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,26 +244,6 @@ mod tests {
             shell,
             Shell::Bash | Shell::Zsh | Shell::Fish | Shell::Unknown
         ));
-    }
-
-    #[test]
-    fn test_shell_config_generate() {
-        let mut config = ShellConfig::new();
-        config.export("CRW_API_KEY", "test-key");
-        config.add_to_path("$HOME/.local/bin");
-
-        let output = config.generate(Shell::Bash);
-        assert!(output.contains("export CRW_API_KEY=\"test-key\""));
-        assert!(output.contains("export PATH=\"$HOME/.local/bin:$PATH\""));
-    }
-
-    #[test]
-    fn test_convert_to_fish() {
-        assert_eq!(convert_to_fish("export FOO=\"bar\""), "set -gx FOO bar");
-        assert_eq!(
-            convert_to_fish("export PATH=\"$HOME/.local/bin:$PATH\""),
-            "fish_add_path $HOME/.local/bin"
-        );
     }
 
     // ---- strip_crw_blocks --------------------------------------------------

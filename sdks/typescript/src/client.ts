@@ -170,7 +170,7 @@ export class CrwClient {
 
   /**
    * Firecrawl-compatible Research API (cloud only). Mirrors the Firecrawl
-   * research SDK surface over `/v2/search/research/*`. Each method GETs the
+   * research SDK surface over `/v1/search/research/*`. Each method GETs the
    * hosted endpoint and returns its `{ success, ... }` payload verbatim.
    */
   get research() {
@@ -187,13 +187,13 @@ export class CrwClient {
     };
     return {
       searchPapers: (query: string, opts: ResearchSearchOptions = {}): Promise<Json> =>
-        get("/v2/search/research/papers", { query, ...opts }),
+        get("/v1/search/research/papers", { query, ...opts }),
       getPaper: (id: string, opts: ResearchReadOptions = {}): Promise<Json> =>
-        get(`/v2/search/research/papers/${encodeURIComponent(id)}`, { ...opts }),
+        get(`/v1/search/research/papers/${encodeURIComponent(id)}`, { ...opts }),
       similarPapers: (id: string, opts: ResearchSimilarOptions): Promise<Json> =>
-        get(`/v2/search/research/papers/${encodeURIComponent(id)}/similar`, { ...opts }),
+        get(`/v1/search/research/papers/${encodeURIComponent(id)}/similar`, { ...opts }),
       searchGithub: (query: string, opts: { k?: number } = {}): Promise<Json> =>
-        get("/v2/search/research/github", { query, ...opts }),
+        get("/v1/search/research/github", { query, ...opts }),
     };
   }
 

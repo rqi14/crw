@@ -53,8 +53,7 @@ use teardown::{CmdError, finish, install_signal_teardown};
         curl -fsSL https://fastcrw.com/install | sh\n\n\
         DOCS:    https://docs.fastcrw.com  ·  https://github.com/us/crw\n\
         CLOUD:   https://fastcrw.com (500 free credits, no monthly reset)\n\
-        SEARCH:  `crw setup --local` boots a JSON-enabled search backend on 127.0.0.1:8080.\n\
-        \x20        Public instances (searx.be, priv.au, ...) usually block JSON requests.\n\
+        SEARCH:  `crw setup` connects Cloud; `crw setup --local` adds a private local backend.\n\
         "
 )]
 struct Cli {
@@ -140,7 +139,7 @@ enum Commands {
     /// Scrape a single URL and output content
     Scrape(commands::scrape::ScrapeArgs),
 
-    /// Web search via the built-in search backend
+    /// Web search via CRW Cloud or a configured local backend
     Search(commands::search::SearchArgs),
 
     /// BFS crawl a website starting from a URL
@@ -163,6 +162,12 @@ enum Commands {
 
     /// Interactive setup wizard (Cloud or Local)
     Setup(commands::setup::SetupArgs),
+
+    /// Read-only diagnostics: config, renderer, search, LLM, proxy, ports
+    Doctor(commands::doctor::DoctorArgs),
+
+    /// Deterministic, offline-by-default sanity checks across surfaces
+    Smoke(commands::smoke::SmokeArgs),
 }
 
 #[tokio::main]
@@ -229,6 +234,8 @@ async fn main() {
             commands::setup::run(args).await;
             Ok(())
         }
+        Some(Commands::Doctor(args)) => commands::doctor::run(args).await,
+        Some(Commands::Smoke(args)) => commands::smoke::run(args).await,
         None => {
             // Default mode: scrape (backwards compatible). This is the most
             // common invocation (`crw example.com --js`) — it must route

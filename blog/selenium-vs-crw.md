@@ -113,7 +113,6 @@ Compare with CRW:
 
 ```
 docker run -p 3000:3000 ghcr.io/us/crw:latest
-# Image size: ~8 MB
 # Includes: single Rust binary, nothing else
 ```
 

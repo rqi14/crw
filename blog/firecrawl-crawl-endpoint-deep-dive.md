@@ -106,7 +106,7 @@ When validating a migration, the crawl checks that matter are: same discovered U
 
 ## Self-hosting changes the crawl economics entirely
 
-Every cost trap above assumes per-page metering. fastCRW's engine is a single ~6MB AGPL-3.0 Rust binary you can self-host with **unlimited requests and zero per-page credit**. For site-scale recurring crawls — the exact workload where credit cost compounds worst — that turns "what will this crawl cost" into "it runs on the box I already pay for." You keep the Firecrawl-compatible crawl API; you remove the meter. And because the managed cloud uses the same API, you can prototype managed and move heavy recurring crawls in-house later with a base-URL change, not a rewrite.
+Every cost trap above assumes per-page metering. fastCRW's engine is a single ~10MB (compressed download) AGPL-3.0 Rust binary you can self-host with **unlimited requests and zero per-page credit**. For site-scale recurring crawls — the exact workload where credit cost compounds worst — that turns "what will this crawl cost" into "it runs on the box I already pay for." You keep the Firecrawl-compatible crawl API; you remove the meter. And because the managed cloud uses the same API, you can prototype managed and move heavy recurring crawls in-house later with a base-URL change, not a rewrite.
 
 ## Crawl safety checklist
 
@@ -168,4 +168,4 @@ Always set an explicit limit, constrain depth, and use include/exclude path patt
 
 ### Can I avoid per-page crawl credits entirely?
 
-Self-host fastCRW's open-core engine — a single ~6MB AGPL-3.0 Rust binary with unlimited requests and no per-page credit, exposing the same Firecrawl-compatible crawl API. Ideal for heavy recurring site crawls where metering compounds.
+Self-host fastCRW's open-core engine — a single ~10MB (compressed download) AGPL-3.0 Rust binary with unlimited requests and no per-page credit, exposing the same Firecrawl-compatible crawl API. Ideal for heavy recurring site crawls where metering compounds.

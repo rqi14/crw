@@ -8,7 +8,7 @@ Firecrawl-compatible API server for the [CRW](https://github.com/us/crw) web scr
 
 ## Overview
 
-`crw-server` is the main CRW binary — an Axum-based HTTP server that provides a Firecrawl-compatible REST API and built-in MCP transport. Single binary, ~6 MB idle RAM, no Redis, no Node.js.
+`crw-server` is the main CRW binary — an Axum-based HTTP server that provides a Firecrawl-compatible REST API and built-in MCP transport. Single binary, ~14 MB idle RAM, no Redis, no Node.js.
 
 - **Firecrawl-compatible API** — `/v1/scrape`, `/v1/crawl`, `/v1/map` with identical request/response format
 - **MCP transport** — Built-in Streamable HTTP MCP endpoint at `/mcp` for Claude Code, Cursor, Windsurf
@@ -154,15 +154,10 @@ async fn main() {
 
 This crate is part of the [CRW](https://github.com/us/crw) workspace — a fast, lightweight, Firecrawl-compatible web scraper built in Rust.
 
-| Crate | Description |
-|-------|-------------|
-| [crw-core](https://crates.io/crates/crw-core) | Core types, config, and error handling |
-| [crw-renderer](https://crates.io/crates/crw-renderer) | HTTP + CDP browser rendering engine |
-| [crw-extract](https://crates.io/crates/crw-extract) | HTML → markdown/plaintext extraction |
-| [crw-crawl](https://crates.io/crates/crw-crawl) | Async BFS crawler with robots.txt & sitemap |
-| **crw-server** | Firecrawl-compatible API server (this crate) |
-| [crw-cli](https://crates.io/crates/crw-cli) | Standalone CLI (`crw` binary) |
-| [crw-mcp](https://crates.io/crates/crw-mcp) | MCP stdio proxy binary |
+This crate (`crw-server`) is the Axum HTTP API - both a library (embedded by
+`crw-cli` for `crw serve`) and its own binary (the production container
+entrypoint). For the full crate table and dependency graph, see
+[docs.fastcrw.com/architecture/](https://docs.fastcrw.com/architecture/).
 
 ## License
 

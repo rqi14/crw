@@ -18,7 +18,7 @@
 <p>A managed proxy is just an HTTP proxy URL with credentials: <code>http://user-session-abc:pass@brd.superproxy.io:22225</code>. You pass that URL to the scraper per request, and the scraper forwards every outbound fetch through it. Sticky sessions, geo-targeting, and country-level rotation are controlled by encoding session tokens into the username — every major provider supports this pattern. Rotation happens entirely inside the proxy network; the scraper doesn't have to know.</p>
 
 <h2>How fastCRW does it</h2>
-<p>fastCRW accepts a per-request <code>proxy</code> parameter on <a href="/api-reference/scrape/">/v1/scrape</a> and <a href="/api-reference/crawl/">/v1/crawl</a>. Pass the proxy URL — including credentials — and the Rust client uses it for the outbound fetch; sticky-session usernames work transparently. The same self-hosted binary can be pointed at a different proxy per request, so you can route by target hostname, by tenant, or by geo. See <a href="/scraping/">scraping</a> and <a href="/configuration/">configuration</a> for the full request shape.</p>
+<p>fastCRW accepts a per-request <code>proxy</code> parameter on <a href="/scraping/">/v1/scrape</a> and <a href="/crawling/">/v1/crawl</a>. Pass the proxy URL — including credentials — and the Rust client uses it for the outbound fetch; sticky-session usernames work transparently. The same self-hosted binary can be pointed at a different proxy per request, so you can route by target hostname, by tenant, or by geo. See <a href="/scraping/">scraping</a> and <a href="/configuration/">configuration</a> for the full request shape.</p>
 
 <h2>Frequently asked</h2>
 <dl>

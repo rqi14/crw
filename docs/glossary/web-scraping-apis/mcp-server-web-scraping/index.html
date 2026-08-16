@@ -14,18 +14,19 @@
 <p>The Model Context Protocol is an open spec (originated by Anthropic, now multi-vendor) that lets an AI host talk to external tools over a typed JSON-RPC channel — either local stdio or remote HTTP/SSE. The host gets a list of available tools with input schemas; the model picks one and the host invokes it. From the model's point of view the tool is a function with named arguments and a structured return value.</p>
 
 <h2>What a scraping MCP server exposes</h2>
-<p>A scraping-flavoured MCP server typically registers four to five tools, each backed by an underlying scraping API:</p>
+<p>A scraping-flavoured MCP server registers a set of tools, each backed by an underlying scraping API. fastCRW's own MCP server registers nine:</p>
 <ul>
-  <li><code>scrape</code> — fetch a single URL as markdown or HTML.</li>
-  <li><code>crawl</code> — start a multi-page job and stream results back.</li>
-  <li><code>map</code> — enumerate URLs on a domain.</li>
-  <li><code>extract</code> — pull structured fields out of one or many URLs using an LLM.</li>
-  <li><code>search</code> — web search with optional inline scrape.</li>
+  <li><code>scrape</code>: fetch a single URL as markdown or HTML.</li>
+  <li><code>crawl</code> and <code>check crawl status</code>: start a multi-page job and poll its progress.</li>
+  <li><code>map</code>: enumerate URLs on a domain.</li>
+  <li><code>extract</code>, <code>check extract status</code>, and <code>cancel extract</code>: pull structured fields out of one or many URLs using an LLM.</li>
+  <li><code>search</code>: web search with optional inline scrape, only registered when a search backend is configured.</li>
+  <li><code>parse file</code>: parse an uploaded file into structured content.</li>
 </ul>
 <p>The model never sees the HTTP wire format. It sees a tool called <code>scrape</code> with arguments <code>{url, formats}</code> and gets back markdown directly.</p>
 
 <h2>How fastCRW does it</h2>
-<p>fastCRW ships <a href="/mcp/">crw-mcp</a> as an npm package. Add it to a client config (Claude Desktop's <code>claude_desktop_config.json</code>, Cursor's MCP settings, or any other host) and the five tools above appear without further wiring. The server talks to either the hosted API at <code>https://api.fastcrw.com</code> or a local self-hosted instance at <code>http://localhost:3000</code> via env var. See the <a href="/mcp-clients/">MCP clients page</a> for client-specific configuration snippets.</p>
+<p>fastCRW ships <a href="/mcp/">crw-mcp</a> as an npm package. Add it to a client config (Claude Desktop's <code>claude_desktop_config.json</code>, Cursor's MCP settings, or any other host) and the nine tools above appear without further wiring (eight without a search backend configured). The server talks to either the hosted API at <code>https://api.fastcrw.com</code> or a local self-hosted instance at <code>http://localhost:3000</code> via env var. See the <a href="/mcp-clients/">MCP clients page</a> for client-specific configuration snippets.</p>
 
 <h2>Frequently asked</h2>
 <dl>

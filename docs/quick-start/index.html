@@ -364,8 +364,13 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 </tr>
 <tr>
 <td><code>429 Too Many Requests</code></td>
-<td>You hit the rate limit (not out of credits)</td>
-<td>Wait a few seconds and retry; see <a href="rate-limits.md">Rate Limits</a> for burst and per-minute limits</td>
+<td>Rate limit, per-plan concurrency cap, <strong>or</strong> (free plan only) your one-time 500-credit lifetime allowance is exhausted</td>
+<td>For rate/concurrency limits, wait a few seconds and retry — see <a href="/docs/rate-limits">Rate Limits</a>. For an exhausted free allowance, upgrade or buy a credit pack</td>
+</tr>
+<tr>
+<td><code>402 Payment Required</code></td>
+<td>A paid plan&#39;s auto-recharge stopped (spending cap reached, card declined, bank confirmation needed, or no card on file)</td>
+<td>Fix the payment method or spending cap in billing settings, then retry</td>
 </tr>
 <tr>
 <td><code>&quot;markdown&quot;: &quot;&quot;</code> (empty string)</td>
@@ -385,7 +390,7 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <p>MCP (Model Context Protocol) is a standard that lets AI assistants call external tools — in this case, live web scraping — without you writing any glue code. If your goal is to give Claude, Cursor, Windsurf, or another MCP-compatible assistant live web access, this is the fastest way to do it.</p>
 <p><strong>Requires Node.js 18+</strong> (<a href="https://nodejs.org/en/download/">nodejs.org/en/download</a>).</p>
 <pre data-lang="bash"><code class="language-bash">claude mcp add crw -- npx -y crw-mcp</code></pre>
-<p>Once registered, your AI assistant gains eight web tools (<code>crw_scrape</code>, <code>crw_crawl</code>, <code>crw_check_crawl_status</code>, <code>crw_map</code>, <code>crw_extract</code>, <code>crw_check_extract_status</code>, <code>crw_search</code> (web search; available when a search backend is configured), and <code>crw_parse_file</code>). On the next conversation turn the assistant can call them automatically whenever it needs to fetch a live page or run a crawl. No further setup is needed for the embedded mode.</p>
+<p>Once registered, your AI assistant gains nine web tools (<code>crw_scrape</code>, <code>crw_crawl</code>, <code>crw_check_crawl_status</code>, <code>crw_map</code>, <code>crw_extract</code>, <code>crw_check_extract_status</code>, <code>crw_cancel_extract</code>, <code>crw_search</code> (web search; available when a search backend is configured), and <code>crw_parse_file</code>). On the next conversation turn the assistant can call them automatically whenever it needs to fetch a live page or run a crawl. No further setup is needed for the embedded mode.</p>
 <p>For client-specific config files (Codex, Cursor, Windsurf, Cline, Continue.dev) and the proxy mode that connects to the fastcrw.com cloud, see <a href="mcp.md">MCP Server</a>.</p>
 </article>
     </main>

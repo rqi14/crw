@@ -1,496 +1,118 @@
 <p align="center">
-  <a href="https://fastcrw.com">
-    <img src="docs/fastcrw-banner.png" alt="fastCRW" height="120" />
-  </a>
-  <p align="center">为 AI 代理打造的网页抓取工具。单一可执行文件。零配置。</p>
-  <p align="center">
-    <a href="https://crates.io/crates/crw-server"><img src="https://img.shields.io/crates/v/crw-server.svg" alt="crates.io"></a>
-    <a href="https://github.com/us/crw/actions"><img src="https://github.com/us/crw/workflows/CI/badge.svg" alt="CI"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License"></a>
-    <a href="https://github.com/us/crw/stargazers"><img src="https://img.shields.io/github/stars/us/crw?style=social" alt="GitHub Stars"></a>
-    <a href="https://fastcrw.com"><img src="https://img.shields.io/badge/Managed%20Cloud-fastcrw.com-blueviolet" alt="fastcrw.com"></a>
-  </p>
-  <p align="center">
-    适用于: Claude Code · Cursor · Windsurf · Cline · Copilot · Continue.dev · Codex
-  </p>
-  <p align="center">
-    <a href="docs/docs/mcp.md">MCP 集成</a> &bull;
-    <a href="docs/docs/installation.md">安装指南</a> &bull;
-    <a href="docs/docs/rest-api.md">API 参考</a> &bull;
-    <a href="https://fastcrw.com">云服务</a> &bull;
-    <a href="docs/docs/js-rendering.md">JS 渲染</a> &bull;
-    <a href="docs/docs/configuration.md">配置说明</a>
-  </p>
-  <p align="center">
-    <a href="README.md">English</a> | <b>中文</b>
-  </p>
+  <img src="docs/logo-animation.gif" alt="fastCRW" width="180" />
 </p>
 
----
+<h1 align="center">fastCRW</h1>
 
-> **不想自托管？** [fastcrw.com](https://fastcrw.com) 是托管云服务 — 全球代理网络、自动扩展、仪表板和 API 密钥。相同的 Firecrawl 兼容 API。[获取 500 个免费额度 →](https://fastcrw.com)
+<p align="center">
+  使用同一个引擎完成搜索、抓取、URL 发现、整站爬取和结构化提取，
+  将网页转换为干净的 <strong>Markdown</strong> 或结构化 <strong>JSON</strong>。
+</p>
 
-CRW 是为 AI 代理打造的开源网页抓取工具。内置 MCP 服务器（stdio + HTTP），单一静态二进制文件，空闲内存约 ~50 MB。30 秒内为 Claude Code、Cursor 或任何 MCP 客户端赋予网页抓取能力。在 Firecrawl 自己的 1,000-URL 公开数据集上，真值召回率、中位延迟与快速模式 P90 尾延迟均领先。
+<p align="center">
+  <a href="#安装"><strong>本地运行 ↓</strong></a> ·
+  <a href="https://fastcrw.com/register"><strong>使用托管 API</strong></a> ·
+  <a href="https://docs.fastcrw.com"><strong>文档</strong></a> ·
+  <a href="README.md"><strong>English</strong></a>
+</p>
 
-**内置 MCP 服务器。单一二进制文件。无 Redis。无 Node.js。**
+在 Firecrawl 的公开数据集上，fastCRW 的 truth-recall 为 **63.74%**，
+Crawl4AI 为 59.95%，Firecrawl 为 56.04%；p50 延迟为 **1,914 ms**，
+空闲内存约 **14 MB**。完整方法和复现命令见 [BENCHMARKS.md](BENCHMARKS.md)。
+
+<p align="center">
+  <a href="BENCHMARKS.md">
+    <img src=".github/benchmarks/bench-radar.svg" alt="fastCRW 与 Crawl4AI、Firecrawl 的性能对比" width="100%">
+  </a>
+</p>
+
+## 安装
 
 ```bash
-# 一键安装（自动检测操作系统和架构）：
 curl -fsSL https://fastcrw.com/install | sh
-
-# npm（零安装）：
-npx crw-mcp
-
-# Python：
-pip install crw
-
-# Cargo：
-cargo install crw-mcp
-
-# Docker：
-docker run -i ghcr.io/us/crw crw-mcp
 ```
 
-## 最新动态
+安装后即可开始抓取；基础本地使用无需账号、API Key 或 setup。其他安装方式见
+[安装指南](https://docs.fastcrw.com/installation/)。
 
-### v0.0.12
+## 五个核心操作
 
-- **可读性深入搜索** — 宽泛的 `<main>`/`<article>` 元素现在会搜索内部更精确的内容元素，而不是被丢弃。修复 MDN、StackOverflow 内容提取
-- **Base64 图片清除** — 在 HTML 清洗和 Markdown 后处理两层清除 `data:` URI 图片。消除 Reddit 等网站的大量 base64 数据
-- **Select/下拉框移除** — 内容模式下移除 `<select>` 元素和下拉框噪声模式
-- **扩展选择器** — 新增 MDN、StackOverflow 和通用网站选择器，提升覆盖率
-- **更智能的后备链** — 两条后备路径都会尝试，选择内容最长的结果
+| 操作 | 结果 |
+|---|---|
+| **Scrape** | 将单个 URL 转换为 Markdown、HTML、链接、截图或结构化 JSON |
+| **Crawl** | 在设定范围内爬取网站并收集页面 |
+| **Map** | 快速发现网站中的 URL |
+| **Search** | 搜索网页，并按需抓取搜索结果 |
+| **Extract** | 按 JSON Schema 从一个或多个 URL 提取字段 |
 
-### v0.0.11
+完整请求和响应格式请查看 [API 参考](https://docs.fastcrw.com/#rest-api)。
 
-- **隐身反爬绕过** — 自动注入隐身 JS，绕过 Cloudflare 等反爬检测
-- **Cloudflare 挑战重试** — 自动检测 JS 挑战页面，最多轮询 3 次等待自动解决
-- **HTTP 到 CDP 自动升级** — 反爬挑战响应自动使用 JS 渲染器重试
-- **Chrome 故障转移** — 完整的故障转移链：HTTP → LightPanda → Chrome
-- **Chrome Docker 边车** — `docker compose up` 现在同时包含 Chrome 和 LightPanda
+## 选择使用方式
 
-### v0.0.10
-
-- **爬取取消端点** — `DELETE /v1/crawl/{id}` 取消正在运行的爬取任务
-- **API 速率限制** — 令牌桶速率限制器，超限返回 429
-- **机器可读错误码** — 所有错误响应新增 `error_code` 字段
-- **围栏代码块** — 缩进代码块自动转换为围栏格式，提升 LLM 兼容性
-- **Sphinx/文档清洗** — footer 噪声、锚点伪影、ARIA 角色元素移除
-
-[完整更新日志 →](CHANGELOG.md)
-
-## 为什么选择 CRW？
-
-CRW 提供 Firecrawl 的 API，但资源占用极低。无运行时依赖，无 Redis，无 Node.js — 只需一个二进制文件即可部署到任何地方。
-
-与基准测试中相同的两个最常被引用的替代方案对比。数值来自下方可复现基准（`diagnose_3way.py`，2026-05-08），其余为定性描述。
-
-| 指标 | **fastCRW** | Firecrawl | Crawl4AI |
-|---|---|---|---|
-| **真值召回率**（522/819 标注 URL） | **63.74%** | 56.04% | 59.95% |
-| **P50 延迟** | **1,914ms** | 2,305ms | 1,916ms |
-| **P90 延迟**（快速模式） | **4,348ms** | 6,937ms | 4,754ms |
-| 抛出错误（3,000 请求） | 0 | 0 | 0 |
-| **空闲内存** | **~50 MB** | 大（Chromium 常驻堆） | 大（Chromium 常驻堆） |
-| **安装体积** | 单一静态二进制（~8 MB） | 多容器（~500 MB+ 镜像） | ~2 GB 镜像（含浏览器） |
-| **MCP 服务器** | 内置（`crw-mcp`） | 独立包 | 社区插件 |
-| **托管选项** | `api.fastcrw.com`（BYOK 或托管） | firecrawl.dev | 无官方 |
-| **依赖** | 单一二进制 | Node + Redis + PG + RabbitMQ | Python + Playwright |
-| **许可证** | AGPL-3.0（提供商业授权） | AGPL-3.0（提供商业授权） | Apache-2.0 |
-
-<details>
-<summary><b>完整基准测试详情</b></summary>
-
-**三方抓取基准测试** — 基于 [Firecrawl scrape-content-dataset-v1](https://huggingface.co/datasets/firecrawl/scrape-content-dataset-v1) 完整 1,000 个 URL 运行（`diagnose_3way.py`，2026-05-08，并发 5，超时 120s）：
-- fastCRW 在每个维度均领先 — 最高真值召回率、最快中位延迟、最低 P90 尾延迟
-- 3,000 次请求 **0 抛出错误**
-- fastCRW 独家找回其他两者都遗漏的 **34 个 URL**（比 crawl4ai 与 Firecrawl 之和多 70%）
-- 63.74% 的分母是 819 个标注/可匹配 URL，而非 3,000 次请求或 1,000
-
-**资源对比：**
-
-| 指标 | fastCRW | Firecrawl |
-|---|---|---|
-| 空闲内存 | ~50 MB | 大（Chromium 常驻堆，~500 MB+） |
-| 安装体积 | 单一静态二进制（~8 MB） | 多容器（~500 MB+ 镜像） |
-| 容器数量 | 1（+可选边车） | 5（Node.js、Redis、PostgreSQL、RabbitMQ、Playwright） |
-
-</details>
-
-## 功能特性
-
-- **🔧 MCP 服务器** — 内置 stdio + HTTP 传输，支持 Claude Code、Cursor、Windsurf 及任何 MCP 客户端
-- **🔌 兼容 Firecrawl API** — 相同端点、相同请求/响应格式，可直接替换
-- **📄 6 种输出格式** — Markdown、HTML、清洁 HTML、原始 HTML、纯文本、链接、结构化 JSON
-- **🤖 LLM 结构化提取** — 发送 JSON Schema，获取经验证的结构化数据（Anthropic tool_use + OpenAI function calling）
-- **🌐 JS 渲染** — 通过 Shell 启发式自动检测 SPA，通过 LightPanda、Playwright 或 Chrome（CDP）渲染
-- **🕷️ BFS 爬虫** — 异步爬取，支持速率限制、robots.txt、站点地图、并发任务
-- **🔒 身份验证** — 可选的 Bearer Token，常量时间比较
-- **🐳 Docker 就绪** — 多阶段构建，含 LightPanda 边车
-
-## 云服务 vs 自托管
-
-| 特性 | 自托管 | 云服务（[fastcrw.com](https://fastcrw.com)） |
-|---|---|---|
-| **部署** | `cargo install crw-server` | 注册 → 获取 API 密钥 |
-| **基础设施** | 自行管理 | 完全托管 |
-| **代理** | 自备 | 全球代理网络 |
-| **扩展** | 手动 | 自动扩展 |
-| **API** | 兼容 Firecrawl | 相同的 Firecrawl 兼容 API |
-
-两者使用相同的 Firecrawl 兼容 API — 只需更改 base URL 即可在自托管和云服务之间切换。
-
-## 快速开始
-
-**MCP（AI 代理 — 推荐）：**
+### CLI
 
 ```bash
-claude mcp add crw -- npx -y crw-mcp
-```
-
-> 完成。Claude Code 现在拥有 `crw_scrape`、`crw_crawl`、`crw_check_crawl_status`、`crw_map`、`crw_parse_file` 工具（`crw_search` 在配置搜索后端后自动出现）。Cursor、Windsurf、Cline 等 MCP 客户端请参见 [MCP 服务器](#mcp-服务器)。
-
-**CLI（无需服务器）：**
-
-```bash
-cargo install crw-cli
 crw https://example.com
+crw search "rust async runtime"
 ```
 
-**自托管服务器：**
+### REST 与 SDK
+
+请查看 [REST API 参考](https://docs.fastcrw.com/#rest-api)、
+[Python SDK](https://docs.fastcrw.com/sdk-examples/#python) 和
+[Node.js SDK](https://docs.fastcrw.com/sdk-examples/#typescript)。
+
+### MCP / AI Agent
 
 ```bash
-cargo install crw-server
-crw-server
+npx -y crw-mcp@latest install
 ```
 
-**启用 JS 渲染（可选）：**
+该命令会为检测到的受支持 Agent 注册 CRW skill 和 MCP server。
+未提供 API Key 时使用本地嵌入式引擎。各客户端的手动配置见
+[MCP 客户端文档](https://docs.fastcrw.com/mcp-clients/)。
+
+### 可选 Setup
 
 ```bash
-crw-server setup
+crw setup
 ```
 
-自动下载 [LightPanda](https://github.com/lightpanda-io/browser) 并创建 `config.local.toml` 配置文件。详见 [JS 渲染](#js-渲染)。
+仅在连接 Cloud API Key，或添加本地浏览器渲染和网页搜索时运行 setup。
+只有首次使用 `--summary` 或 `--extract` 时才会询问 LLM provider。
 
-**云服务（无需部署）：**
+## 托管与自托管
 
-```bash
-curl -X POST https://fastcrw.com/api/v1/scrape \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com"}'
-```
+托管和自托管都提供核心引擎操作，但可用能力、计费字段及部分响应封装
+可能不同。不要假设只修改 base URL 就能让所有部署完全一致；请检查
+[`/v1/capabilities`](https://docs.fastcrw.com/capabilities/) 和
+[响应格式指南](https://docs.fastcrw.com/response-shapes/)。
 
-> 在 [fastcrw.com](https://fastcrw.com) 获取 API 密钥 — 包含 500 个免费额度。
-
-**Docker：**
-
-```bash
-docker run -p 3000:3000 ghcr.io/us/crw:latest
-```
-
-**Docker Compose（含 JS 渲染）：**
-
-```bash
-docker compose up
-```
-
-还有一个**可选的 [Camoufox](https://github.com/daijro/camoufox) 隐身渲染层**（REST 边车，需手动启用），用于绕过 CDP 渲染器无法通过的指纹 / 反爬封锁——默认关闭，除非显式开启，否则绝不会进入 `auto` 链。需使用 `--features camoufox` 构建；详见 [JS 渲染 → Camoufox](https://docs.fastcrw.com/#js-渲染)。
-
-**抓取网页：**
-
-```bash
-curl -X POST http://localhost:3000/v1/scrape \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com"}'
-```
-
-```json
-{
-  "success": true,
-  "data": {
-    "markdown": "# Example Domain\nThis domain is for use in ...",
-    "metadata": {
-      "title": "Example Domain",
-      "sourceURL": "https://example.com",
-      "statusCode": 200,
-      "elapsedMs": 32
-    }
-  }
-}
-```
-
-## 使用场景
-
-- **RAG 流水线** — 爬取网站并提取结构化数据用于向量数据库
-- **AI 代理** — 通过 MCP 为 Claude Code 或 Claude Desktop 提供网页抓取工具
-- **内容监控** — 定期爬取并使用 LLM 提取来跟踪变化
-- **数据提取** — 结合 CSS 选择器 + LLM 从任何页面提取任意 Schema
-- **网页归档** — 全站 BFS 爬取转为 Markdown
-
-## API 端点
-
-| 方法 | 端点 | 描述 |
-|------|------|------|
-| `POST` | `/v1/scrape` | 抓取单个 URL，可选 LLM 提取 |
-| `POST` | `/v1/crawl` | 启动异步 BFS 爬取（返回任务 ID） |
-| `GET` | `/v1/crawl/:id` | 查询爬取状态并获取结果 |
-| `DELETE` | `/v1/crawl/:id` | 取消正在运行的爬取任务 |
-| `POST` | `/v1/map` | 发现网站上的所有 URL |
-| `GET` | `/health` | 健康检查（无需认证） |
-| `POST` | `/mcp` | Streamable HTTP MCP 传输 |
-
-## LLM 结构化提取
-
-在抓取请求中发送 JSON Schema，CRW 将使用 LLM 函数调用返回经验证的结构化数据。
-
-```bash
-curl -X POST http://localhost:3000/v1/scrape \
-  -H "Content-Type: application/json" \
-  -d '{
-    "url": "https://example.com/product",
-    "formats": ["json"],
-    "jsonSchema": {
-      "type": "object",
-      "properties": {
-        "name": { "type": "string" },
-        "price": { "type": "number" }
-      },
-      "required": ["name", "price"]
-    }
-  }'
-```
-
-- **Anthropic** — 使用 `tool_use` 的 `input_schema` 进行提取
-- **OpenAI** — 使用 function calling 的 `parameters` Schema
-- **验证** — LLM 输出在返回前会根据你的 JSON Schema 进行验证
-
-在配置中设置 LLM 提供商：
-
-```toml
-[extraction.llm]
-provider = "anthropic"        # "anthropic" 或 "openai"
-api_key = "sk-..."            # 或 CRW_EXTRACTION__LLM__API_KEY 环境变量
-model = "claude-sonnet-4-20250514"
-```
-
-## MCP 服务器
-
-CRW 可作为 Claude Code 和 Claude Desktop 的 MCP 工具服务器，支持两种传输方式。
-
-**安装：**
-
-```bash
-# 一键安装（自动检测操作系统和架构）：
-curl -fsSL https://fastcrw.com/install | sh
-
-# npm（零安装）：
-npx crw-mcp
-
-# Python：
-pip install crw
-
-# Cargo：
-cargo install crw-mcp
-
-# Docker：
-docker run -i ghcr.io/us/crw crw-mcp
-```
-
-**Claude Code：**
-
-```bash
-claude mcp add crw -- npx -y crw-mcp
-```
-
-**其他 MCP 客户端配置：**
-
-```json
-{
-  "mcpServers": {
-    "crw": {
-      "command": "npx",
-      "args": ["crw-mcp"]
-    }
-  }
-}
-```
-
-**工具（共 6 个）：** `crw_scrape`、`crw_crawl`、`crw_check_crawl_status`、`crw_map`、`crw_parse_file`（本地 PDF 转 Markdown）、`crw_search`（配置搜索后端后可用；云模式始终可用）
-
-## JS 渲染
-
-CRW 通过分析初始 HTML 响应的 Shell 启发式方法（空 body、框架标记）自动检测 SPA。检测到 SPA 时，会通过无头浏览器渲染页面。
-
-**快速设置（推荐）：**
-
-```bash
-crw-server setup
-```
-
-自动下载 LightPanda 二进制文件到 `~/.local/bin/` 并创建正确的渲染器配置。然后启动 LightPanda 和 CRW：
-
-```bash
-lightpanda serve --host 127.0.0.1 --port 9222 --block-private-networks &
-crw-server
-```
-
-**支持的渲染器：**
-
-| 渲染器 | 协议 | 最适用于 |
-|--------|------|----------|
-| LightPanda | CDP over WebSocket | 低资源环境（默认） |
-| Playwright | CDP over WebSocket | 完整浏览器兼容性 |
-| Chrome | CDP over WebSocket | 现有 Chrome 基础设施 |
-
-渲染器模式通过 `renderer.mode` 配置：`auto`（默认）、`lightpanda`、`playwright`、`chrome` 或 `none`。
-
-使用 Docker Compose 时，LightPanda 作为边车运行 — 无需额外设置：
-
-```bash
-docker compose up
-```
-
-## 架构
-
-```
-┌─────────────────────────────────────────────┐
-│                 crw-server                  │
-│         Axum HTTP API + Auth + MCP          │
-├──────────┬──────────┬───────────────────────┤
-│ crw-crawl│crw-extract│    crw-renderer      │
-│ BFS crawl│ HTML→MD   │  HTTP + CDP(WS)      │
-│ robots   │ LLM/JSON  │  LightPanda/Chrome   │
-│ sitemap  │ clean/read│  auto-detect SPA     │
-├──────────┴──────────┴───────────────────────┤
-│                 crw-core                    │
-│        Types, Config, Errors                │
-└─────────────────────────────────────────────┘
-```
-
-## 配置
-
-CRW 使用分层 TOML 配置，支持环境变量覆盖：
-
-1. `config.default.toml` — 内置默认值
-2. `config.local.toml` — 本地覆盖（或设置 `CRW_CONFIG=myconfig`）
-3. 环境变量 — `CRW_` 前缀，`__` 分隔符（例如 `CRW_SERVER__PORT=8080`）
-
-```toml
-[server]
-host = "0.0.0.0"
-port = 3000
-rate_limit_rps = 10        # 每秒最大请求数（全局）。0 = 无限制。
-
-[renderer]
-mode = "auto"  # auto | lightpanda | playwright | chrome | none
-
-[crawler]
-max_concurrency = 10
-requests_per_second = 10.0
-respect_robots_txt = true
-
-[auth]
-# api_keys = ["crw_live_key-1234"]
-```
-
-查看[完整配置参考](docs/zh-CN/configuration.md)了解所有选项。
-
-## 集成示例
-
-**Python：**
-
-```python
-import requests
-
-response = requests.post("http://localhost:3000/v1/scrape", json={
-    "url": "https://example.com",
-    "formats": ["markdown", "links"]
-})
-data = response.json()["data"]
-print(data["markdown"])
-```
-
-**Node.js：**
-
-```javascript
-const response = await fetch("http://localhost:3000/v1/scrape", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    url: "https://example.com",
-    formats: ["markdown", "links"]
-  })
-});
-const { data } = await response.json();
-console.log(data.markdown);
-```
-
-**LangChain 文档加载器模式：**
-
-```python
-import requests
-
-def load_documents(urls):
-    documents = []
-    for url in urls:
-        resp = requests.post("http://localhost:3000/v1/scrape", json={
-            "url": url,
-            "formats": ["markdown"]
-        })
-        data = resp.json()["data"]
-        documents.append({
-            "page_content": data["markdown"],
-            "metadata": data["metadata"]
-        })
-    return documents
-```
-
-## Docker
-
-```bash
-docker compose up
-```
-
-这将在端口 `3000` 启动 CRW，并在端口 `9222` 启动 LightPanda 作为 JS 渲染边车。CRW 会自动连接到 LightPanda 进行 SPA 渲染。
-
-## Crates
-
-| Crate | 描述 | |
-|-------|------|-|
-| [`crw-core`](crates/crw-core) | 核心类型、配置和错误处理 | [![crates.io](https://img.shields.io/crates/v/crw-core.svg)](https://crates.io/crates/crw-core) |
-| [`crw-renderer`](crates/crw-renderer) | HTTP + CDP 浏览器渲染引擎 | [![crates.io](https://img.shields.io/crates/v/crw-renderer.svg)](https://crates.io/crates/crw-renderer) |
-| [`crw-extract`](crates/crw-extract) | HTML → Markdown/纯文本提取 | [![crates.io](https://img.shields.io/crates/v/crw-extract.svg)](https://crates.io/crates/crw-extract) |
-| [`crw-crawl`](crates/crw-crawl) | 异步 BFS 爬虫，支持 robots.txt 和站点地图 | [![crates.io](https://img.shields.io/crates/v/crw-crawl.svg)](https://crates.io/crates/crw-crawl) |
-| [`crw-server`](crates/crw-server) | Axum API 服务器（兼容 Firecrawl） | [![crates.io](https://img.shields.io/crates/v/crw-server.svg)](https://crates.io/crates/crw-server) |
-| [`crw-cli`](crates/crw-cli) | 独立 CLI（`crw` 二进制文件，无需服务器） | [![crates.io](https://img.shields.io/crates/v/crw-cli.svg)](https://crates.io/crates/crw-cli) |
-| [`crw-mcp`](crates/crw-mcp) | MCP stdio 代理二进制文件 | [![crates.io](https://img.shields.io/crates/v/crw-mcp.svg)](https://crates.io/crates/crw-mcp) |
-
-详细用法和 `cargo add` 命令请参见 [docs/crates.md](docs/crates.md)。
-
-## 文档
-
-完整文档：**[docs/index.md](docs/index.md)** | **[中文文档](docs/zh-CN/index.md)**
-
-- [安装指南](docs/zh-CN/getting-started.md)
-- [配置说明](docs/zh-CN/configuration.md)
-- [API 参考](docs/zh-CN/api-reference.md)
-- [MCP 服务器](docs/zh-CN/mcp-server.md)
-- [Docker 部署](docs/zh-CN/docker.md)
+部署、认证、容器及生产环境加固请查看
+[自托管指南](https://docs.fastcrw.com/self-hosting/)。
 
 ## 贡献
 
-欢迎贡献！请提交 issue 或 pull request。
+项目需要 Rust 1.85 或更高版本：
 
-1. Fork 仓库
-2. 安装 pre-commit hooks：`make hooks`
-3. 创建功能分支（`git checkout -b feat/my-feature`）
-4. 提交更改（`git commit -m 'feat: add my feature'`）
-5. 推送到分支（`git push origin feat/my-feature`）
-6. 创建 Pull Request
+```bash
+git clone https://github.com/us/crw
+cd crw
+make check-fast
+```
 
-Pre-commit hook 会运行与 CI 相同的检查（`cargo fmt`、`cargo clippy`、`cargo test`）。也可以通过 `make check` 手动运行。
+详细说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。fastCRW 引擎采用
+[AGPL-3.0](LICENSE)；通过网络调用托管或自托管 API 不会把该许可证应用到
+你的客户端代码。
 
-## 许可证
+## Star History
 
-CRW 基于 [AGPL-3.0](LICENSE) 开源。如需无 AGPL 义务的托管版本，请访问 [fastcrw.com](https://fastcrw.com)。
+<a href="https://www.star-history.com/?repos=us%2Fcrw&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=us/crw&type=date&theme=dark&legend=top-left&sealed_token=Pe6pRWL7lqTM-St9eo-Cmpk5kYNyuyun0krw9eVZQFIrm3g_R2h46IW6wfNalPXquMsWSNCgKqiar1YVo9MGy2IZmN5Lz6rjZcjBCw6bCcRHORKORFRi9A" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=us/crw&type=date&legend=top-left&sealed_token=Pe6pRWL7lqTM-St9eo-Cmpk5kYNyuyun0krw9eVZQFIrm3g_R2h46IW6wfNalPXquMsWSNCgKqiar1YVo9MGy2IZmN5Lz6rjZcjBCw6bCcRHORKORFRi9A" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=us/crw&type=date&legend=top-left&sealed_token=Pe6pRWL7lqTM-St9eo-Cmpk5kYNyuyun0krw9eVZQFIrm3g_R2h46IW6wfNalPXquMsWSNCgKqiar1YVo9MGy2IZmN5Lz6rjZcjBCw6bCcRHORKORFRi9A" />
+ </picture>
+</a>
+
+<sub>用户应自行遵守目标网站的政策。fastCRW 默认遵守 `robots.txt`。</sub>

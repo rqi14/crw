@@ -461,8 +461,8 @@ Yes, and for some architectures that is the right answer. Use Crawl4AI for compl
 
 ### How does Crawl4AI's 2 GB image compare to CRW's?
 
-Crawl4AI's image bundles Python, Playwright, and a full Chromium browser, which is what drives its roughly 2 GB size. CRW ships instead as a single ~8 MB static Rust binary in one container with no external runtime dependencies — versus a Firecrawl-style self-host that needs around five containers. For teams where container pull time matters in CI/CD or auto-scaling, this is a real operational difference.
+Crawl4AI's image bundles Python, Playwright, and a full Chromium browser, which is what drives its roughly 2 GB size. CRW ships instead as a single binary, a ~10 MB download, in one container with no external runtime dependencies — versus a Firecrawl-style self-host that needs around five containers. For teams where container pull time matters in CI/CD or auto-scaling, this is a real operational difference.
 
 ### How do CRW and Crawl4AI compare on scrape accuracy and speed?
 
-On Firecrawl's public 1,000-URL scrape-content-dataset-v1 (819 labeled URLs, harness diagnose_3way.py, run 2026-05-08), CRW reached the highest truth-recall of the three tools at 63.74% (522/819), ahead of Crawl4AI's 59.95% (491) and Firecrawl's 56.04% (459). Median latency was effectively tied — CRW 1914 ms versus Crawl4AI 1916 ms. In fast mode, CRW's p90 is 4348 ms — the lowest of the three (Crawl4AI 4754 ms, Firecrawl 6937 ms). fastCRW's recall mode recovers 34 URLs that neither Crawl4AI nor Firecrawl can reach — 70% more unique recoveries than the other two combined.
+On Firecrawl's public 1,000-URL scrape-content-dataset-v1 (819 labeled URLs, harness diagnose_3way.py, run 2026-05-08), CRW reached the highest truth-recall of the three tools at 63.74% (522/819), ahead of Crawl4AI's 59.95% (491) and Firecrawl's 56.04% (459). Median latency was effectively tied — CRW 1914 ms versus Crawl4AI 1916 ms. fastCRW's recall mode recovers 34 URLs that neither Crawl4AI nor Firecrawl can reach — 70% more unique recoveries than the other two combined.

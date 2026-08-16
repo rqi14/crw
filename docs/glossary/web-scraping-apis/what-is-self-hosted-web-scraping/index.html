@@ -18,7 +18,7 @@
 <p>Self-hosting trades vendor lock-in for operational surface. You become responsible for browser updates (Chromium, LightPanda), JS rendering stability, residential or datacenter proxy procurement, robots.txt compliance, retry budgets, and observability. Modern self-hosted stacks ship as a single static binary to keep that surface small — no Redis, no Node sidecar, no Postgres — so the only things to monitor are CPU, RAM, and outbound bandwidth.</p>
 
 <h2>How fastCRW does it</h2>
-<p>fastCRW ships a single Rust binary under AGPL-3.0 — roughly ~50 MB RAM idle (structural footprint per <code>crw-opencore/README.md</code>) — that exposes the same Firecrawl-compatible REST surface as our hosted API: <a href="/api-reference/scrape/">/v1/scrape</a>, <a href="/api-reference/crawl/">/v1/crawl</a>, <a href="/api-reference/map/">/v1/map</a>, <a href="/api-reference/search/">/v1/search</a>. No auth is required by default in self-hosted mode. See <a href="/self-hosting/">self-hosting</a> and <a href="/configuration/">configuration</a> for the full setup.</p>
+<p>fastCRW ships a single Rust binary under AGPL-3.0 — roughly ~14 MB RAM idle (structural footprint per <code>crw-opencore/README.md</code>) — that exposes the same Firecrawl-compatible REST surface as our hosted API: <a href="/scraping/">/v1/scrape</a>, <a href="/crawling/">/v1/crawl</a>, <a href="/map/">/v1/map</a>, <a href="/search/">/v1/search</a>. No auth is required by default in self-hosted mode. See <a href="/self-hosting/">self-hosting</a> and <a href="/configuration/">configuration</a> for the full setup.</p>
 
 <h2>Frequently asked</h2>
 <dl>

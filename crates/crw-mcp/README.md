@@ -7,7 +7,7 @@ MCP (Model Context Protocol) server for the [CRW](https://github.com/us/crw) web
 
 ## Overview
 
-`crw-mcp` is a self-contained MCP server that gives any MCP-compatible AI client (Claude Code, Claude Desktop, Cursor, Windsurf, Cline, Continue.dev, OpenAI Codex CLI) 8 web scraping tools. No external server needed — just add and go.
+`crw-mcp` is a self-contained MCP server that gives any MCP-compatible AI client (Claude Code, Claude Desktop, Cursor, Windsurf, Cline, Continue.dev, OpenAI Codex CLI) 9 web scraping tools. No external server needed — just add and go.
 
 **Two modes:**
 
@@ -16,7 +16,7 @@ MCP (Model Context Protocol) server for the [CRW](https://github.com/us/crw) web
 | **Embedded** (default) | No `--api-url` set | Self-contained, zero setup |
 | **Proxy** | `--api-url` provided | Forwards to remote CRW server |
 
-**8 MCP tools:**
+**9 MCP tools:**
 
 | Tool | Description |
 |------|-------------|
@@ -239,15 +239,9 @@ command = "crw-mcp"
 
 This crate is part of the [CRW](https://github.com/us/crw) workspace — a fast, lightweight, Firecrawl-compatible web scraper built in Rust.
 
-| Crate | Description |
-|-------|-------------|
-| [crw-core](https://crates.io/crates/crw-core) | Core types, config, and error handling |
-| [crw-renderer](https://crates.io/crates/crw-renderer) | HTTP + CDP browser rendering engine |
-| [crw-extract](https://crates.io/crates/crw-extract) | HTML → markdown/plaintext extraction |
-| [crw-crawl](https://crates.io/crates/crw-crawl) | Async BFS crawler with robots.txt & sitemap |
-| [crw-server](https://crates.io/crates/crw-server) | Firecrawl-compatible API server |
-| [crw-cli](https://crates.io/crates/crw-cli) | Standalone CLI (`crw` binary) |
-| **crw-mcp** | MCP server binary (this crate) |
+This crate (`crw-mcp`) is the standalone MCP server binary. For the full
+crate table and dependency graph, see
+[docs.fastcrw.com/architecture/](https://docs.fastcrw.com/architecture/).
 
 ## License
 

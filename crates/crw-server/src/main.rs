@@ -228,6 +228,7 @@ async fn run_server() {
     let renderer = std::sync::Arc::clone(&state.renderer);
     let pool_drain =
         std::time::Duration::from_secs(state.config.renderer.chrome_pool.shutdown_drain_secs);
+    let api_keys_empty = state.config.auth.api_keys.is_empty();
 
     let app = crw_server::app::create_app(state);
 
@@ -240,6 +241,12 @@ async fn run_server() {
     };
 
     tracing::info!("CRW ready at http://{addr}");
+    if api_keys_empty {
+        tracing::warn!(
+            "no [auth] api_keys configured; the API is UNAUTHENTICATED and open to \
+             anyone who can reach it. Set [auth] api_keys or CRW_AUTH__API_KEYS to secure it."
+        );
+    }
 
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 

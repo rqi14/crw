@@ -3,7 +3,7 @@
   <h1>Choose Your Endpoint</h1>
   <p class="page-subtitle">CRW has a native /v1 API for new integrations and a /firecrawl/v2 compatibility layer for Firecrawl migrations. Pick the capability that matches your input and output.</p>
   <div class="page-capabilities">
-    <div class="page-capability"><strong>Six verbs:</strong> scrape, map, crawl, search, extract, parse</div>
+    <div class="page-capability"><strong>Six verbs:</strong> scrape, crawl, map, search, extract, change-tracking (plus <code>parse</code> as a <code>/v2</code>-only extra)</div>
     <div class="page-capability"><strong>Start here:</strong> native <code>/v1</code></div>
     <div class="page-capability"><strong>Extract:</strong> single URL = scrape + JSON format; many URLs = native <code>/v1/extract</code></div>
   </div>
@@ -25,7 +25,8 @@ New to CRW? Use `/v1`. Use `/firecrawl/v2` when migrating Firecrawl v2 SDK code 
 | **search** | `POST /v1/search` | A query string | Ranked web search results, optionally with scraped content | You do not have a URL — you want the web to find relevant pages | No (yes for `answer`/`summarize_results` options) |
 | **extract** (single URL) | `POST /v1/scrape` | A URL + prompt/schema | `data.json` — a filled-in object | You have one page and want structured fields (price, title, date…) | **Yes** |
 | **extract** (multi-URL) | `POST /v1/extract` | URLs + prompt/schema | Async job — poll `GET /v1/extract/{id}` for a per-URL `results` array | You want the same structure extracted across several pages in one job | **Yes** |
-| **parse** | `POST /firecrawl/v2/parse` | A PDF file upload | Markdown (or JSON/summary with schema) from the document | You have a local file, not a URL | No (yes for `summary`/`json` formats) |
+| **change-tracking** | `POST /v1/change-tracking/diff` | Current content + a prior snapshot you supply | A diff between the two | You already have two versions of a page's content and want to know what changed | No |
+| **parse** *(`/v2`-only extra, not a native `/v1` verb)* | `POST /firecrawl/v2/parse` | A PDF file upload | Markdown (or JSON/summary with schema) from the document | You have a local file, not a URL | No (yes for `summary`/`json` formats) |
 
 > **Two ways to extract.** For a **single** page, extraction is just `POST /v1/scrape`
 > with `formats: ["json"]` + a `prompt` and/or `jsonSchema`. For **multiple** URLs, the

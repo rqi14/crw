@@ -224,7 +224,7 @@ always_run = false
 #   max_tokens = 4096
 
 # /v1/search endpoint — proxies to a SearXNG instance.
-# When `searxng_url` is unset the endpoint returns a clear 400 error
+# When `searxng_url` is unset the endpoint returns a 503 error
 # (`search_disabled`); the bundled docker-compose flips it to the
 # `searxng` sidecar.
 [search]

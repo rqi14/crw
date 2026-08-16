@@ -1,7 +1,7 @@
 # Firecrawl ↔ fastCRW Capability Matrix
 
 **Date:** 2026-05-11
-**Owner:** content/growth (autonomous run)
+**Owner:** content/growth
 **Re-verify within 48h of any page citing this doc.**
 **Sources:** `docs.firecrawl.dev/sdks/rust` and `github.com/firecrawl/firecrawl/blob/main/SELF_HOST.md` (Firecrawl repo on `main` as of 2026-05-11 — claims dependent on the exact Firecrawl self-host stack are stated as "as of 2026-05-11" and must be re-verified before any page citing this matrix ships); `firecrawl.dev/pricing`; fastCRW `crates/crw-server/src/routes/`, `crates/crw-search/src/`, `Cargo.toml`.
 
@@ -143,8 +143,8 @@ This is a **capability matrix**, not an API-shape compatibility matrix (which th
 | | Firecrawl self-host | fastCRW |
 |---|---|---|
 | Stack | Docker Compose: API + workers + Postgres + Redis | Single Rust binary (or `docker compose up` with bundled search backend sidecar) |
-| Memory baseline | ~1-2GB (full stack) | ~6.6 MB idle (binary); +search backend container if used |
-| Cold start | ~5-15s (full stack warmup) | ~85ms (binary) |
+| Memory baseline | ~1-2GB (full stack) | ~14 MB idle (binary); +search backend container if used |
+| Cold start | ~5-15s (full stack warmup) | ~106ms (process start to first successful `/health`, binary) |
 | Languages | TypeScript (workers), some Rust (`/parse` Apr 2026) | Rust |
 
 **fastCRW wedge:** dramatically simpler deployment surface. Single binary vs multi-service stack. This is the primary "Rust-native, self-host friendly" claim for the T8 spoke.

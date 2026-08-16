@@ -367,7 +367,7 @@ For reference (and when debugging a self-hosted backend directly), this is how t
 | `time_range` | `tbs` | `qdr:h`/`qdr:d`→`day`, `qdr:w`→`week`, `qdr:m`→`month`, `qdr:y`→`year`. |
 | `format` | — | Always `json` (the sidecar enables the JSON formatter; HTML stays on for debugging). |
 
-`pageno` and `safesearch` are available on the low-level `crw search` CLI but are not exposed on `/v1/search`.
+`safesearch` is available on the low-level `crw search` CLI but is not exposed on `/v1/search`.
 
 ## Self-hosting the search sidecar
 

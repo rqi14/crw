@@ -422,12 +422,6 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <td>2305ms</td>
 </tr>
 <tr>
-<td><strong>p90 latency</strong> <sup>fast mode</sup></td>
-<td><strong>4348ms</strong></td>
-<td>4754ms</td>
-<td>6937ms</td>
-</tr>
-<tr>
 <td>Thrown errors (3000 requests)</td>
 <td>0</td>
 <td>0</td>
@@ -440,7 +434,7 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <td>Node + Redis + PG + RabbitMQ</td>
 </tr>
 </tbody></table>
-<p>CRW leads on every axis — top truth-recall, fastest median, and the lowest p90 tail — with <strong>0 thrown errors</strong> across all 3,000 requests, and it uniquely recovers <strong>34 URLs the other two miss</strong> (70% more than crawl4ai and Firecrawl combined). The 63.74% denominator is <strong>819 labeled/matchable URLs</strong>, not 3,000 requests, not 1,000. <strong>Two modes, one binary, one config toggle:</strong> <em>recall mode</em> maximizes truth-recall; <em>fast mode</em> (LightPanda-only) drives the p90 tail to <strong>4348ms, the lowest of the three</strong>. Full result: <a href="https://github.com/us/crw/blob/main/bench/server-runs/RESULT_3WAY_1000_FULL.md"><code>bench/server-runs/RESULT_3WAY_1000_FULL.md</code></a>.</p>
+<p>CRW leads on every axis — top truth-recall and fastest median — with <strong>0 thrown errors</strong> across all 3,000 requests, and it uniquely recovers <strong>34 URLs the other two miss</strong> (70% more than crawl4ai and Firecrawl combined). The 63.74% denominator is <strong>819 labeled/matchable URLs</strong>, not 3,000 requests, not 1,000. <strong>Two modes, one binary, one config toggle:</strong> <em>recall mode</em> maximizes truth-recall; <em>fast mode</em> (LightPanda-only) trades recall for lower latency. Full result: <a href="https://github.com/us/crw/blob/main/bench/server-runs/RESULT_3WAY_1000_FULL.md"><code>bench/server-runs/RESULT_3WAY_1000_FULL.md</code></a>.</p>
 <h2 id="what-to-read-next">What to read next</h2>
 <ul>
 <li><a href="/quick-start">Quick Start</a> for the fastest first request</li>

@@ -557,6 +557,15 @@ async fn scrape_url_inner(
                 }
                 Err(e) => {
                     tracing::warn!(url = %req.url, "JS escalation after empty markdown failed: {e}");
+                    // Surface the failure on the response too, not just the log:
+                    // otherwise a renderer that's configured but unreachable (e.g.
+                    // connection refused) silently returns success:true with thin
+                    // HTTP-only markdown and no signal to the caller.
+                    let js_fail_warning = format!("JS escalation failed: {e}");
+                    effective_warning = Some(match effective_warning {
+                        Some(w) => format!("{w}; {js_fail_warning}"),
+                        None => js_fail_warning,
+                    });
                 }
             }
         }

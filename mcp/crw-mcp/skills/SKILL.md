@@ -1,6 +1,6 @@
 ---
 name: crw
-description: "Scrape, crawl, map, and search the web using fastCRW's native /v1 API. Use when the user needs web page content, site-wide extraction, URL discovery, or web search results. Single binary, 6 MB RAM; /v2 exists separately for Firecrawl migration."
+description: "Scrape, crawl, map, and search the web using fastCRW's native /v1 API. Use when the user needs web page content, site-wide extraction, URL discovery, or web search results. Single binary, 14 MB RAM; /v2 exists separately for Firecrawl migration."
 license: AGPL-3.0
 metadata:
   author: us
@@ -32,7 +32,7 @@ npx crw-mcp@latest init      # skill only
 
 ## Authentication
 
-- **Embedded mode** (default): No key needed — the MCP server runs a self-contained scraper in ~6 MB RAM. No server required.
+- **Embedded mode** (default): No key needed — the MCP server runs a self-contained scraper in ~14 MB RAM. No server required.
 - **Cloud mode** (fastcrw.com): Set `CRW_API_KEY=crw_live_...` and `CRW_API_URL=https://api.fastcrw.com`. Get a free key at https://fastcrw.com with 500 one-time lifetime credits (never resets, not monthly).
 
 ## MCP Tools

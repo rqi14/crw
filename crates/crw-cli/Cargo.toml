@@ -67,6 +67,8 @@ serde_json = { workspace = true }
 
 # HTTP client
 reqwest = { workspace = true }
+# URL parsing for doctor/smoke reachability checks and userinfo redaction
+url = { workspace = true }
 # Base64 decode for crw_parse_file proxy forwarding (multipart upload)
 base64 = { workspace = true }
 
@@ -94,3 +96,12 @@ rand = { workspace = true }
 
 # User config (~/.config/crw/config.toml) written by setup wizard
 toml = { workspace = true }
+
+[dev-dependencies]
+# Drive the built `crw` binary as a subprocess and assert on its exit code
+# and streams (journey fixtures for bare scrape / non-interactive setup).
+assert_cmd = "2"
+# Fluent assertions (`predicate::str::contains`, ...) on top of assert_cmd.
+predicates = "3"
+# Isolated HOME/config directories per test, auto-cleaned on drop.
+tempfile = "3"
