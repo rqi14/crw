@@ -369,6 +369,19 @@ for (const [oldPath, target] of Object.entries(renamedSlugs)) {
   legacyRedirects[`docs/${oldPath}`] = target;
 }
 
+// Preserve the first-generation endpoint reference URLs. These pages were
+// public and remain indexed/bookmarked; deleting them turns a docs cleanup
+// into a breaking URL change. Point each one at its exact current reference
+// page rather than collapsing every endpoint to the docs homepage.
+Object.assign(legacyRedirects, {
+  api: "api-reference",
+  "api/scrape": "api-reference/scrape",
+  "api/crawl": "api-reference/crawl",
+  "api/map": "api-reference/map",
+  "api/search": "api-reference/search",
+  "api/extract": "api-reference/extract",
+});
+
 let redirectsWritten = 0;
 for (const [oldPath, target] of Object.entries(legacyRedirects)) {
   const outDir = path.join(DOCS_DIR, oldPath);

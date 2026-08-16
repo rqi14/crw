@@ -176,6 +176,8 @@ Key options (both SDKs):
 Starts an async crawl, polls for completion, and returns all page results.
 The SDK handles polling internally.
 
+Both SDKs default and always send `maxDepth: 2` / `maxPages: 10` for a crawl, and always send them explicitly. This is a client-side default, not the server's: a raw HTTP call to `POST /v1/crawl` that omits `maxPages` gets `100` from the server instead — see [Crawling](/docs/crawling#parameters).
+
 ```python
 # Python
 pages = client.crawl(

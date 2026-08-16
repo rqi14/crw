@@ -576,4 +576,4 @@ On Firecrawl's public scrape-content-dataset-v1 (1,000 URLs, harness diagnose_3w
 
 ### Do I need a heavy infrastructure stack to run this?
 
-No. CRW is a single roughly 8 MB static Rust binary in one container, versus the five containers a Firecrawl self-host needs. You can run the engine, SQLite, and the APScheduler loop together on one small machine with no Redis or separate worker processes.
+No. CRW ships as a single binary, roughly a 10 MB download, in one container, versus the five containers a Firecrawl self-host needs. You can run the engine, SQLite, and the APScheduler loop together on one small machine with no Redis or separate worker processes.

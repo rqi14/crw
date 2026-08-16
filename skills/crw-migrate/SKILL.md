@@ -174,7 +174,7 @@ For self-hosted (no auth, no env needed):
 ```
 
 Embedded mode (`npx crw-mcp` with no `CRW_API_URL`) runs the engine in-process
-— zero server to stand up, ~6 MB RAM.
+— zero server to stand up, ~14 MB RAM.
 
 ## Verify the swap — checklist
 

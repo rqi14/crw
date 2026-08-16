@@ -159,8 +159,6 @@ blob.
 - **`jsonSchema` turns every page into a typed object.** Pass a JSON schema
   via MCP/REST to extract structured data from every crawled page — useful
   for price monitoring, job listings, or any repeating schema.
-- **Building a knowledge base?** Load `crw-knowledge-base` (coming soon) —
-  it wraps the crawl → chunk → embed → index pipeline end-to-end.
 
 ## See also
 

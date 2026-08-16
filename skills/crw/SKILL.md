@@ -2,7 +2,7 @@
 name: crw
 description: |
   Scrape, crawl, map, search, parse, and extract web data with fastCRW — the
-  open-source, self-hostable Firecrawl alternative (single Rust binary, ~6 MB
+  open-source, self-hostable Firecrawl alternative (single Rust binary, ~14 MB
   RAM, Firecrawl-compatible /v1 + /v2 API). Use whenever the user needs page
   content, site-wide extraction, URL discovery, web search, PDF parsing,
   structured JSON from pages, or change tracking. Also use when the user
@@ -19,7 +19,7 @@ allowed-tools: Bash(crw:*) Bash(curl:*) Read
 
 # crw — Web Data Toolkit for AI Agents
 
-The open-source alternative to Firecrawl. One static binary, ~50 MB RAM idle,
+The open-source alternative to Firecrawl. One static binary, ~14 MB RAM idle,
 Firecrawl-compatible REST API on both `/v1/*` and `/v2/*`, first-class MCP, and
 a bundled search backend — self-host free or use the managed
 `api.fastcrw.com`.
@@ -85,7 +85,7 @@ The skills show all three; pick what's available:
 
 1. **CLI** (`crw scrape …`) — best when the binary is on PATH. One-shot, scriptable.
 2. **MCP tools** (`crw_scrape`, `crw_search`, `crw_parse_file`, `crw_check_crawl_status`, …) — best inside an agent harness.
-   Embedded mode runs the engine in-process (~6 MB); proxy mode forwards to a
+   Embedded mode runs the engine in-process (~14 MB); proxy mode forwards to a
    REST endpoint via `CRW_API_URL`. Use `crw_parse_file` for PDF/file parsing
    and `crw_check_crawl_status` to poll async crawl jobs.
 3. **REST** (`curl … /v1/scrape`) — best for portability / drop-in Firecrawl SDK use.

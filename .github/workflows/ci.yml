@@ -64,11 +64,11 @@ jobs:
           shared-key: dev-check
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      # This is the exact first command documented for a fresh contributor.
+      # Keeping CI on the public entry point prevents the Makefile target and
+      # the underlying Rust checks from drifting apart.
+      - name: Fast contributor check
+        run: make check-fast
 
       - name: No unguarded exit in browser-spawning code
         run: bash scripts/check-no-process-exit.sh
@@ -91,8 +91,9 @@ jobs:
       - name: Guard regression tests
         run: python3 scripts/release/test_guards.py
 
-      # No standalone `cargo build --workspace --all-targets`: clippy above runs
-      # with `--all-targets -D warnings` (compile-checks every target, incl. the
+      # No standalone `cargo build --workspace --all-targets`: the clippy step
+      # inside `make check-fast` runs with `--all-targets -D warnings`
+      # (compile-checks every target, incl. the
       # criterion bench + example) and `cargo test` builds & runs all test
       # targets. A separate dev-profile build only recompiles the workspace for
       # artifacts CI never runs. (Kept in release.yml as a pre-publish gate.)

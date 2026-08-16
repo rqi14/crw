@@ -1,6 +1,6 @@
 # Single-Binary Infrastructure: Why It Matters for Developer Tools
 
-> The case for single-binary deployment in developer infrastructure — operational simplicity, CI speed, and why CRW ships as one 8 MB file.
+> The case for single-binary deployment in developer infrastructure — operational simplicity, CI speed, and why CRW ships as a single ~10 MB download.
 
 **Published:** 2026-04-22  
 **Updated:** 2026-04-22  
@@ -20,7 +20,11 @@ Single-binary tools refuse this tax. Everything ships in one file.
 
 A single binary is a statically-linked executable that contains all the code it needs to run. No runtime interpreter. No dynamic libraries to install. No package manager at runtime. Copy the file to a server, run it.
 
-For CRW, `cargo build --release` produces an ~8 MB file. That file contains:
+For CRW, `cargo build --release` produces an ~29 MB file on disk. That is the
+uncompressed binary; the ~10 MB figure above is the compressed download size
+of the release archive you get from the install script or GitHub releases.
+Same binary, two numbers: one measures the archive you fetch, the other
+measures what it unpacks to. That 29 MB file contains:
 
 - The Axum HTTP server
 - The lol-html streaming parser
@@ -60,7 +64,7 @@ COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/crw /usr/local
 CMD ["crw", "serve"]
 ```
 
-Result: ~8 MB final image. Compare to Firecrawl's 500 MB+ or Crawl4AI's ~2 GB. CI/CD that pulls the image completes in seconds, not minutes.
+Result: a lean final image, far smaller than Firecrawl's 500 MB+ or Crawl4AI's ~2 GB. CI/CD that pulls the image completes in seconds, not minutes.
 
 ### Cold starts are instant
 
@@ -115,7 +119,7 @@ services:
       - "3000"
 ```
 
-The entire scraping subsystem adds 8 MB to your docker-compose stack. No Redis, no separate process manager, no heavyweight runtime.
+The entire scraping subsystem adds a single lightweight container to your docker-compose stack. No Redis, no separate process manager, no heavyweight runtime.
 
 ## When Single Binary Isn't the Right Abstraction
 
@@ -132,7 +136,7 @@ CRW is designed for operational teams who want a reliable, low-maintenance scrap
 Download the CRW binary directly or pull the Docker image:
 
 ```
-# Docker (8 MB image)
+# Docker
 docker run -p 3000:3000 ghcr.io/us/crw:latest
 
 # Or download the binary

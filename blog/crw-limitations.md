@@ -293,4 +293,4 @@ Yes. A PDF URL passed to /v1/scrape is auto-routed to the parser by content type
 
 ### How fast is CRW?
 
-On Firecrawl's public 1,000-URL scrape-content dataset (diagnose_3way.py, 2026-05-08), CRW posted the best median latency at 1914 ms versus Firecrawl's 2305 ms, and in fast mode its p90 was 4348 ms — the lowest of the three. One real limitation: CRW does not yet have built-in retry with backoff, so handle 429s and timeouts in your client code.
+On Firecrawl's public 1,000-URL scrape-content dataset (diagnose_3way.py, 2026-05-08), CRW posted the best median latency at 1914 ms versus Firecrawl's 2305 ms. One real limitation: CRW does not yet have built-in retry with backoff, so handle 429s and timeouts in your client code.

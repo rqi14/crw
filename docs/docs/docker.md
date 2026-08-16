@@ -238,7 +238,7 @@ The bundled `docker-compose.yml` already includes these limits (sized for the PD
 sandbox: `base + 2 × 512 MiB sandbox children ≈ 1.3 GiB < 2 GiB`). Adjust down
 if the PDF parser (`[document]`) is disabled or `max_concurrent_parses` is reduced.
 
-crw uses ~3 MB idle and ~66 MB under heavy load (50 concurrent requests). The 2 GB
+crw uses ~14 MB idle and ~66 MB under heavy load (50 concurrent requests). The 2 GB
 ceiling in the bundled file is dominated by the PDF sandbox children, not the engine
 itself.
 

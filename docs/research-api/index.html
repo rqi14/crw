@@ -290,48 +290,48 @@ GitHub.</p>
 this stack reaches <strong>61.0% recall — ahead of Firecrawl&#39;s Research Index (53.3%)</strong>.
 It&#39;s <strong>live</strong>: results merge our own web and research search with live open
 scholarly sources, including full-text paper search — no self-hosted paper index.</p>
+<p>Firecrawl&#39;s 53.3% is published in their own <a href="https://www.firecrawl.dev/blog/research-index-launch">Research Index launch
+post</a> (2026-06-17): &quot;On
+arXivQA, the index hits 53.3% recall at $0.32 per task, against 45.4% for the
+next best provider.&quot; Our 61.0% is fastCRW&#39;s own measurement on the same
+191-question ArXivQA set.</p>
 <h2 id="authentication">Authentication</h2>
 <p>Use a Bearer token: <code>Authorization: Bearer &lt;crw_live_…&gt;</code>. Get a key from the
 <a href="https://fastcrw.com/dashboard">dashboard</a>.</p>
 <h2 id="endpoints">Endpoints</h2>
-<p>Both surfaces return identical shapes. The cloud API mirrors Firecrawl&#39;s research
-paths for migration work; the engine serves them natively under <code>/v1</code>. There are
-no research routes on the engine&#39;s <code>/firecrawl/v2</code> compatibility surface.</p>
+<p>Both surfaces return identical shapes, served at the same <code>/v1</code> path whether you
+call the cloud API or your own self-hosted engine. There are no research routes
+on the <code>/firecrawl/v2</code> compatibility surface.</p>
 <table>
 <thead>
 <tr>
 <th>Task</th>
-<th>Cloud (<code>https://fastcrw.com/api</code>)</th>
-<th>Self-host (engine)</th>
+<th>Path</th>
 </tr>
 </thead>
 <tbody><tr>
 <td>Search papers</td>
-<td><code>GET /v2/search/research/papers</code></td>
 <td><code>GET /v1/search/research/papers</code></td>
 </tr>
 <tr>
 <td>Inspect metadata / read passages</td>
-<td><code>GET /v2/search/research/papers/{id}</code></td>
 <td><code>GET /v1/search/research/papers/{id}</code></td>
 </tr>
 <tr>
 <td>Find related papers</td>
-<td><code>GET /v2/search/research/papers/{id}/similar</code></td>
 <td><code>GET /v1/search/research/papers/{id}/similar</code></td>
 </tr>
 <tr>
 <td>Search GitHub</td>
-<td><code>GET /v2/search/research/github</code></td>
 <td><code>GET /v1/search/research/github</code></td>
 </tr>
 </tbody></table>
-<p>The sections below name the engine&#39;s native <code>/v1</code> path; the curl examples hit the
-cloud API.</p>
+<p>The sections below name this native <code>/v1</code> path; the curl examples hit the
+cloud API (<code>https://fastcrw.com/api</code>).</p>
 <h2 id="search-papers">Search papers</h2>
 <p><code>GET /v1/search/research/papers?query=&amp;k=&amp;authors=&amp;categories=&amp;from=&amp;to=</code></p>
 <pre data-lang="bash"><code class="language-bash">curl -s -H &quot;Authorization: Bearer $FASTCRW_API_KEY&quot; \
-  &quot;https://fastcrw.com/api/v2/search/research/papers?query=diffusion%20image%20synthesis&amp;k=20&quot;</code></pre>
+  &quot;https://fastcrw.com/api/v1/search/research/papers?query=diffusion%20image%20synthesis&amp;k=20&quot;</code></pre>
 <p>Returns ranked papers. <code>paperId</code> is the canonical id (a stable work id when
 known, else <code>arxiv:&lt;id&gt;</code>); <code>primaryId</code> is the preferred source id
 (<code>arxiv:2105.05233</code>); <code>ids</code> holds the prefix-less source ids.</p>
@@ -346,7 +346,7 @@ known, else <code>arxiv:&lt;id&gt;</code>); <code>primaryId</code> is the prefer
 <code>createdDate</code>, …). Accepts an arXiv id, a work id, or a DOI. Add <code>?query=</code> to
 return the top passages answering a question:</p>
 <pre data-lang="bash"><code class="language-bash">curl -s -H &quot;Authorization: Bearer $FASTCRW_API_KEY&quot; \
-  &quot;https://fastcrw.com/api/v2/search/research/papers/arxiv:1706.03762?query=what%20is%20the%20attention%20mechanism&amp;k=4&quot;</code></pre>
+  &quot;https://fastcrw.com/api/v1/search/research/papers/arxiv:1706.03762?query=what%20is%20the%20attention%20mechanism&amp;k=4&quot;</code></pre>
 <h2 id="find-related-papers">Find related papers</h2>
 <p><code>GET /v1/search/research/papers/{id}/similar?intent=&amp;mode=similar|citers|references&amp;k=</code></p>
 <p><code>intent</code> is required. <code>mode</code> selects the expansion: <code>similar</code> (recommendations),

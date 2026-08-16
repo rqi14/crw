@@ -514,7 +514,7 @@ rendering to be handled by Chrome (or fail entirely if Chrome is not enabled).</
 <p>The bundled <code>docker-compose.yml</code> already includes these limits (sized for the PDF
 sandbox: <code>base + 2 × 512 MiB sandbox children ≈ 1.3 GiB &lt; 2 GiB</code>). Adjust down
 if the PDF parser (<code>[document]</code>) is disabled or <code>max_concurrent_parses</code> is reduced.</p>
-<p>crw uses ~3 MB idle and ~66 MB under heavy load (50 concurrent requests). The 2 GB
+<p>crw uses ~14 MB idle and ~66 MB under heavy load (50 concurrent requests). The 2 GB
 ceiling in the bundled file is dominated by the PDF sandbox children, not the engine
 itself.</p>
 <h3 id="health-check">Health Check</h3>

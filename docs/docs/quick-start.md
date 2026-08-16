@@ -88,7 +88,8 @@ If you see all three, you are unblocked for almost every other page in this docs
 |---------|-------------|-----|
 | `401 Unauthorized` | Key missing or malformed | Make sure the header is exactly `Authorization: Bearer YOUR_API_KEY` with the `Bearer ` prefix and no extra spaces |
 | `404 Not Found` | URL typo in the request path | Check that you are calling `/v1/scrape`, not `/scrape` or `/api/scrape` |
-| `429 Too Many Requests` | You hit the rate limit (not out of credits) | Wait a few seconds and retry; see [Rate Limits](rate-limits.md) for burst and per-minute limits |
+| `429 Too Many Requests` | Rate limit, per-plan concurrency cap, **or** (free plan only) your one-time 500-credit lifetime allowance is exhausted | For rate/concurrency limits, wait a few seconds and retry — see [Rate Limits](/docs/rate-limits). For an exhausted free allowance, upgrade or buy a credit pack |
+| `402 Payment Required` | A paid plan's auto-recharge stopped (spending cap reached, card declined, bank confirmation needed, or no card on file) | Fix the payment method or spending cap in billing settings, then retry |
 | `"markdown": ""` (empty string) | Page requires JavaScript to render | Add `"renderJs": true` to your request body and retry |
 | `"success": false` with an error message | Request body issue | Double-check JSON syntax — trailing commas and unquoted keys both cause parse errors |
 
@@ -108,6 +109,6 @@ MCP (Model Context Protocol) is a standard that lets AI assistants call external
 claude mcp add crw -- npx -y crw-mcp
 ```
 
-Once registered, your AI assistant gains eight web tools (`crw_scrape`, `crw_crawl`, `crw_check_crawl_status`, `crw_map`, `crw_extract`, `crw_check_extract_status`, `crw_search` (web search; available when a search backend is configured), and `crw_parse_file`). On the next conversation turn the assistant can call them automatically whenever it needs to fetch a live page or run a crawl. No further setup is needed for the embedded mode.
+Once registered, your AI assistant gains nine web tools (`crw_scrape`, `crw_crawl`, `crw_check_crawl_status`, `crw_map`, `crw_extract`, `crw_check_extract_status`, `crw_cancel_extract`, `crw_search` (web search; available when a search backend is configured), and `crw_parse_file`). On the next conversation turn the assistant can call them automatically whenever it needs to fetch a live page or run a crawl. No further setup is needed for the embedded mode.
 
 For client-specific config files (Codex, Cursor, Windsurf, Cline, Continue.dev) and the proxy mode that connects to the fastcrw.com cloud, see [MCP Server](mcp.md).

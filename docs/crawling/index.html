@@ -392,6 +392,12 @@ console.log((await status.json()).status);</code></pre></div><div class="code-ta
   &quot;data&quot;: []
 }</code></pre>
 <h2 id="parameters">Parameters</h2>
+<blockquote>
+<p><strong>Defaults depend on how you call it.</strong> The server defaults <code>maxDepth</code> to <code>2</code> and <code>maxPages</code> to <code>100</code> when a raw HTTP request omits them (the table below). The official Python and TypeScript SDKs use lower client-side defaults instead (<code>maxDepth: 2</code>, <code>maxPages: 10</code>) and always send them explicitly — see <a href="/docs/sdk-reference#crawl">SDK Reference</a>. Neither number is wrong; they are just set at different layers.</p>
+</blockquote>
+<blockquote>
+<p><strong>Ceilings are clamped, not rejected.</strong> <code>maxDepth</code> above <code>10</code> is silently clamped to <code>10</code>, and <code>maxPages</code> above <code>1000</code> is silently clamped to <code>1000</code> — the request still succeeds, it just runs at the ceiling instead of the value you sent.</p>
+</blockquote>
 <table>
 <thead>
 <tr>
@@ -411,13 +417,13 @@ console.log((await status.json()).status);</code></pre></div><div class="code-ta
 <td><code>maxDepth</code></td>
 <td>number</td>
 <td><code>2</code></td>
-<td>Maximum depth from the start URL</td>
+<td>Maximum depth from the start URL (raw HTTP default; clamped to 10 if higher)</td>
 </tr>
 <tr>
 <td><code>maxPages</code></td>
 <td>number</td>
 <td><code>100</code></td>
-<td>Maximum number of pages to crawl</td>
+<td>Maximum number of pages to crawl (raw HTTP default; clamped to 1000 if higher)</td>
 </tr>
 <tr>
 <td><code>limit</code></td>

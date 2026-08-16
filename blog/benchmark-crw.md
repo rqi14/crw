@@ -297,10 +297,6 @@ On Firecrawl's public scrape-content-dataset-v1 (1,000 URLs, 819 with labeled gr
 
 On standard HTML pages, CRW is consistently lower-latency than browser-render-first tools because there is no headless browser in the request path — its p50 of 1914 ms beats Firecrawl's 2305 ms and is effectively tied with Crawl4AI's 1916 ms. On JavaScript-heavy pages that require full browser rendering, the gap narrows because render time dominates every tool. For mixed workloads, CRW favors teams prioritizing latency and throughput over SPA coverage.
 
-### How does CRW's p90 latency compare in fast mode?
-
-In fast mode (without the chrome-stealth fallback), CRW's p90 is 4348 ms — the lowest of the three tools (Crawl4AI 4754 ms, Firecrawl 6937 ms). When the chrome-stealth fallback is enabled to recover hard pages the other tools miss, tail latency rises; that is the same mechanism that lifts CRW's truth-recall to the top of the table. We publish the full p50/p90 split per mode so the distinction is clear.
-
 ### Does CRW perform better on all pages?
 
 No. CRW performs best on HTML-primary content such as news articles, documentation, blog posts, and server-rendered pages. On JavaScript-heavy SPAs, CRW's LightPanda integration is functional but less complete than Playwright-based tools, so its coverage on that subset is lower than its overall figure. The isolated JS-subset breakdown is published on /benchmarks.

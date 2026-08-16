@@ -268,7 +268,7 @@ Don't want to manage servers? [fastCRW](https://fastcrw.com) gives you the same 
 
 ### Which web scraping API is fastest for AI agents in 2026?
 
-CRW / fastCRW posts low, predictable latency because there is no browser render in the default path — fast enough for synchronous agent tool calls without timeout issues. On the 3-way scrape benchmark (Firecrawl's public dataset, 819 labeled URLs, run 2026-05-08) CRW's p50 was 1914 ms — the fastest of the three — versus Firecrawl's 2305 ms. In fast mode, CRW's p90 was 4348 ms, the lowest of the three tested.
+CRW / fastCRW posts low, predictable latency because there is no browser render in the default path — fast enough for synchronous agent tool calls without timeout issues. On the 3-way scrape benchmark (Firecrawl's public dataset, 819 labeled URLs, run 2026-05-08) CRW's p50 was 1914 ms — the fastest of the three — versus Firecrawl's 2305 ms.
 
 ### Which web scraping API has the best AI agent support?
 

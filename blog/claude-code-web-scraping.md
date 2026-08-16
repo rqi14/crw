@@ -27,13 +27,13 @@ npx -y crw-mcp
 claude mcp add crw -- npx -y crw-mcp
 ```
 
-That's it. Two commands. Claude Code now has six web scraping tools available: `crw_scrape`, `crw_crawl`, `crw_check_crawl_status`, `crw_map`, `crw_search`, and `crw_parse_file`. No API key, no Docker container, no configuration file. CRW is also listed on the official [MCP Registry](https://registry.modelcontextprotocol.io/?q=crw).
+That's it. Two commands. Claude Code now has nine web scraping tools available: `crw_scrape`, `crw_crawl`, `crw_check_crawl_status`, `crw_map`, `crw_extract`, `crw_check_extract_status`, `crw_cancel_extract`, `crw_search`, and `crw_parse_file`. No API key, no Docker container, no configuration file. CRW is also listed on the official [MCP Registry](https://registry.modelcontextprotocol.io/?q=crw).
 
 The next time you ask Claude Code something that requires web content, it will automatically decide whether to use these tools. Ask it to "check the latest Next.js docs for the App Router API" and it will scrape the documentation page, read the markdown content, and answer based on the live page — not its training data.
 
 ## What Exactly Gets Installed?
 
-When you run `npx -y crw-mcp`, npm downloads and runs the CRW MCP server (npm package `crw-mcp`). This binary is roughly 8 MB and has zero runtime dependencies — no Redis, no headless browser. It runs as a stdio MCP server: Claude Code starts the process, sends JSON-RPC messages to its stdin, and reads responses from stdout. The Python SDK (`pip install crw`) is a separate client library, not the MCP server — for MCP, use `npx -y crw-mcp`.
+When you run `npx -y crw-mcp`, npm downloads and runs the CRW MCP server (npm package `crw-mcp`). This binary is roughly 10 MB and has zero runtime dependencies — no Redis, no headless browser. It runs as a stdio MCP server: Claude Code starts the process, sends JSON-RPC messages to its stdin, and reads responses from stdout. The Python SDK (`pip install crw`) is a separate client library, not the MCP server — for MCP, use `npx -y crw-mcp`.
 
 The `claude mcp add` command registers this binary with Claude Code's MCP configuration. Behind the scenes, it adds an entry to your `~/.claude.json` file that looks like:
 
@@ -51,7 +51,7 @@ When Claude Code starts a new session, it launches `crw-mcp` as a subprocess. Th
 
 ## The Tools Claude Code Gets
 
-CRW exposes six MCP tools, each mapped to a REST API endpoint:
+CRW exposes nine MCP tools, each mapped to a REST API endpoint:
 
 ### crw_scrape — Fetch a Single Page
 
@@ -312,7 +312,7 @@ Install the CRW MCP server with npx -y crw-mcp, then register it with claude mcp
 
 ### What is CRW MCP for Claude Code?
 
-CRW is an open-source web scraper with a built-in MCP (Model Context Protocol) server. When connected to Claude Code, the crw-mcp server exposes eight tools — scrape, search, crawl, check_crawl_status, map, extract, check_extract_status, and parse_file — that let Claude Code fetch and read live web pages (and files, including PDFs) directly from your terminal. Single-URL structured JSON extraction runs through the scrape tool's json format with a schema; the `extract` tool adds native async multi-URL extraction.
+CRW is an open-source web scraper with a built-in MCP (Model Context Protocol) server. When connected to Claude Code, the crw-mcp server exposes nine tools — scrape, search, crawl, check_crawl_status, map, extract, check_extract_status, cancel_extract, and parse_file — that let Claude Code fetch and read live web pages (and files, including PDFs) directly from your terminal. Single-URL structured JSON extraction runs through the scrape tool's json format with a schema; the `extract` tool adds native async multi-URL extraction.
 
 ### Does Claude Code web scraping require an API key?
 
@@ -328,4 +328,4 @@ CRW provides significantly cleaner output. It strips navigation, ads, footers, a
 
 ### How accurate and fast is CRW's MCP scraper?
 
-On the public 3-way scrape benchmark — Firecrawl's scrape-content-dataset-v1 of 1,000 URLs with 819 labeled, harness diagnose_3way.py, run 2026-05-08 — CRW posted 63.74% truth-recall (522 of 819 labeled URLs), the highest of the three, plus ~92% scrape success of reachable URLs and 0 thrown errors across 3,000 requests. Its p50 latency was 1914ms (fastest) and in fast mode its p90 was 4348ms — the lowest of the three.
+On the public 3-way scrape benchmark — Firecrawl's scrape-content-dataset-v1 of 1,000 URLs with 819 labeled, harness diagnose_3way.py, run 2026-05-08 — CRW posted 63.74% truth-recall (522 of 819 labeled URLs), the highest of the three, plus ~92% scrape success of reachable URLs and 0 thrown errors across 3,000 requests. Its p50 latency was 1914ms (fastest).

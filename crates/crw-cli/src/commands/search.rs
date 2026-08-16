@@ -1,11 +1,27 @@
-//! Search subcommand — web search via SearXNG.
-//!
-//! This is NEW functionality that was previously only available via the REST API.
+//! Search subcommand — web search through CRW Cloud or a local backend.
 
+use super::diag::is_managed_api_url;
 use clap::{Args, ValueEnum};
-use crw_search::{SearxngClient, SearxngParams, transform_flat};
+use crw_core::config::AppConfig;
+use crw_core::types::SearchResult;
+use crw_search::{SearchError, SearxngClient, SearxngParams, transform_flat};
+use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::time::Duration;
+
+const DEFAULT_CLOUD_API_URL: &str = "https://api.fastcrw.com";
+const DEFAULT_LOCAL_SEARCH_URL: &str = "http://127.0.0.1:8080";
+
+#[derive(Debug, PartialEq, Eq)]
+enum SearchTarget {
+    Cloud {
+        api_url: String,
+        api_key: Option<String>,
+    },
+    Local {
+        backend_url: String,
+    },
+}
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum SearchFormat {
@@ -35,11 +51,9 @@ pub struct SearchArgs {
 
     /// Search backend instance URL.
     ///
-    /// Resolution order: this flag > `CRW_SEARCH_BACKEND_URL` env >
-    /// `search.search_backend_url` in `~/.config/crw/config.toml` >
-    /// `http://127.0.0.1:8080` (the default `crw setup --local` sidecar).
-    /// Public instances usually block JSON requests with 403/429 — prefer a
-    /// local sidecar.
+    /// Passing this explicitly selects local search, even when CRW Cloud was
+    /// configured by `crw setup`. Without it, Cloud credentials are used when
+    /// present; otherwise CRW falls back to the configured local backend.
     ///
     /// `--searxng-url` and `CRW_SEARXNG_URL` are the original names and still
     /// work.
@@ -99,51 +113,63 @@ pub async fn run(args: SearchArgs) {
             .expect("failed to build HTTP client"),
     );
 
-    let search_backend_url = resolve_searxng_url(args.search_backend_url.as_deref());
+    let target = resolve_search_target(args.search_backend_url.as_deref());
 
-    let client = SearxngClient::new(http, &search_backend_url, Duration::from_secs(args.timeout));
-
-    let params = SearxngParams {
-        q: args.query.clone(),
-        categories: args.category,
-        language: args.language,
-        time_range: args.time_range,
-        engines: None,
-        pageno: None,
-        safesearch: args.safesearch,
-        // Self-host/CLI never spends on a metered backend tier.
-        paid_rescue: false,
-    };
-
-    let response = match client.fetch(&params).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: search failed: {e}");
-            eprintln!();
-            eprintln!(
-                "hint: the search backend is unreachable at {}",
-                search_backend_url
+    let results = match &target {
+        SearchTarget::Cloud { api_url, api_key } => {
+            match fetch_cloud_results(http.as_ref(), api_url, api_key.as_deref(), &args).await {
+                Ok(results) => results,
+                Err(error) => {
+                    if is_managed_api_url(api_url) {
+                        eprintln!("error: cloud search failed: {error}");
+                        eprintln!();
+                        eprintln!("hint: check your network and API key, then run:");
+                        eprintln!("          crw setup --cloud");
+                    } else {
+                        eprintln!("error: remote search failed: {error}");
+                        eprintln!();
+                        eprintln!(
+                            "hint: check that {api_url} is reachable and its search backend is configured"
+                        );
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        SearchTarget::Local { backend_url } => {
+            let client = SearxngClient::new(
+                Arc::clone(&http),
+                backend_url,
+                Duration::from_secs(args.timeout),
             );
-            eprintln!();
-            eprintln!("      Easiest fix — let `crw setup` boot a local one for you:");
-            eprintln!("          crw setup --local");
-            eprintln!();
-            eprintln!("      Manual fix — boot a search backend with JSON output enabled (the");
-            eprintln!("      stock image ships with JSON disabled, which causes 403s):");
-            eprintln!("          docker run -d --name searxng -p 8080:8080 \\");
-            eprintln!(
-                "            -v ~/.config/crw/searxng-settings.yml:/etc/searxng/settings.yml \\"
-            );
-            eprintln!("            searxng/searxng");
-            eprintln!();
-            eprintln!("      Public instances usually block JSON requests with 403/429 and");
-            eprintln!("      are not recommended.");
-            std::process::exit(1);
+            let params = SearxngParams {
+                q: args.query.clone(),
+                categories: args.category.clone(),
+                language: args.language.clone(),
+                time_range: args.time_range.clone(),
+                engines: None,
+                pageno: None,
+                safesearch: args.safesearch,
+                // Self-host/CLI never spends on a metered backend tier.
+                paid_rescue: false,
+            };
+            match client.fetch(&params).await {
+                Ok(response) => transform_flat(&response, args.limit),
+                Err(error) => {
+                    eprintln!(
+                        "error: local search failed: {}",
+                        local_error_message(&error)
+                    );
+                    eprintln!();
+                    eprintln!("hint: the local search backend is unreachable at {backend_url}");
+                    eprintln!();
+                    eprintln!("      Let crw setup configure it for you:");
+                    eprintln!("          crw setup --local");
+                    std::process::exit(1);
+                }
+            }
         }
     };
-
-    // Transform to flat result format
-    let results = transform_flat(&response, args.limit);
 
     // `--json` shorthand wins over `--format` (clap enforces no double-set
     // via conflicts_with, but if only --json is passed we still need to
@@ -251,32 +277,287 @@ pub async fn run(args: SearchArgs) {
     }
 }
 
-/// Pick the SearXNG URL from (in priority order):
-///   1. CLI flag / env (already merged by clap into `cli`)
-///   2. `search.search_backend_url` from `~/.config/crw/config.toml`
-///   3. The hardcoded `http://localhost:8080` fallback
-///
-/// Step 2 is what makes `crw setup` -> `crw search` work without the user
-/// having to `source ~/.zshrc` first.
-fn resolve_searxng_url(cli: Option<&str>) -> String {
-    if let Some(url) = cli {
-        return url.to_string();
+/// Call a remote CRW API (managed or self-hosted) and normalize its public
+/// response into the result type already consumed by the CLI renderers.
+async fn fetch_cloud_results(
+    http: &reqwest::Client,
+    api_url: &str,
+    api_key: Option<&str>,
+    args: &SearchArgs,
+) -> Result<Vec<SearchResult>, String> {
+    if is_managed_api_url(api_url) && api_key.is_none() {
+        return Err("the Cloud API key is missing; run crw setup --cloud again".to_string());
     }
-    // The flag's env is CRW_SEARCH_BACKEND_URL; CRW_SEARXNG_URL was its original
-    // name. clap only binds one env per arg, so honour the old one here rather
-    // than breaking shells that already export it.
-    if let Ok(url) = std::env::var("CRW_SEARXNG_URL")
-        && !url.is_empty()
-    {
-        return url;
+    if args.safesearch.is_some() {
+        return Err(
+            "--safesearch is only available with --search-backend-url local search".to_string(),
+        );
     }
-    if let Ok(cfg) = crw_core::config::AppConfig::load()
-        && let Some(url) = cfg.search.search_backend_url
-    {
-        return url;
+
+    let mut body = Map::new();
+    body.insert("query".to_string(), json!(args.query));
+    body.insert("limit".to_string(), json!(args.limit));
+    if let Some(language) = &args.language {
+        body.insert("lang".to_string(), json!(language));
     }
-    // Prefer 127.0.0.1 over "localhost" — on some systems (macOS in particular)
-    // "localhost" resolves to ::1 first, and a v4-only SearXNG container fails
-    // with a misleading transport error before the v6→v4 fallback retries.
-    "http://127.0.0.1:8080".to_string()
+    if let Some(category) = &args.category {
+        body.insert("categories".to_string(), json!([category]));
+    }
+    if let Some(time_range) = &args.time_range {
+        let tbs = match time_range.as_str() {
+            "day" => "qdr:d",
+            "week" => "qdr:w",
+            "month" => "qdr:m",
+            "year" => "qdr:y",
+            other => {
+                return Err(format!(
+                    "unsupported time range {other:?}; use day, week, month, or year"
+                ));
+            }
+        };
+        body.insert("tbs".to_string(), json!(tbs));
+    }
+
+    let endpoint = format!("{}/v1/search", api_url.trim_end_matches('/'));
+    let mut request = http
+        .post(endpoint)
+        .timeout(Duration::from_secs(args.timeout))
+        .json(&Value::Object(body));
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    let response = request.send().await.map_err(|error| {
+        if error.is_timeout() {
+            "the configured API timed out".to_string()
+        } else {
+            "could not reach the configured API".to_string()
+        }
+    })?;
+    let status = response.status();
+    let payload: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("the API returned invalid JSON: {error}"))?;
+
+    parse_cloud_response(status.as_u16(), payload)
+}
+
+fn parse_cloud_response(status: u16, payload: Value) -> Result<Vec<SearchResult>, String> {
+    let success = payload
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !(200..300).contains(&status) || !success {
+        let detail = payload
+            .get("error")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                payload
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| payload.get("message").and_then(Value::as_str))
+            .unwrap_or("request rejected");
+        return Err(format!("API returned status {status}: {detail}"));
+    }
+
+    let data = payload
+        .get("data")
+        .ok_or_else(|| "the API response did not contain data".to_string())?;
+    // Cloud returns the flat result array directly in data; self-hosted
+    // deployments wrap it in data.results. Accept both remote contracts.
+    let rows = data.get("results").unwrap_or(data).clone();
+    serde_json::from_value(rows)
+        .map_err(|error| format!("the API returned an unexpected search result shape: {error}"))
+}
+
+fn local_error_message(error: &SearchError) -> String {
+    match error {
+        SearchError::Timeout => "the backend timed out".to_string(),
+        SearchError::Upstream { status, .. } => {
+            format!("the backend returned HTTP status {status}")
+        }
+        SearchError::InvalidResponse(_) => "the backend returned an invalid response".to_string(),
+        SearchError::Transport(_) => "could not connect to the backend".to_string(),
+    }
+}
+
+fn resolve_search_target(explicit_backend: Option<&str>) -> SearchTarget {
+    let legacy_backend = non_empty_env("CRW_SEARXNG_URL");
+    let env_api_url = non_empty_env("CRW_API_URL");
+    let env_api_key = non_empty_env("CRW_API_KEY");
+    let config = AppConfig::load().ok();
+    choose_search_target(
+        explicit_backend,
+        legacy_backend.as_deref(),
+        env_api_url.as_deref(),
+        env_api_key.as_deref(),
+        config.as_ref(),
+    )
+}
+
+fn choose_search_target(
+    explicit_backend: Option<&str>,
+    legacy_backend: Option<&str>,
+    env_api_url: Option<&str>,
+    env_api_key: Option<&str>,
+    config: Option<&AppConfig>,
+) -> SearchTarget {
+    if let Some(backend_url) = explicit_backend.or(legacy_backend) {
+        return SearchTarget::Local {
+            backend_url: backend_url.to_string(),
+        };
+    }
+
+    let config_api_url = config.and_then(|cfg| cfg.client.api_url.as_deref());
+    let config_api_key = config.and_then(|cfg| cfg.client.api_key.as_deref());
+    let api_key = env_api_key.or(config_api_key);
+    if env_api_url.is_some() || api_key.is_some() || config_api_url.is_some() {
+        return SearchTarget::Cloud {
+            api_url: env_api_url
+                .or(config_api_url)
+                .unwrap_or(DEFAULT_CLOUD_API_URL)
+                .to_string(),
+            api_key: api_key.map(str::to_string),
+        };
+    }
+
+    SearchTarget::Local {
+        backend_url: config
+            .and_then(|cfg| cfg.search.search_backend_url.clone())
+            .unwrap_or_else(|| DEFAULT_LOCAL_SEARCH_URL.to_string()),
+    }
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result_json() -> Value {
+        json!({
+            "url": "https://example.com/rust",
+            "title": "Rust tutorial",
+            "description": "Learn Rust",
+            "snippet": "Learn Rust",
+            "position": 1,
+            "score": 0.9,
+            "publishedDate": null,
+            "category": "general",
+            "markdown": null,
+            "html": null,
+            "rawHtml": null,
+            "links": null,
+            "metadata": null,
+            "summary": null,
+            "error": null
+        })
+    }
+
+    #[test]
+    fn cloud_setup_credentials_route_search_to_cloud() {
+        let mut cfg = AppConfig::default();
+        cfg.client.api_url = Some("https://cloud.example".to_string());
+        cfg.client.api_key = Some("fc-test".to_string());
+
+        assert_eq!(
+            choose_search_target(None, None, None, None, Some(&cfg)),
+            SearchTarget::Cloud {
+                api_url: "https://cloud.example".to_string(),
+                api_key: Some("fc-test".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_local_backend_wins_over_cloud_setup() {
+        let mut cfg = AppConfig::default();
+        cfg.client.api_url = Some("https://cloud.example".to_string());
+        cfg.client.api_key = Some("fc-test".to_string());
+
+        assert_eq!(
+            choose_search_target(
+                Some("http://search.local:8080"),
+                None,
+                None,
+                None,
+                Some(&cfg)
+            ),
+            SearchTarget::Local {
+                backend_url: "http://search.local:8080".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn cloud_credentials_win_over_stale_local_config() {
+        let mut cfg = AppConfig::default();
+        cfg.client.api_url = Some("https://cloud.example".to_string());
+        cfg.client.api_key = Some("fc-test".to_string());
+        cfg.search.search_backend_url = Some("http://old-local:8080".to_string());
+
+        assert!(matches!(
+            choose_search_target(None, None, None, None, Some(&cfg)),
+            SearchTarget::Cloud { .. }
+        ));
+    }
+
+    #[test]
+    fn api_key_env_uses_default_cloud_url() {
+        assert_eq!(
+            choose_search_target(None, None, None, Some("fc-env"), None),
+            SearchTarget::Cloud {
+                api_url: DEFAULT_CLOUD_API_URL.to_string(),
+                api_key: Some("fc-env".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn managed_api_requires_a_key_but_custom_remote_does_not() {
+        assert!(is_managed_api_url("https://api.fastcrw.com"));
+        assert!(is_managed_api_url("https://API.FASTCRW.COM/v1"));
+        assert!(!is_managed_api_url("http://localhost:3000"));
+        assert!(!is_managed_api_url("https://crw.internal.example"));
+    }
+
+    #[test]
+    fn unconfigured_search_uses_local_default() {
+        assert_eq!(
+            choose_search_target(None, None, None, None, None),
+            SearchTarget::Local {
+                backend_url: DEFAULT_LOCAL_SEARCH_URL.to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_hosted_flat_response() {
+        let results = parse_cloud_response(200, json!({"success": true, "data": [result_json()]}))
+            .expect("hosted response should parse");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Rust tutorial");
+    }
+
+    #[test]
+    fn parses_self_hosted_wrapped_response() {
+        let results = parse_cloud_response(
+            200,
+            json!({"success": true, "data": {"results": [result_json()]}}),
+        )
+        .expect("wrapped response should parse");
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn surfaces_cloud_api_error_without_local_backend_advice() {
+        let error =
+            parse_cloud_response(401, json!({"success": false, "error": "invalid API key"}))
+                .expect_err("error response should fail");
+        assert_eq!(error, "API returned status 401: invalid API key");
+    }
 }

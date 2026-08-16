@@ -1,11 +1,7 @@
 //! Cloud setup flow for CRW.
 
-use crate::commands::setup::config_file::{
-    self, ClientSection, ExtractionSection, LlmSection, UserConfig,
-};
-use crate::commands::setup::llm::{self, LlmSetupResult};
-use crate::commands::setup::shell::{self, Shell, ShellConfig};
-use crate::commands::setup::ui::{self, SetupError, SummaryItem};
+use crate::commands::setup::config_file::{self, ClientSection, UserConfig};
+use crate::commands::setup::ui::{self, SetupError};
 use console::style;
 use dialoguer::{Input, Select};
 use serde::Deserialize;
@@ -70,36 +66,14 @@ pub async fn run_with_key(api_key: String) -> Result<(), SetupError> {
         }
     }
 
-    // Persist canonical cloud config (client → api.fastcrw.com). No LLM leg in
-    // the non-interactive path; users can add one later with `crw setup`.
-    let cfg_path = config_file::write_user_config(build_user_config(&api_key, None))?;
-    ui::print_success(&format!("Saved {}", cfg_path.display()));
-    println!();
-
-    ui::print_summary(
-        "Configuration Summary",
-        &[
-            SummaryItem::new("Cloud API", "Connected (fastcrw.com)", true),
-            SummaryItem::new("Config saved", "~/.config/crw/config.toml", true),
-        ],
-    );
-
-    let quick_start = [
-        "crw example.com              # Scrape a page",
-        "crw search \"rust tutorials\"  # Web search",
-        "crw --help                   # See all commands",
-    ];
-    ui::print_completion_banner(None, &quick_start, &[]);
-
-    Ok(())
+    finish_cloud_setup(&api_key)
 }
 
 /// Run the cloud setup flow.
 pub async fn run() -> Result<(), SetupError> {
     ui::print_section_header("☁️", "CLOUD SETUP");
 
-    // Step 1: Get CRW API key
-    ui::print_step(1, 3, "Get your CRW API key");
+    ui::print_step(1, 1, "Connect your CRW API key");
 
     println!("  Visit: {}", style(DASHBOARD_URL).cyan().underlined());
     println!();
@@ -108,80 +82,52 @@ pub async fn run() -> Result<(), SetupError> {
     println!();
 
     let api_key = get_api_key().await?;
+    finish_cloud_setup(&api_key)
+}
 
-    // Step 2: Configure LLM (optional)
-    ui::print_step(2, 3, "Configure LLM (optional)");
-
-    let llm_result = llm::run().await?;
-
-    // Step 3: Save configuration
-    ui::print_step(3, 3, "Save configuration");
-
-    let shell = shell::detect_shell();
-    ui::print_info(&format!("Detected shell: {}", shell));
-    println!();
-
-    // Always persist canonical state to ~/.config/crw/config.toml. The shell
-    // rc / manual options below are *additional* convenience layers, not
-    // alternatives — env vars (CRW_*) still take precedence over the file
-    // for CI/Docker users.
-    let cfg_path =
-        config_file::write_user_config(build_user_config(&api_key, llm_result.as_ref()))?;
-    ui::print_success(&format!("Saved {}", cfg_path.display()));
-    println!();
-
-    let save_location = prompt_save_location(shell)?;
-
-    match save_location {
-        SaveLocation::ShellRc => {
-            save_to_shell_rc(shell, &api_key, llm_result.as_ref())?;
-        }
-        SaveLocation::ConfigFile => {
-            // Already written above — nothing extra to do beyond the success line.
-            ui::print_info("Config file is the source of truth for these settings.");
-            println!();
-        }
-        SaveLocation::Manual => {
-            show_manual_instructions(&api_key, llm_result.as_ref());
-        }
+/// Persist the only state cloud mode needs. LLM credentials are deliberately
+/// absent: AI features ask for a provider when the user first invokes one.
+/// This also keeps interactive and `--api-key` setup behavior identical after
+/// validation — paste one key, save it, done.
+fn finish_cloud_setup(api_key: &str) -> Result<(), SetupError> {
+    let cfg_path = config_file::write_user_config(build_user_config(api_key))?;
+    ui::print_success("Connected to CRW Cloud");
+    ui::print_detail(&format!("Saved {}", cfg_path.display()));
+    if cloud_env_conflicts(
+        api_key,
+        non_empty_env("CRW_API_URL").as_deref(),
+        non_empty_env("CRW_API_KEY").as_deref(),
+        non_empty_env("CRW_SEARCH_BACKEND_URL").as_deref(),
+        non_empty_env("CRW_SEARXNG_URL").as_deref(),
+    ) {
+        println!();
+        ui::print_warning("Existing CRW_* environment variables override this Cloud setup.");
+        ui::print_detail(
+            "Remove the old export or run `crw setup --reset-shell`, then open a new shell.",
+        );
     }
 
-    // Print configuration summary
-    let summary_items = vec![
-        SummaryItem::new("Cloud API", "Connected (fastcrw.com)", true),
-        SummaryItem::new(
-            "LLM Provider",
-            llm_result
-                .as_ref()
-                .map(|l| l.provider.name())
-                .unwrap_or("Not configured"),
-            llm_result.is_some(),
-        ),
-        SummaryItem::new(
-            "Config saved",
-            match save_location {
-                SaveLocation::ShellRc => "~/.zshrc",
-                SaveLocation::ConfigFile => "~/.config/crw/config.toml",
-                SaveLocation::Manual => "Manual (env vars)",
-            },
-            true,
-        ),
-    ];
-    ui::print_summary("Configuration Summary", &summary_items);
-
-    // Build quick start based on what was configured
-    let mut quick_start = vec![
-        "crw example.com              # Scrape a page",
-        "crw search \"rust tutorials\"  # Web search",
-    ];
-
-    quick_start.push("crw --help                   # See all commands");
-
-    // Print completion banner
-    let source_cmd = shell::source_command(shell);
-    ui::print_completion_banner(source_cmd.as_deref(), &quick_start, &[]);
+    let quick_start = ["crw search \"rust tutorials\"  # Search with Cloud"];
+    ui::print_completion_banner(&quick_start, &[]);
 
     Ok(())
+}
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+fn cloud_env_conflicts(
+    saved_api_key: &str,
+    env_api_url: Option<&str>,
+    env_api_key: Option<&str>,
+    env_search_url: Option<&str>,
+    legacy_search_url: Option<&str>,
+) -> bool {
+    env_api_url.is_some_and(|url| url.trim_end_matches('/') != API_BASE_URL)
+        || env_api_key.is_some_and(|key| key != saved_api_key)
+        || env_search_url.is_some()
+        || legacy_search_url.is_some()
 }
 
 /// Get and validate API key from user.
@@ -224,19 +170,14 @@ async fn get_api_key() -> Result<String, SetupError> {
             ApiKeyStatus::Invalid => {
                 ui::print_error("Invalid API key");
                 println!();
-                println!("  The API key couldn't be verified. Try these steps:");
+                println!("  The API rejected this key. Try these steps:");
                 println!("  1. Check for extra spaces (copy exactly from dashboard)");
                 println!("  2. Ensure key hasn't been revoked");
-                println!("  3. Check network: curl -I {}/health", API_BASE_URL);
                 println!();
 
                 let choice = Select::with_theme(&ui::select_style())
                     .with_prompt("  What would you like to do?")
-                    .items([
-                        "Try again",
-                        "Get a new key (opens browser)",
-                        "Continue anyway (key not verified)",
-                    ])
+                    .items(["Try again", "Get a new key (opens browser)", "Cancel setup"])
                     .default(0)
                     .interact()
                     .map_err(ui::handle_dialoguer_error)?;
@@ -247,10 +188,7 @@ async fn get_api_key() -> Result<String, SetupError> {
                         open_browser(DASHBOARD_URL);
                         continue;
                     }
-                    2 => {
-                        ui::print_warning("Continuing with unverified API key");
-                        return Ok(api_key);
-                    }
+                    2 => return Err(SetupError::Cancelled),
                     _ => unreachable!(),
                 }
             }
@@ -319,132 +257,19 @@ async fn validate_api_key(key: &str) -> ApiKeyStatus {
     }
 }
 
-/// Where to save the configuration.
-#[derive(Debug, Clone, Copy)]
-enum SaveLocation {
-    ShellRc,
-    ConfigFile,
-    Manual,
-}
-
-/// Prompt for any extra export step on top of the already-written config.toml.
-///
-/// Re-ordered so `ConfigFile` (do-nothing-extra) is the default: the file
-/// is already the canonical state. Shell exports are only useful when env
-/// vars need to win over the file (CI / Docker / scripts).
-fn prompt_save_location(shell: Shell) -> Result<SaveLocation, SetupError> {
-    let rc_file = shell::get_rc_file(shell);
-    let rc_name = rc_file
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("shell rc");
-
-    let items = vec![
-        "Nothing extra — config.toml is enough (recommended)".to_string(),
-        format!(
-            "Also append `export CRW_*` to ~/{} (for CI/Docker)",
-            rc_name
-        ),
-        "Print env vars to copy/paste manually".to_string(),
-    ];
-
-    let choice = Select::with_theme(&ui::select_style())
-        .with_prompt("  Anything else?")
-        .items(&items)
-        .default(0)
-        .interact_opt()
-        .map_err(ui::handle_dialoguer_error)?
-        .ok_or(SetupError::Cancelled)?;
-
-    Ok(match choice {
-        0 => SaveLocation::ConfigFile,
-        1 => SaveLocation::ShellRc,
-        2 => SaveLocation::Manual,
-        _ => unreachable!(),
-    })
-}
-
-/// Save configuration to shell RC file.
-fn save_to_shell_rc(
-    shell: Shell,
-    api_key: &str,
-    llm_result: Option<&LlmSetupResult>,
-) -> Result<(), String> {
-    let mut config = ShellConfig::new();
-    config.export("CRW_API_URL", API_BASE_URL);
-    config.export("CRW_API_KEY", api_key);
-
-    // Add LLM config if provided
-    if let Some(llm) = llm_result {
-        llm::add_to_shell_config(&mut config, llm);
-    }
-
-    let rc_path = shell::append_to_rc(shell, &config)?;
-
-    ui::print_success(&format!("Added to {}:", rc_path.display()));
-    println!("    export CRW_API_URL=\"{}\"", API_BASE_URL);
-    println!(
-        "    export CRW_API_KEY=\"{}...\"",
-        &api_key[..std::cmp::min(8, api_key.len())]
-    );
-
-    if let Some(llm) = llm_result {
-        println!(
-            "    export CRW_EXTRACTION__LLM__PROVIDER=\"{}\"",
-            llm.provider.config_value()
-        );
-        println!("    export CRW_EXTRACTION__LLM__MODEL=\"{}\"", llm.model);
-    }
-
-    println!();
-    Ok(())
-}
-
-/// Mask an API key for display (show first 4 and last 4 chars).
-fn mask_api_key(key: &str) -> String {
-    if key.len() <= 12 {
-        return "*".repeat(key.len());
-    }
-    format!("{}...{}", &key[..4], &key[key.len() - 4..])
-}
-
 /// Build the `UserConfig` we'll persist to `~/.config/crw/config.toml`.
 ///
 /// Only sections the wizard actually touched are filled in. Anything else
 /// (search, etc.) is left as `None` so a previous run's value survives the
 /// merge in `config_file::write_user_config`.
-fn build_user_config(api_key: &str, llm_result: Option<&LlmSetupResult>) -> UserConfig {
+fn build_user_config(api_key: &str) -> UserConfig {
     UserConfig {
         client: Some(ClientSection {
             api_url: Some(API_BASE_URL.to_string()),
             api_key: Some(api_key.to_string()),
         }),
         search: None,
-        extraction: llm_result.map(|llm| ExtractionSection {
-            llm: Some(LlmSection {
-                provider: Some(llm.provider.config_value().to_string()),
-                api_key: Some(llm.api_key.clone()),
-                model: Some(llm.model.clone()),
-                base_url: llm.base_url.clone(),
-                azure_api_version: llm.azure_api_version.clone(),
-            }),
-        }),
-    }
-}
-
-/// Show manual configuration instructions.
-fn show_manual_instructions(api_key: &str, llm_result: Option<&LlmSetupResult>) {
-    println!();
-    println!("  Add these environment variables to your shell:");
-    println!();
-    println!("    export CRW_API_URL=\"{}\"", API_BASE_URL);
-    println!("    export CRW_API_KEY=\"{}\"", mask_api_key(api_key));
-
-    if let Some(llm) = llm_result {
-        llm::show_manual_config(llm);
-    } else {
-        println!();
+        extraction: None,
     }
 }
 
@@ -476,7 +301,7 @@ mod tests {
     // pass-through would silently write a config that doesn't reach cloud.
     #[test]
     fn build_user_config_wires_cloud_with_key() {
-        let cfg = build_user_config("crw_live_test_key", None);
+        let cfg = build_user_config("crw_live_test_key");
         let client = cfg.client.expect("client section");
         assert_eq!(client.api_url.as_deref(), Some(API_BASE_URL));
         assert_eq!(client.api_key.as_deref(), Some("crw_live_test_key"));
@@ -484,5 +309,37 @@ mod tests {
             cfg.extraction.is_none(),
             "no LLM leg in non-interactive path"
         );
+    }
+
+    #[test]
+    fn cloud_env_conflict_only_flags_values_that_change_routing() {
+        assert!(!cloud_env_conflicts(
+            "fc-same",
+            Some("https://api.fastcrw.com/"),
+            Some("fc-same"),
+            None,
+            None
+        ));
+        assert!(cloud_env_conflicts(
+            "fc-new",
+            None,
+            Some("fc-old"),
+            None,
+            None
+        ));
+        assert!(cloud_env_conflicts(
+            "fc-new",
+            None,
+            None,
+            Some("http://127.0.0.1:8080"),
+            None
+        ));
+        assert!(cloud_env_conflicts(
+            "fc-new",
+            None,
+            None,
+            None,
+            Some("http://127.0.0.1:8080")
+        ));
     }
 }

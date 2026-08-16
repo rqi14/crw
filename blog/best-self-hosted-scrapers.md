@@ -71,7 +71,7 @@ docker run -p 3000:3000 -e CRW_API_KEY=your-key ghcr.io/us/crw:latest
 curl https://api.fastcrw.com/v1/scrape   -H "Authorization: Bearer crw_live_YOUR_API_KEY"   -H "Content-Type: application/json"   -d '{"url": "https://example.com", "formats": ["markdown"]}'
 ```
 
-That is the entire setup. No cloning a repo, no Redis, no Playwright install. The 8 MB image pulls in a few seconds even on a slow connection. The API key is optional for local development but strongly recommended for any networked deployment.
+That is the entire setup. No cloning a repo, no Redis, no Playwright install. The image pulls in a few seconds even on a slow connection. The API key is optional for local development but strongly recommended for any networked deployment.
 
 ### Firecrawl
 
@@ -343,7 +343,7 @@ Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed vers
 
 ### What is the easiest web scraper to self-host?
 
-CRW requires only a single Docker command — no Redis, no Playwright install, no environment config beyond an optional API key. It is a single ~8 MB static Rust binary in one container, versus a Firecrawl self-host's five containers (Redis, Playwright workers, and more). Crawl4AI sits in between, needing a Python runtime and a ~2 GB Chromium-bundled image.
+CRW requires only a single Docker command — no Redis, no Playwright install, no environment config beyond an optional API key. It ships as a single binary, a ~10 MB download, in one container, versus a Firecrawl self-host's five containers (Redis, Playwright workers, and more). Crawl4AI sits in between, needing a Python runtime and a ~2 GB Chromium-bundled image.
 
 ### Which self-hosted scraper is the most accurate for RAG?
 
@@ -351,7 +351,7 @@ On Firecrawl's public scrape-content-dataset-v1 (1,000 URLs, 819 labeled), CRW r
 
 ### How does CRW's latency compare on the scrape benchmark?
 
-In the same 3-way run, CRW's p50 latency was 1914 ms, against Crawl4AI's 1916 ms and Firecrawl's 2305 ms. In fast mode, CRW's p90 is 4348 ms — the lowest of the three (Crawl4AI 4754 ms, Firecrawl 6937 ms). When the chrome-stealth fallback is active to recover hard pages the other tools miss, tail latency rises; that is the same mechanism that produces the recall win.
+In the same 3-way run, CRW's p50 latency was 1914 ms, against Crawl4AI's 1916 ms and Firecrawl's 2305 ms. When the chrome-stealth fallback is active to recover hard pages the other tools miss, tail latency rises; that is the same mechanism that produces the recall win.
 
 ### Is Firecrawl open source and can I self-host it?
 

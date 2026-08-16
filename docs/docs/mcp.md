@@ -1,6 +1,6 @@
 # MCP Server for AI Agents
 
-CRW includes a built-in MCP (Model Context Protocol) server that gives any MCP-compatible AI assistant — Claude Code, Claude Desktop, Cursor, Windsurf, Cline, Continue.dev, OpenAI Codex CLI — 8 web scraping tools. Turn any AI coding agent into a web scraper with a single command.
+CRW includes a built-in MCP (Model Context Protocol) server that gives any MCP-compatible AI assistant — Claude Code, Claude Desktop, Cursor, Windsurf, Cline, Continue.dev, OpenAI Codex CLI — 9 web scraping tools (8 on a self-host with no search backend configured, since `crw_search` is hidden in that case). Turn any AI coding agent into a web scraper with a single command.
 
 > Also available on the [MCP Registry](https://registry.modelcontextprotocol.io/?q=crw)
 
@@ -276,6 +276,8 @@ In **proxy mode** `crw_search` is always advertised. In **embedded mode** it is 
 | `categories` | string[] | no | Category bias (e.g. `["general","news"]`) |
 | `scrapeOptions` | object | no | Scrape each result page (e.g. `{"formats": ["markdown"]}`) |
 
+> **Response shape depends on mode.** A self-hosted engine (embedded mode or proxying to your own `crw-server`) nests search results under `data.results`. The hosted API at `api.fastcrw.com` puts them directly in `data`. If you write your own client instead of using the official SDKs (which handle both shapes), check for `data.results` before falling back to `data`. See [response shapes](/response-shapes).
+
 ### crw_parse_file
 
 Parse a local PDF supplied as a base64-encoded string. No OCR — works on text-layer PDFs.
@@ -371,7 +373,7 @@ Protocol version: `2025-06-18`
 
 Every tool call returns its result as a text content block, and tools with a structured result also return it as a spec-compliant `structuredContent` object (MCP 2025-06-18). The two are always the same value, so lenient clients can keep reading the text block unchanged.
 
-An `outputSchema` is advertised by the two surfaces that produce the body themselves — **embedded stdio** and the engine's own **HTTP `/mcp`** — because there the shape is guaranteed. The **stdio proxy** (`crw-mcp --api-url …`) advertises none: `--api-url` can point at a self-hosted engine (which nests the results as `data.results`) or at the hosted API (which puts them directly in `data`), and under MCP 2025-06-18 a declared schema is a promise the server MUST keep — on a mismatch, a strict client rejects the entire call. `structuredContent` is still emitted in proxy mode; there is simply no advertised schema to validate it against. See [response shapes](/response-shapes) for both bodies.
+An `outputSchema` is advertised by the two surfaces that produce the body themselves — **embedded stdio** and the engine's own **HTTP `/mcp`** — because there the shape is guaranteed. The **stdio proxy** (`crw-mcp --api-url …`) advertises none: as noted under `crw_search` above, `--api-url` can point at either response shape, and under MCP 2025-06-18 a declared schema is a promise the server MUST keep — on a mismatch, a strict client rejects the entire call. `structuredContent` is still emitted in proxy mode; there is simply no advertised schema to validate it against. See [response shapes](/response-shapes) for both bodies.
 
 ## Operational Notes
 

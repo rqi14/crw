@@ -1,6 +1,5 @@
 //! LLM provider setup for AI-powered features (summary, search answers, structured extraction).
 
-use crate::commands::setup::shell::ShellConfig;
 use crate::commands::setup::ui::{self, SetupError};
 use console::style;
 use dialoguer::{Input, Select};
@@ -365,59 +364,4 @@ fn prompt_azure_version() -> Result<String, SetupError> {
         .map_err(ui::handle_dialoguer_error)?;
 
     Ok(version.trim().to_string())
-}
-
-/// Add LLM configuration to shell config.
-pub fn add_to_shell_config(config: &mut ShellConfig, result: &LlmSetupResult) {
-    config.export(
-        "CRW_EXTRACTION__LLM__PROVIDER",
-        result.provider.config_value(),
-    );
-    config.export("CRW_EXTRACTION__LLM__API_KEY", &result.api_key);
-    config.export("CRW_EXTRACTION__LLM__MODEL", &result.model);
-
-    if let Some(ref url) = result.base_url {
-        config.export("CRW_EXTRACTION__LLM__BASE_URL", url);
-    }
-
-    if let Some(ref version) = result.azure_api_version {
-        config.export("CRW_EXTRACTION__LLM__AZURE_API_VERSION", version);
-    }
-}
-
-/// Mask an API key for display (show first 4 and last 4 chars).
-fn mask_api_key(key: &str) -> String {
-    if key.len() <= 12 {
-        return "*".repeat(key.len());
-    }
-    format!("{}...{}", &key[..4], &key[key.len() - 4..])
-}
-
-/// Show LLM configuration for manual setup.
-pub fn show_manual_config(result: &LlmSetupResult) {
-    println!();
-    println!("  Add these environment variables to your shell:");
-    println!();
-    println!(
-        "    export CRW_EXTRACTION__LLM__PROVIDER=\"{}\"",
-        result.provider.config_value()
-    );
-    println!(
-        "    export CRW_EXTRACTION__LLM__API_KEY=\"{}\"",
-        mask_api_key(&result.api_key)
-    );
-    println!("    export CRW_EXTRACTION__LLM__MODEL=\"{}\"", result.model);
-
-    if let Some(ref url) = result.base_url {
-        println!("    export CRW_EXTRACTION__LLM__BASE_URL=\"{}\"", url);
-    }
-
-    if let Some(ref version) = result.azure_api_version {
-        println!(
-            "    export CRW_EXTRACTION__LLM__AZURE_API_VERSION=\"{}\"",
-            version
-        );
-    }
-
-    println!();
 }

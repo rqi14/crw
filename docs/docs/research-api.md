@@ -9,6 +9,12 @@ this stack reaches **61.0% recall — ahead of Firecrawl's Research Index (53.3%
 It's **live**: results merge our own web and research search with live open
 scholarly sources, including full-text paper search — no self-hosted paper index.
 
+Firecrawl's 53.3% is published in their own [Research Index launch
+post](https://www.firecrawl.dev/blog/research-index-launch) (2026-06-17): "On
+arXivQA, the index hits 53.3% recall at $0.32 per task, against 45.4% for the
+next best provider." Our 61.0% is fastCRW's own measurement on the same
+191-question ArXivQA set.
+
 ## Authentication
 
 Use a Bearer token: `Authorization: Bearer <crw_live_…>`. Get a key from the
@@ -16,19 +22,19 @@ Use a Bearer token: `Authorization: Bearer <crw_live_…>`. Get a key from the
 
 ## Endpoints
 
-Both surfaces return identical shapes. The cloud API mirrors Firecrawl's research
-paths for migration work; the engine serves them natively under `/v1`. There are
-no research routes on the engine's `/firecrawl/v2` compatibility surface.
+Both surfaces return identical shapes, served at the same `/v1` path whether you
+call the cloud API or your own self-hosted engine. There are no research routes
+on the `/firecrawl/v2` compatibility surface.
 
-| Task | Cloud (`https://fastcrw.com/api`) | Self-host (engine) |
-|------|-----------------------------------|--------------------|
-| Search papers | `GET /v2/search/research/papers` | `GET /v1/search/research/papers` |
-| Inspect metadata / read passages | `GET /v2/search/research/papers/{id}` | `GET /v1/search/research/papers/{id}` |
-| Find related papers | `GET /v2/search/research/papers/{id}/similar` | `GET /v1/search/research/papers/{id}/similar` |
-| Search GitHub | `GET /v2/search/research/github` | `GET /v1/search/research/github` |
+| Task | Path |
+|------|------|
+| Search papers | `GET /v1/search/research/papers` |
+| Inspect metadata / read passages | `GET /v1/search/research/papers/{id}` |
+| Find related papers | `GET /v1/search/research/papers/{id}/similar` |
+| Search GitHub | `GET /v1/search/research/github` |
 
-The sections below name the engine's native `/v1` path; the curl examples hit the
-cloud API.
+The sections below name this native `/v1` path; the curl examples hit the
+cloud API (`https://fastcrw.com/api`).
 
 ## Search papers
 
@@ -36,7 +42,7 @@ cloud API.
 
 ```bash
 curl -s -H "Authorization: Bearer $FASTCRW_API_KEY" \
-  "https://fastcrw.com/api/v2/search/research/papers?query=diffusion%20image%20synthesis&k=20"
+  "https://fastcrw.com/api/v1/search/research/papers?query=diffusion%20image%20synthesis&k=20"
 ```
 
 Returns ranked papers. `paperId` is the canonical id (a stable work id when
@@ -61,7 +67,7 @@ return the top passages answering a question:
 
 ```bash
 curl -s -H "Authorization: Bearer $FASTCRW_API_KEY" \
-  "https://fastcrw.com/api/v2/search/research/papers/arxiv:1706.03762?query=what%20is%20the%20attention%20mechanism&k=4"
+  "https://fastcrw.com/api/v1/search/research/papers/arxiv:1706.03762?query=what%20is%20the%20attention%20mechanism&k=4"
 ```
 
 ## Find related papers

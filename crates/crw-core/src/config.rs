@@ -21,8 +21,8 @@ pub struct AppConfig {
     /// `[document]` — binary-document (PDF) parsing knobs.
     #[serde(default)]
     pub document: DocumentConfig,
-    /// `[client]` — settings for the local CLI/MCP when it proxies to the
-    /// hosted SaaS. Written by `crw setup` into the user-config file.
+    /// `[client]` — settings for CLI commands and MCP when they use the hosted
+    /// SaaS. Written by `crw setup` into the user-config file.
     #[serde(default)]
     pub client: ClientConfig,
     /// `[mcp]` — MCP tool-response shaping knobs for self-hosted deployments.
@@ -50,9 +50,10 @@ pub struct McpConfig {
     pub hide_credits: bool,
 }
 
-/// `[client]` — cloud-proxy credentials populated by `crw setup` and read by
-/// `crw mcp` / `crw-mcp`. Both fields are `Option` so an unconfigured user runs
-/// in local mode without surprise overrides.
+/// `[client]` — Cloud credentials populated by `crw setup` and read by CLI
+/// commands such as `crw search`, plus `crw mcp` / `crw-mcp`. Both fields are
+/// `Option` so an unconfigured user runs in local mode without surprise
+/// overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ClientConfig {
     /// Base URL of the hosted CRW API, e.g. `https://api.fastcrw.com`.
@@ -1878,12 +1879,20 @@ pub fn user_config_path() -> Option<std::path::PathBuf> {
     )
 }
 
+fn non_empty_trimmed_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 impl AppConfig {
     /// Load config from config.default.toml + per-user config + environment
     /// variable overrides.
     ///
     /// Precedence (highest wins):
-    ///   1. `CRW_*` env vars (CI/Docker)
+    ///   1. `CRW_*` env vars (CI/Docker), including the public
+    ///      `CRW_API_URL` / `CRW_API_KEY` client aliases
     ///   2. `$CRW_CONFIG` file (or `config.local.toml` in cwd)
     ///   3. `~/.config/crw/config.toml` (written by `crw setup`)
     ///   4. `config.default.toml` (bundled defaults)
@@ -1917,7 +1926,22 @@ impl AppConfig {
                     .try_parsing(true),
             )
             .build()?;
-        cfg.try_deserialize()
+        let mut app: Self = cfg.try_deserialize()?;
+
+        // `CRW_API_URL` / `CRW_API_KEY` are the public CLI, SDK and MCP
+        // variables. The generic nested-config mapper above naturally maps
+        // `CRW_CLIENT__API_URL` / `CRW_CLIENT__API_KEY`, so apply the public
+        // aliases explicitly at the same highest-precedence environment
+        // layer. Keeping this in the one resolver prevents doctor, smoke,
+        // search, MCP and future commands from disagreeing about the target.
+        if let Some(api_url) = non_empty_trimmed_env("CRW_API_URL") {
+            app.client.api_url = Some(api_url);
+        }
+        if let Some(api_key) = non_empty_trimmed_env("CRW_API_KEY") {
+            app.client.api_key = Some(api_key);
+        }
+
+        Ok(app)
     }
 
     /// Compute the effective end-to-end request deadline (ms). Implements the
@@ -2833,6 +2857,42 @@ model = "deepseek-chat"
         let llm = cfg.extraction.llm.expect("llm config present");
         assert_eq!(llm.provider, "deepseek");
         assert_eq!(llm.api_key, "sk-test");
+    }
+
+    #[test]
+    fn public_client_env_aliases_override_user_config() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("crw-client-alias-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("config.toml"),
+            r#"
+[client]
+api_url = "https://from-file.example"
+api_key = "file-key"
+"#,
+        )
+        .unwrap();
+
+        unsafe {
+            std::env::set_var("CRW_USER_CONFIG_DIR", &tmp);
+            std::env::set_var("CRW_API_URL", "  http://self-hosted:3000  ");
+            std::env::set_var("CRW_API_KEY", "  env-key  ");
+        }
+        let cfg = AppConfig::load().unwrap();
+        unsafe {
+            std::env::remove_var("CRW_USER_CONFIG_DIR");
+            std::env::remove_var("CRW_API_URL");
+            std::env::remove_var("CRW_API_KEY");
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+
+        assert_eq!(
+            cfg.client.api_url.as_deref(),
+            Some("http://self-hosted:3000")
+        );
+        assert_eq!(cfg.client.api_key.as_deref(), Some("env-key"));
     }
 
     #[test]

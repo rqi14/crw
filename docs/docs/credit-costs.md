@@ -10,20 +10,40 @@ Cloud only (fastcrw.com) -- self-hosted instances do not have credit-based billi
 | --- | --- |
 | `scrape` (any render — HTTP, lightpanda, chrome, or `chrome_proxy`) | 1 credit |
 | `scrape` with `playwright` render | SaaS billing only; engine `data.creditCost` is omitted (0) |
-| `scrape` with structured extraction (`formats: ["json"]` / `summary`) | 1 credit + LLM token cost |
+| `scrape` with structured extraction (`formats: ["json"]` / `summary`) | 1 credit + LLM cost for that call |
+| `extract` (`POST /v1/extract`) | The base scrape credit plus the actual LLM cost for that call, per URL. Dynamically metered: there is no flat credit number for extract |
 | `map` | 1 credit |
 | `crawl` start | 1 credit |
 | `crawl` polling | New pages discovered since the previous poll |
 | `search` | 1 credit |
 | `search` + scrape | 1 credit + 1 per scraped result |
-| `browse` session | 1 credit (planned cloud rate; the self-hosted `crw-browse` binary is free) |
+| `monitor` create / list / get | 0 credits |
+| `monitor` check (per run) | 1 credit per scraped page, plus 1 more credit per page judged changed |
+| `browse` | Not a billed cloud endpoint. It is a local CLI/companion capability, free either way |
 
-Every renderer costs 1 credit per page — the engine's `credit_for` returns a flat 1 (`crw-renderer/src/lib.rs`), and `data.creditCost` matches the charge regardless of which renderer (HTTP, lightpanda, Chrome, chrome_proxy) actually served the page.
-LLM-backed extraction (`json`/`summary` formats) is **not** a flat fee. It costs the 1-credit base render plus the LLM token cost. The open-source engine itself adds no surcharge beyond the 1-credit render cost — the LLM portion is applied by the managed cloud billing layer and tracked separately in `creditsUsed`.
+Every renderer costs 1 credit per page: there is no Chrome or proxy surcharge. `data.creditCost` matches the charge regardless of which renderer (HTTP, lightpanda, Chrome, chrome_proxy) actually served the page.
+
+`extract` and structured-extraction scrapes are never a flat fee. They cost the base 1-credit render plus the real LLM cost of that call, metered per request. The open-source engine itself adds no surcharge beyond the 1-credit render cost; the LLM portion is applied by the managed cloud billing layer and tracked separately in `creditsUsed`.
+
+A monitor's check runs one scrape per tracked page, so its cost scales with pages watched, not with how often you poll the monitor's own status. Creating, listing, or reading a monitor's configuration never consumes credits, only an executed check does.
 
 :::note
-**Managed-LLM billing (fastcrw.com cloud only)** — token usage for managed LLM features (`json`/`summary` extraction, `answer`, `summarizeResults`) is billed on top of the base credit by the cloud platform, not by the open-source engine. Self-hosted deployments have no billing layer and are unaffected.
+**Managed-LLM billing (fastcrw.com cloud only)**: token usage for managed LLM features (`extract`, `json`/`summary` scrape extraction, `answer`, `summarizeResults`) is billed on top of the base credit by the cloud platform, not by the open-source engine. Self-hosted deployments have no billing layer and are unaffected.
 :::
+
+## Billing on failure
+
+A request is refunded, not charged, when the upstream response is a 4xx, a 5xx, or an HTTP 200 whose envelope carries `success: false` (an anti-bot wall or a target error page with nothing extractable). None of these count as billable work.
+
+A response that comes back HTTP 200 with `success: true` and content, even if it also carries a `warning` (for example a partially blocked page that still returned usable content), is charged normally. A warning on a successful result is not the same as a failure.
+
+## Top-up credits
+
+Purchased top-up credits never expire and are not tied to your current billing cycle. Cancelling your subscription zeroes only the plan's included/monthly credit allowance; any purchased top-up balance survives cancellation and stays spendable.
+
+## Free tier
+
+The FREE plan grants 500 credits **once, for the lifetime of the account**, not monthly, and it never resets. No card is required to get them. Once they are spent, a FREE account either upgrades to a paid plan or stops.
 
 ## Why crawl billing looks different
 
@@ -46,7 +66,7 @@ That prevents the same already-seen pages from being charged again and again jus
 
 ## What Usually Does Not Consume Permanent Credits
 
-The billing logic is designed to avoid charging you for requests that never become real usable work. Validation failures and certain upstream failures are refunded rather than treated like successful paid execution.
+The billing logic is designed to avoid charging you for requests that never become real usable work. See [Billing on failure](#billing-on-failure) above for the exact rule: 4xx, 5xx, and `success: false` responses are refunded; a successful response with a warning is not.
 
 The safest way to confirm actual consumption is still the balance endpoint before and after a test.
 

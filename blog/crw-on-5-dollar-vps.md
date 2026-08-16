@@ -240,7 +240,7 @@ The idle footprint is tiny, but what happens under load? We tested CRW on a 512 
 
 | Concurrent Requests | RAM Usage | Avg Latency |
 | --- | --- | --- |
-| 1 | ~8 MB | ~30ms (HTTP) |
+| 1 | ~25 MB | ~30ms (HTTP) |
 | 5 | ~15 MB | ~35ms |
 | 10 | ~25 MB | ~45ms |
 | 20 | ~45 MB | ~80ms |

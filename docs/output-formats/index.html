@@ -625,7 +625,7 @@ appends <code>/responses</code>; a complete endpoint URL is also accepted unchan
 <tr>
 <td><code>creditCost</code></td>
 <td><code>number</code></td>
-<td>Renderer credit cost for this request (omitted when 0). <code>chrome</code> or <code>chrome_proxy</code> render = 2; HTTP/lightpanda = 1. LLM feature costs are tracked separately by the SaaS billing layer and are not included in this field.</td>
+<td>Renderer credit cost for this request (omitted when 0). Every engine renderer currently costs 1 credit per successful page. LLM feature costs are tracked separately by the SaaS billing layer and are not included in this field.</td>
 </tr>
 <tr>
 <td><code>metadata</code></td>

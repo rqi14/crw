@@ -34,7 +34,7 @@ Choose one. All install paths run the same Rust binary.
 ### MCP server (`crw-mcp`) — recommended for AI agent use
 
 ```bash
-npx crw-mcp                           # zero install (npm; embedded engine, ~6 MB RAM)
+npx crw-mcp                           # zero install (npm; embedded engine, ~14 MB RAM)
 brew install us/crw/crw-mcp           # Homebrew
 cargo install crw-mcp                 # Cargo (~17 MB, full embedded)
 docker run -i ghcr.io/us/crw crw-mcp  # Docker
@@ -131,7 +131,7 @@ For a standalone binary pointing at an external search backend:
 CRW_SEARCH__SEARXNG_URL=http://my-searxng:8080 crw-server
 ```
 
-When `searxng_url` is unset, `/v1/search` returns HTTP 400 `search_disabled`.
+When `searxng_url` is unset, `/v1/search` returns HTTP 503 `search_disabled`.
 
 ## Key config knobs (`config.default.toml`)
 
@@ -271,7 +271,7 @@ sandbox = false            # set true in Docker (untrusted uploads)
 `crw-mcp` runs in one of two modes determined by the `CRW_API_URL` env var:
 
 **Embedded mode** (no `CRW_API_URL`): the Rust engine runs in-process inside the
-MCP process. No separate server needed. ~6 MB RAM. Zero setup.
+MCP process. No separate server needed. ~14 MB RAM. Zero setup.
 ```bash
 npx crw-mcp                            # embedded
 claude mcp add crw -- npx -y crw-mcp  # Claude Code, embedded
@@ -306,7 +306,7 @@ curl -X POST http://localhost:3000/v1/scrape \
 curl -X POST http://localhost:3000/v1/search \
   -H "Content-Type: application/json" \
   -d '{"query":"hello","limit":3}' | jq .success
-# → true (or 400 search_disabled if search backend not wired up)
+# → true (or 503 search_disabled if search backend not wired up)
 ```
 
 ## Production hardening notes

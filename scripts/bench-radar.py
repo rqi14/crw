@@ -7,7 +7,7 @@ benchmark is rerun.
 
 Source of record: bench/server-runs/RESULT_3WAY_1000_FULL.md (2026-05-08,
 Firecrawl's public scrape-content-dataset-v1, 1,000 URLs / 819 labeled,
-concurrency 5, timeout 120s, recall mode). Install sizes: BENCHMARKS.md.
+concurrency 5, timeout 120s, recall mode). Download sizes: BENCHMARKS.md.
 
 Deliberately absent: p90/p99. fastCRW's recall-mode p90 (14157 ms) is the worst
 of the three, and no other p90 for this engine has ever been measured. Any p90
@@ -17,7 +17,9 @@ on this panel would have to come from a run that does not exist.
     bench-radar.py --self-check
 """
 
+import base64
 import math
+import pathlib
 import sys
 
 # --- the run of record --------------------------------------------------------
@@ -33,6 +35,7 @@ AXES = [
         "dom": (50, 66),
         "v": {"crw": 63.74, "c4ai": 59.95, "fc": 56.04},
         "fmt": lambda v: f"{v:.2f}%",
+        "short": lambda v: f"{v:.2f}",
     },
     {
         "key": "unique",
@@ -40,27 +43,30 @@ AXES = [
         "dom": (0, 36),
         "v": {"crw": 34, "c4ai": 10, "fc": 10},
         "fmt": lambda v: f"{v:g} URLs",
+        "short": lambda v: f"{v:g}",
     },
     {
         "key": "p50",
         "label": "Median latency",
         "dom": (2400, 1850),
         "flip": True,
+        "note": "LOWER IS BETTER",
         "v": {"crw": 1914, "c4ai": 1916, "fc": 2305},
         "fmt": lambda v: f"{v:g} ms",
+        "short": lambda v: f"{v:g}",
     },
     # Scrape-success is deliberately not a comparison axis: our reachable-URL
     # rate (877/921 = 95.2%) uses a different denominator than the raw
     # 877/1000, so putting all three tools on one axis would need a shared
-    # denominator, and on that shared denominator Firecrawl leads. It lives as
-    # a single-tool hero stat instead, where no cross-tool claim is implied.
+    # denominator, and on that shared denominator Firecrawl leads.
     {
         "key": "size",
-        "label": "Install size",
-        "dom": (2048, 8),
+        "label": "Download size",
+        "dom": (2048, 10),
         "log": True,
         "flip": True,
-        "v": {"crw": 8, "c4ai": 2048, "fc": 500},
+        "note": "LOWER IS BETTER, LOG SCALE",
+        "v": {"crw": 10, "c4ai": 2048, "fc": 500},
         "fmt": lambda v: f"{v / 1024:g} GB" if v >= 1024 else f"{v:g} MB",
     },
     {
@@ -73,16 +79,24 @@ AXES = [
 ]
 
 COLOR = {"crw": "#16A34A", "c4ai": "#0284C7", "fc": "#EA580C"}
-DASH = {"c4ai": "6 3", "fc": "2 3"}
-BG = "#0B0F14"
-INK, INK2, INK3 = "#E6EDF3", "#8B949E", "#5C6773"
-GRID, GRID_TOP, WARN = "#1C232B", "#2C353F", "#D97706"
+
+# Light panel: the chart is the only ink, everything structural is a hairline.
+BG = "#FFFFFF"
+INK, INK2, MUT = "#0B0C0B", "#3C4340", "#8A928D"
+RING, SPOKE, CAP = "#EDEEED", "#E6E8E6", "#A2A9A4"
 FONT = "-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif"
 MONO = "ui-monospace,SFMono-Regular,Menlo,monospace"
 
-W, H = 1400, 660
-CX, CY, R = 628, 330, 158
-CHROME_H = 48  # height the dropped browser-chrome bar used to occupy at the top
+W, H = 1120, 762
+CX, CY, R = 565, 435, 250
+PAD = 40
+
+# Each tool's real logo, embedded as a data URI so the panel stays a single
+# self-contained file. All three ship as opaque square icons on their own
+# backgrounds, so they are drawn inside a clipped rounded square: uniform in
+# shape whether the source art sits on black or on white.
+LOGO_DIR = pathlib.Path(__file__).resolve().parent.parent / ".github/benchmarks/logos"
+LOGO_FILE = {"crw": "fastcrw.png", "c4ai": "crawl4ai.png", "fc": "firecrawl.png"}
 
 
 def norm(ax, value):
@@ -94,6 +108,10 @@ def norm(ax, value):
 
 def leads(ax, key):
     return all(norm(ax, ax["v"][key]) >= norm(ax, ax["v"][k]) for k, _ in TOOLS)
+
+
+def short(ax, value):
+    return ax.get("short", ax["fmt"])(value)
 
 
 def _pt(i, t):
@@ -114,17 +132,30 @@ def _text(x, y, s, fill, size, weight=400, anchor="start", font=FONT, extra=""):
     )
 
 
+# Where each axis' label block sits: x offset from the vertex, text anchor, and
+# the baseline of the first of its stacked lines relative to the vertex. The two
+# lower blocks sit beside their vertex rather than under it: stacking them below
+# would push the panel ~60px taller and shrink the chart for no added meaning.
+PLACE = [
+    (0, "middle", -60),  # top
+    (28, "start", -14),  # upper right
+    (28, "start", -12),  # lower right
+    (-28, "end", -12),  # lower left
+    (-28, "end", -14),  # upper left
+]
+
+
 def _radar():
     out = []
     for r in range(1, 5):
         out.append(
             f'<polygon points="{_poly([r / 4] * len(AXES))}" fill="none" '
-            f'stroke="{GRID_TOP if r == 4 else GRID}" stroke-width="1"/>'
+            f'stroke="{RING}" stroke-width="1"/>'
         )
     for i in range(len(AXES)):
         x, y = _pt(i, 1)
         out.append(
-            f'<line x1="{CX}" y1="{CY}" x2="{x:.1f}" y2="{y:.1f}" stroke="{GRID}" stroke-width="1"/>'
+            f'<line x1="{CX}" y1="{CY}" x2="{x:.1f}" y2="{y:.1f}" stroke="{SPOKE}" stroke-width="1"/>'
         )
 
     for key, _ in [TOOLS[1], TOOLS[2], TOOLS[0]]:  # ours last so it sits on top
@@ -133,198 +164,94 @@ def _radar():
         p = _poly(ts)
         if ours:
             out.append(
-                f'<polygon points="{p}" fill="none" stroke="{c}" stroke-width="3" opacity="0.30" filter="url(#glow)"/>'
-            )
-            out.append(f'<polygon points="{p}" fill="url(#grad)"/>')
-            out.append(
-                f'<polygon points="{p}" fill="none" stroke="{c}" stroke-width="3" stroke-linejoin="round"/>'
+                f'<polygon points="{p}" fill="{c}" fill-opacity="0.09" stroke="{c}" '
+                f'stroke-width="2.2" stroke-linejoin="round"/>'
             )
         else:
             out.append(
-                f'<polygon points="{p}" fill="none" stroke="{c}" stroke-width="1.75" '
-                f'stroke-linejoin="round" stroke-dasharray="{DASH[key]}" opacity="0.95"/>'
+                f'<polygon points="{p}" fill="none" stroke="{c}" stroke-width="1.4" '
+                f'stroke-linejoin="round" opacity="0.55"/>'
             )
+        # Every tool gets vertex dots, so each printed number has a mark on the
+        # shape it belongs to.
         for i, t in enumerate(ts):
             x, y = _pt(i, t)
+            op = "" if ours else ' opacity="0.55"'
             out.append(
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{4 if ours else 2.8}" fill="{c}" '
-                f'stroke="{BG}" stroke-width="{2 if ours else 1.5}"/>'
+                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{4.5 if ours else 3}" fill="{c}"{op}/>'
             )
 
     for i, a in enumerate(AXES):
-        lx, ly = _pt(i, 1.21)
-        anchor = "middle" if abs(lx - CX) < 14 else ("start" if lx > CX else "end")
-        dy = -6 if ly < CY else 12
-        flip = a.get("flip")
+        vx, vy = _pt(i, 1)
+        dx, anchor, dy0 = PLACE[i]
+        x, y = vx + dx, vy + dy0
+        # The raw values are the reason to look at this panel, so ours gets its
+        # own line at display size, and each rival number is printed in the
+        # colour of its own shape: no trip to the legend to decode a figure.
+        out.append(_text(x, y, a["label"], INK, 17, 550, anchor))
         out.append(
-            _text(
-                lx,
-                ly + dy,
-                a["label"] + (" ↓" if flip else ""),
-                WARN if flip else INK,
-                12,
-                600,
-                anchor,
-            )
+            _text(x, y + 27, a["fmt"](a["v"]["crw"]), COLOR["crw"], 23, 600, anchor, MONO)
         )
-        out.append(
-            _text(
-                lx, ly + dy + 16, a["fmt"](a["v"]["crw"]), COLOR["crw"], 13, 700, anchor
-            )
+        rest = f'<tspan fill="{MUT}"> / </tspan>'.join(
+            f'<tspan fill="{COLOR[k]}">{short(a, a["v"][k])}</tspan>' for k, _ in TOOLS[1:]
         )
-        out.append(
-            _text(
-                lx,
-                ly + dy + 29,
-                "centre " + a["fmt"](a["dom"][0]),
-                INK3,
-                9.5,
-                400,
-                anchor,
-            )
-        )
-    return "\n".join(out)
-
-
-def _stat(x, y, label, value, sub, size):
-    return "\n".join(
-        [
-            _text(
-                x, y, label, INK2, 11, 400, font=MONO, extra=' letter-spacing="0.09em"'
-            ),
-            _text(
-                x - 4,
-                y + 52,
-                value,
-                COLOR["crw"],
-                size,
-                750,
-                extra=' letter-spacing="-0.03em"',
-            ),
-            _text(x, y + 76, sub, INK3, 12),
-        ]
-    )
-
-
-def _table(x, y):
-    cols = [178, 264, 350]
-    out = [
-        _text(
-            x,
-            y,
-            "MEASURED HEAD TO HEAD, SAME MATCHER",
-            INK3,
-            10.5,
-            400,
-            font=MONO,
-            extra=' letter-spacing="0.09em"',
-        )
-    ]
-    for j, (key, name) in enumerate(TOOLS):
-        out.append(
-            _text(
-                x + cols[j],
-                y + 26,
-                name,
-                COLOR["crw"] if key == "crw" else INK2,
-                11.5,
-                700 if key == "crw" else 500,
-                "end",
-            )
-        )
-    out.append(
-        f'<line x1="{x}" y1="{y + 36}" x2="{x + cols[2]}" y2="{y + 36}" stroke="{GRID_TOP}"/>'
-    )
-    for i, a in enumerate(AXES):
-        ry = y + 62 + i * 32
-        out.append(
-            _text(x, ry, a["label"] + (" ↓" if a.get("flip") else ""), INK2, 11.5)
-        )
-        for j, (key, _) in enumerate(TOOLS):
-            win = leads(a, key)
+        out.append(_text(x, y + 51, rest, MUT, 15, 500, anchor, MONO))
+        if a.get("note"):
             out.append(
                 _text(
-                    x + cols[j],
-                    ry,
-                    a["fmt"](a["v"][key]),
-                    COLOR[key] if win else INK,
-                    11.5,
-                    700 if win else 400,
-                    "end",
-                    extra=' style="font-variant-numeric:tabular-nums"',
+                    x, y + 70, a["note"], MUT, 11, 400, anchor, extra=' letter-spacing="0.9"'
                 )
-            )
-        if i < len(AXES) - 1:
-            out.append(
-                f'<line x1="{x}" y1="{ry + 11}" x2="{x + cols[2]}" y2="{ry + 11}" stroke="{GRID}"/>'
             )
     return "\n".join(out)
 
 
-def _legend(x, y):
-    """One horizontal row starting at x, centred under the radar."""
-    out, cursor = [], x
-    for key, name in TOOLS:
+def _logo(key):
+    """The tool's real icon as a base64 data URI, or None if it is not staged."""
+    path = LOGO_DIR / LOGO_FILE[key]
+    if not path.is_file():
+        return None
+    return "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+def _legend(right, y):
+    """Logo, name and colour rule per tool, right-aligned to end at `right`."""
+    size, out, cursor = 27, [], right
+    for key, name in reversed(TOOLS):
         ours, c = key == "crw", COLOR[key]
-        dash = "" if ours else f' stroke-dasharray="{DASH[key]}"'
-        out.append(
-            f'<line x1="{cursor}" y1="{y}" x2="{cursor + 22}" y2="{y}" stroke="{c}" '
-            f'stroke-width="{3 if ours else 1.75}"{dash}/>'
-        )
-        out.append(
-            _text(
-                cursor + 28,
-                y + 4,
-                name,
-                INK if ours else INK2,
-                11.5,
-                700 if ours else 500,
+        cursor -= len(name) * 8.2
+        out.append(_text(cursor, y + 4, name, c, 14.5, 650 if ours else 500))
+        cursor -= 10 + size
+        href = _logo(key)
+        if href:
+            # Drawn inside a translated group so one clip path in <defs> rounds
+            # every icon identically, wherever the legend lands.
+            out.append(
+                f'<g transform="translate({cursor:.1f},{y - size / 2:.1f})">'
+                f'<image href="{href}" width="{size}" height="{size}" clip-path="url(#logoclip)"/>'
+                f'<rect width="{size}" height="{size}" rx="7" fill="none" stroke="{SPOKE}"/>'
+                f"</g>"
             )
-        )
-        cursor += 28 + len(name) * 7.2 + 22
+        cursor -= 30
     return "\n".join(out)
 
 
 def render():
-    # The old browser-chrome bar (traffic lights + URL + badge) is dropped. The
-    # content coordinates below still use the original H as their reference; the
-    # panel is CHROME_H shorter and everything is shifted up by that amount in
-    # one group transform, so no individual y needs touching.
-    return f"""<svg viewBox="0 0 {W} {H - CHROME_H}" xmlns="http://www.w3.org/2000/svg" role="img"
-  aria-label="fastCRW leads truth-recall, unique recoveries, median latency, install size and recall depth on Firecrawl's public 1,000-URL dataset">
-<defs>
-  <radialGradient id="grad" cx="50%" cy="50%" r="50%">
-    <stop offset="0%" stop-color="{COLOR["crw"]}" stop-opacity="0.06"/>
-    <stop offset="100%" stop-color="{COLOR["crw"]}" stop-opacity="0.28"/></radialGradient>
-  <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
-    <feGaussianBlur stdDeviation="7" result="b"/>
-    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-</defs>
-<rect width="{W}" height="{H - CHROME_H}" rx="14" fill="{BG}"/>
-<g transform="translate(0,{-CHROME_H})">
+    right = W - PAD
+    return f"""<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" role="img"
+  aria-label="fastCRW leads truth-recall, unique recoveries, median latency, download size and recall depth on Firecrawl's public 1,000-URL dataset">
+<defs><clipPath id="logoclip"><rect width="27" height="27" rx="6.5"/></clipPath></defs>
+<rect width="{W}" height="{H}" fill="{BG}"/>
 
-{_stat(48, 92, "TRUTH-RECALL", "63.74%", "recall mode · 522 of 819 labeled", 46)}
-<line x1="48" y1="178" x2="330" y2="178" stroke="{GRID}"/>
-{_stat(48, 206, "SCRAPE SUCCESS", "95.2%", "877 of 921 reachable URLs", 40)}
-<line x1="48" y1="288" x2="330" y2="288" stroke="{GRID}"/>
-{_stat(48, 316, "ORACLE CEILING", "92.2%", "of every URL any tool could reach", 40)}
-<line x1="48" y1="398" x2="330" y2="398" stroke="{GRID}"/>
-{_stat(48, 426, "ONLY WE RECOVER", "34", "vs 10 and 10 · 70% more than both", 40)}
-{_text(48, 556, "diagnose_3way.py · 2026-05-08", INK3, 10.5, 400, font=MONO)}
-{_text(48, 574, "3,000 requests · 0 errors", INK3, 10.5, 400, font=MONO)}
+{_text(PAD, 56, "Better on every axis", INK, 27, 650, extra=' letter-spacing="-0.6"')}
+{_text(PAD, 82, "Outward always means better. Each axis is scaled to the best result on it, and latency and download size are inverted so a smaller number reaches further out.", MUT, 13.5)}
+{_legend(right, 48)}
+<line x1="{PAD}" y1="102" x2="{right}" y2="102" stroke="{SPOKE}" stroke-width="1"/>
 
 {_radar()}
-{_legend(CX - 150, H - 44)}
-{_text(CX, H - 22, "↓ smaller is better · every axis points outward to better", WARN, 10.5, 400, "middle", MONO)}
 
-<line x1="960" y1="80" x2="960" y2="{H - 56}" stroke="{GRID}"/>
-{_table(1000, 104)}
-<line x1="1000" y1="368" x2="1350" y2="368" stroke="{GRID}"/>
-{_text(1000, 394, "DATASET", INK3, 10.5, 400, font=MONO, extra=' letter-spacing="0.09em"')}
-{_text(1000, 418, "Firecrawl's own public 1,000-URL set,", INK2, 11.5)}
-{_text(1000, 436, "all three tools through one matcher.", INK2, 11.5)}
-{_text(1000, 454, "Rerun it yourself: BENCHMARKS.md", INK2, 11.5)}
-</g>
+<line x1="{PAD}" y1="718" x2="{right}" y2="718" stroke="{SPOKE}" stroke-width="1"/>
+{_text(PAD, 740, "Firecrawl's own public 1,000-URL dataset, 819 labeled URLs, all three tools run through the same matcher (diagnose_3way.py), 2026-05-08.", CAP, 11.5)}
+{_text(right, 740, "github.com/us/crw", CAP, 11.5, 400, "end", MONO)}
 </svg>
 """
 
@@ -339,12 +266,12 @@ def self_check():
     for banned in ("4348", "p90", "14157", "92%", "91.8%"):
         assert banned not in svg, f"{banned!r} must not appear on the panel"
 
-    # The axis whose direction is flipped must say so, in the chart and the table.
+    # An inverted axis must say so, or the reader reads the shape backwards.
     for ax in AXES:
         if ax.get("flip"):
-            assert f"{ax['label']} ↓" in svg, f"{ax['label']} is flipped but unmarked"
+            assert ax["note"] in svg, f"{ax['label']} is inverted but unmarked"
 
-    # The ↓ marker and the axis geometry must never disagree: a flipped axis is
+    # The note and the axis geometry must never disagree: a flipped axis is
     # exactly one whose dom runs high->low (worst value at the centre).
     for ax in AXES:
         lo, hi = ax["dom"]
@@ -355,8 +282,8 @@ def self_check():
 
     # Direction: on a flipped axis the smaller value must sit further out.
     size = next(a for a in AXES if a["key"] == "size")
-    assert norm(size, 8) > norm(size, 2048), "8 MB must be further out than 2 GB"
-    assert norm(size, 8) == 1.0 and norm(size, 2048) == 0.0, "size axis endpoints"
+    assert norm(size, 10) > norm(size, 2048), "10 MB must be further out than 2 GB"
+    assert norm(size, 10) == 1.0 and norm(size, 2048) == 0.0, "size axis endpoints"
     p50 = next(a for a in AXES if a["key"] == "p50")
     assert norm(p50, 1914) > norm(p50, 2305), "1914 ms must be further out than 2305 ms"
 
@@ -373,9 +300,22 @@ def self_check():
     assert "leads scrape success" not in svg, (
         "no cross-tool scrape-success claim, in prose either"
     )
-    # Our single-tool rate is shown honestly, with its real denominator.
-    assert "95.2%" in svg and "877 of 921 reachable" in svg, (
-        "scrape-success stat missing"
+    # If a success rate is ever printed here it must carry its denominator.
+    assert ("95.2%" in svg) == ("877 of 921 reachable" in svg), (
+        "a success rate on the panel must show the denominator it is over"
+    )
+
+    # Every tool's number must be printed for every axis, so the shape can be
+    # checked against the values rather than trusted.
+    for a in AXES:
+        assert a["fmt"](a["v"]["crw"]) in svg, f"{a['label']}: our value missing"
+        for k, _ in TOOLS[1:]:
+            assert short(a, a["v"][k]) in svg, f"{a['label']}: {k} value missing"
+
+    # A missing logo file degrades silently to a legend without icons, so the
+    # panel is only correct if all three embedded.
+    assert svg.count("data:image/png;base64,") == len(TOOLS), (
+        f"expected {len(TOOLS)} embedded logos, staged in {LOGO_DIR}"
     )
 
     # With no losing axis left, every comparison axis must be a win.

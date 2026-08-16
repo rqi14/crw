@@ -25,7 +25,7 @@
 <p>The scraper is the bottleneck for quality. If it returns HTML, you spend engineering time writing readability heuristics; if it returns clean markdown, the rest of the pipeline is glue code.</p>
 
 <h2>How fastCRW does it</h2>
-<p>fastCRW returns markdown as the default <code>formats</code> value on <a href="/api-reference/scrape/">/v1/scrape</a>, with HTML, raw HTML, plain text, and links available as additional formats in the same response. The Rust-native engine runs at ~50 MB RAM idle, which matters when you're scraping at scale into a vector store on a single node. For framework integration, see <a href="/integrations/">/integrations</a> — fastCRW outputs are accepted by LangChain document loaders, LlamaIndex readers, and Haystack components without an adapter layer.</p>
+<p>fastCRW returns markdown as the default <code>formats</code> value on <a href="/scraping/">/v1/scrape</a>, with HTML, raw HTML, plain text, and links available as additional formats in the same response. The Rust-native engine runs at ~14 MB RAM idle, which matters when you're scraping at scale into a vector store on a single node. For framework integration, see <a href="/integrations/">/integrations</a> — fastCRW outputs are accepted by LangChain document loaders, LlamaIndex readers, and Haystack components without an adapter layer.</p>
 
 <h2>Frequently asked</h2>
 <dl>

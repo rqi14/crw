@@ -1,9 +1,9 @@
 # Tier 5 — Browser-Context Pool Bench Gate
 
-This file is the operator runbook for the Tier 5 gate from
-`plans/tamam-browser-ppolu-detaylica-virtual-glade.md`. It executes the
-1000-URL bench twice — once with the pool disabled (baseline), once enabled
-(treatment) — and checks the §B2 / §B3a / §B3b criteria.
+This file is the operator runbook for the Tier 5 browser-context pool gate.
+It executes the 1000-URL bench twice — once with the pool disabled
+(baseline), once enabled (treatment) — and checks the §B2 / §B3a / §B3b
+criteria.
 
 ## Pre-requisites
 

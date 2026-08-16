@@ -10,33 +10,40 @@ your future contributions. We can't merge PRs until it's signed.
 
 ## Development setup
 
+Requires **rustc 1.85 or newer** (the workspace uses `edition = "2024"`, which
+1.85 is the first stable toolchain to support). There is no pinned
+`rust-toolchain.toml`; install a recent stable toolchain via
+[rustup](https://rustup.rs) and `rustup update` if `cargo build` reports an
+edition error.
+
 1. Fork the repository
 2. Install pre-commit hooks: `make hooks`
 3. Create a feature branch: `git checkout -b feat/my-feature`
 4. Commit your changes: `git commit -m 'feat: add my feature'`
 5. Push and open a Pull Request
 
-The pre-commit hook runs the same checks as CI. Run them manually with:
+The pre-commit hook runs fmt, clippy, the browser-teardown guard, and the
+full test suite. For the complete CI-equivalent check (including the release
+guard scripts and documentation drift checks), run:
 
 ```bash
-make check    # cargo fmt + cargo clippy + cargo test
+make check-fast   # fmt + clippy only, fast inner loop
+make check        # everything CI's `check` job runs, plus drift checks
 ```
 
 ## Architecture
 
-`crw-server` (Axum API + auth + MCP) sits on top of:
+The workspace has 11 crates under `crates/`. The authoritative crate table
+and dependency graph live in
+[docs.fastcrw.com/architecture/](https://docs.fastcrw.com/architecture/)
+(source: `docs/docs/architecture.md`) - read that instead of a copy here, so
+this file cannot go stale when a crate is added or removed.
 
-| Crate | Responsibility |
-|-------|----------------|
-| [`crw-core`](crates/crw-core) | Core types, config, error handling |
-| [`crw-renderer`](crates/crw-renderer) | HTTP + CDP rendering (LightPanda/Chrome auto-detect) |
-| [`crw-extract`](crates/crw-extract) | HTML → markdown / plaintext / JSON extraction |
-| [`crw-crawl`](crates/crw-crawl) | Async BFS crawler with robots.txt & sitemap |
-| [`crw-server`](crates/crw-server) | Axum API server (native `/v1` + Firecrawl `/firecrawl/v2` compat) |
-| [`crw-mcp`](crates/crw-mcp) | MCP stdio server (embedded + proxy mode) |
-| [`crw-cli`](crates/crw-cli) | Standalone CLI (`crw` binary, no server) |
+## Documentation
 
-Full architecture docs: [docs.fastcrw.com/architecture/](https://docs.fastcrw.com/architecture/)
+Before editing anything under `docs/`, read [`docs/AGENTS.md`](docs/AGENTS.md)
+first: it explains which files are authored source and which are generated
+output, and hand-editing the wrong one gets silently overwritten.
 
 ## Contributors
 

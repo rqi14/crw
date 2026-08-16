@@ -420,14 +420,14 @@ metadata.renderedWith in response: "http"|"lightpanda"|"chrome"|"chrome_proxy"|"
 
 
 ================================================================================
-## PART 7 — MCP SERVER (8 TOOLS)
+## PART 7 — MCP SERVER (9 TOOLS)
 ================================================================================
 
 Package: crw-mcp (npm: npx crw-mcp | cargo: cargo install crw-mcp)
 MCP key prefix: crw_live_
 
 Two MCP modes:
-  Embedded  — no CRW_API_URL set; scraping engine runs inside the MCP process (~6 MB RAM)
+  Embedded  — no CRW_API_URL set; scraping engine runs inside the MCP process (~14 MB RAM)
               crw_search only appears when a search backend is configured
   Proxy     — CRW_API_URL set; forwards tool calls to a remote CRW server (cloud or self-hosted)
               crw_search always advertised (search backend is on the server)
@@ -560,6 +560,15 @@ Returns: {"success": true, "id": "job-uuid", "status": "processing", "urls": N}
 ────────────────────────────────────────────────────────────────────────────────
 Poll an async extract job. Returns status and, when complete, a per-URL results
 array: [{url, status, data, error, llmUsage}] in request order.
+
+Parameters:
+  id              string    required  Extract job id from crw_extract
+
+────────────────────────────────────────────────────────────────────────────────
+### Tool: crw_cancel_extract  →  DELETE /v1/extract/:id
+────────────────────────────────────────────────────────────────────────────────
+Request cancellation of an extract job. Idempotent. Returns the canonical status;
+cancelling remains non-terminal until the claimed URL settles.
 
 Parameters:
   id              string    required  Extract job id from crw_extract

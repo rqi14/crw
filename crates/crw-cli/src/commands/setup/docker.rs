@@ -37,25 +37,46 @@ impl DockerStatus {
     }
 }
 
+/// How long to wait for a `docker` probe before treating it as unavailable.
+///
+/// A wedged Docker daemon makes `docker info` block forever. Setup must stay
+/// responsive whether or not Docker answers, so both probes are bounded and a
+/// timeout is reported the same way a failure is.
+const DOCKER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Check Docker installation and running status.
-pub fn check_docker() -> DockerStatus {
+pub async fn check_docker() -> DockerStatus {
     // First, check if docker command exists and get version
-    let version_output = Command::new("docker").args(["--version"]).output();
+    let version_output = docker_probe(&["--version"]).await;
 
     let version = match version_output {
-        Ok(output) if output.status.success() => {
+        Some(output) if output.status.success() => {
             String::from_utf8_lossy(&output.stdout).trim().to_string()
         }
         _ => return DockerStatus::NotFound,
     };
 
     // Check if Docker daemon is running by running `docker info`
-    let info_output = Command::new("docker").args(["info"]).output();
-
-    match info_output {
-        Ok(output) if output.status.success() => DockerStatus::Running { version },
+    match docker_probe(&["info"]).await {
+        Some(output) if output.status.success() => DockerStatus::Running { version },
         _ => DockerStatus::NotRunning { version },
     }
+}
+
+/// Run a short `docker` command, giving up after [`DOCKER_PROBE_TIMEOUT`].
+///
+/// `kill_on_drop` matters here: on timeout the future is dropped, and without
+/// it the stuck `docker` process would outlive us and keep holding its pipes.
+async fn docker_probe(args: &[&str]) -> Option<std::process::Output> {
+    let child = tokio::process::Command::new("docker")
+        .args(args)
+        .kill_on_drop(true)
+        .output();
+
+    tokio::time::timeout(DOCKER_PROBE_TIMEOUT, child)
+        .await
+        .ok()?
+        .ok()
 }
 
 /// Get available disk space in GB (rough estimate).
@@ -272,10 +293,16 @@ pub fn docker_install_instructions() -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_check_docker() {
-        // This test depends on the environment
-        let status = check_docker();
+    #[tokio::test]
+    async fn test_check_docker() {
+        // This test depends on the environment: Docker may be absent, running,
+        // or wedged. It must return in bounded time in all three cases.
+        let started = std::time::Instant::now();
+        let status = check_docker().await;
+        assert!(
+            started.elapsed() < DOCKER_PROBE_TIMEOUT * 3,
+            "check_docker must not block on an unresponsive daemon"
+        );
         // Just ensure it doesn't panic
         let _ = status.is_ready();
         let _ = status.is_installed();

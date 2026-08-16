@@ -198,6 +198,24 @@ pub async fn spawn_all_headless() -> Vec<(ManagedBrowser, String, RendererKind)>
     browsers
 }
 
+/// Detect the Chrome/Chromium executable the one-shot CLI runtime would
+/// auto-spawn, without launching a process. Diagnostics use this to report
+/// the same local capability the renderer will actually discover at request
+/// time instead of looking only at configured remote CDP endpoints.
+pub fn detect_local_chrome() -> Option<String> {
+    find_chrome()
+}
+
+/// Detect an already-installed LightPanda executable without downloading or
+/// launching it. Mirrors the runtime's PATH + managed-install lookup.
+pub fn detect_local_lightpanda() -> Option<String> {
+    if let Some(path) = find_in_path("lightpanda") {
+        return Some(path);
+    }
+    let path = lightpanda_managed_path()?;
+    (path.exists() && path.is_file()).then(|| path.to_string_lossy().to_string())
+}
+
 // --- LightPanda native ---
 
 /// Find LightPanda binary: PATH → ~/.crw/lightpanda → auto-download.

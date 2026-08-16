@@ -18,7 +18,7 @@
 <p>Building your own scraper is the right call when the target is a single static site with predictable HTML, you have legal permission, traffic is well below any rate limit, and you can absorb breakage when the site redesigns. A 50-line Python script with <code>httpx</code> and <code>selectolax</code> can run for years against an internal admin panel or a partner's documentation portal. The math changes the moment you add a second site, a JavaScript-rendered page, or a hostile WAF.</p>
 
 <h2>How fastCRW does it</h2>
-<p>fastCRW is the scraping API for teams that want the API tradeoff without the SaaS lock-in. The same Rust binary powers our hosted endpoint (<a href="/api-reference/scrape/">/v1/scrape</a>) and the self-hosted AGPL-3.0 release, so you can prototype on the cloud and migrate to your own infra without rewriting client code. Reproducible 63.74% truth-recall on Firecrawl's public 1,000-URL dataset (<code>diagnose_3way.py</code>, 2026-05-08). See the full <a href="/api-reference/">REST surface</a>.</p>
+<p>fastCRW is the scraping API for teams that want the API tradeoff without the SaaS lock-in. The same Rust binary powers our hosted endpoint (<a href="/scraping/">/v1/scrape</a>) and the self-hosted AGPL-3.0 release, so you can prototype on the cloud and migrate to your own infra without rewriting client code. Reproducible 63.74% truth-recall on Firecrawl's public 1,000-URL dataset (<code>diagnose_3way.py</code>, 2026-05-08). See the full <a href="/rest-api/">REST surface</a>.</p>
 
 <h2>Frequently asked</h2>
 <dl>

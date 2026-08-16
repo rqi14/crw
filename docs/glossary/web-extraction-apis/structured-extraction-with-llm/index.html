@@ -24,7 +24,7 @@
 <p>When the page is rigid and well-templated, a selector-based scrape is faster and cheaper. When you don't know the layout in advance, LLM extraction wins.</p>
 
 <h2>How fastCRW does it</h2>
-<p>POST a JSON body with <code>url</code>, a <code>schema</code> (any valid JSON Schema), and an optional <code>prompt</code> for natural-language hints to <a href="/api-reference/extract/">/v1/extract</a>. Both fields can coexist — the prompt steers and the schema constrains. BYOK is supported via <code>llmApiKey</code>, <code>llmProvider</code>, and <code>llmModel</code>, so your billing relationship is with the LLM vendor directly. See the <a href="/extract/">extract guide</a> for end-to-end examples.</p>
+<p>POST a JSON body with <code>url</code>, a <code>schema</code> (any valid JSON Schema), and an optional <code>prompt</code> for natural-language hints to <a href="/extract/">/v1/extract</a>. Both fields can coexist — the prompt steers and the schema constrains. BYOK is supported via <code>llmApiKey</code>, <code>llmProvider</code>, and <code>llmModel</code>, so your billing relationship is with the LLM vendor directly. See the <a href="/extract/">extract guide</a> for end-to-end examples.</p>
 
 <h2>Frequently asked</h2>
 <dl>

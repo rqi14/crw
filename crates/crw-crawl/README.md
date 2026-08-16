@@ -170,15 +170,9 @@ jitter_factor = 0.2         # ±20% randomized delay between requests
 
 This crate is part of the [CRW](https://github.com/us/crw) workspace — a fast, lightweight, Firecrawl-compatible web scraper built in Rust.
 
-| Crate | Description |
-|-------|-------------|
-| [crw-core](https://crates.io/crates/crw-core) | Core types, config, and error handling |
-| [crw-renderer](https://crates.io/crates/crw-renderer) | HTTP + CDP browser rendering engine |
-| [crw-extract](https://crates.io/crates/crw-extract) | HTML → markdown/plaintext extraction |
-| **crw-crawl** | Async BFS crawler with robots.txt & sitemap (this crate) |
-| [crw-server](https://crates.io/crates/crw-server) | Firecrawl-compatible API server |
-| [crw-cli](https://crates.io/crates/crw-cli) | Standalone CLI (`crw` binary) |
-| [crw-mcp](https://crates.io/crates/crw-mcp) | MCP stdio proxy binary |
+This crate (`crw-crawl`) is the async BFS crawler with robots.txt & sitemap
+support. For the full crate table and dependency graph, see
+[docs.fastcrw.com/architecture/](https://docs.fastcrw.com/architecture/).
 
 ## License
 
