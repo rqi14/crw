@@ -52,7 +52,10 @@ pub struct SmokeArgs {
     pub json: bool,
 }
 
-const FIXTURE_HTML: &str = include_str!("../../../../tests/fixtures/simple.html");
+/// Kept inside the crate, not in the workspace `tests/fixtures`: `smoke` is a
+/// shipped subcommand, so its fixture has to travel in the published `.crate`
+/// tarball. `tests/journeys.rs` serves this same file from disk.
+const FIXTURE_HTML: &str = include_str!("fixtures/simple.html");
 
 pub async fn run(args: SmokeArgs) -> Result<(), CmdError> {
     let config = match AppConfig::load() {

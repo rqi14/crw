@@ -17,9 +17,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// The fixtures live under `src/commands/` rather than in the workspace
+/// `tests/` tree because `crw smoke` embeds one with `include_str!` and a
+/// published crate only ships what is inside the crate directory.
 fn fixture_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures")
+        .join("src/commands/fixtures")
         .join(name)
 }
 
