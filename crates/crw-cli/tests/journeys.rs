@@ -190,6 +190,26 @@ fn installer_does_not_auto_launch_optional_setup() {
     );
 }
 
+/// Resolving "which tag is latest" through the GitHub REST API costs a second
+/// request that is capped at 60/hour per IP, so on any shared address (CI, an
+/// office NAT, a cloud VM) it is the tag lookup that fails, not the download.
+/// GitHub's own `releases/latest/download/<asset>` redirect has no such cap.
+#[test]
+fn installer_resolves_latest_without_the_rate_limited_github_api() {
+    let installer = include_str!("../../../install.sh");
+    assert!(
+        !installer.contains("api.github.com"),
+        "installer must not call the rate-limited GitHub REST API"
+    );
+    assert!(
+        installer.contains("releases/latest/download/"),
+        "installer must download through GitHub's latest-release redirect"
+    );
+    // Pinning an exact tag still has to reach the plain per-tag asset path.
+    assert!(installer.contains("releases/download/${VERSION}/${ASSET}"));
+    assert!(installer.contains("CRW_VERSION"));
+}
+
 /// Journey C (Phase 1 transitional scope): `crw setup --local` must be able
 /// to run non-interactively — completing without touching stdin, writing
 /// `~/.config/crw/config.toml`, and exiting zero.
@@ -210,6 +230,8 @@ fn journey_c_setup_local_non_interactive_writes_config_and_exits_zero() {
         .success()
         .stdout(predicate::str::contains("LLM").not())
         .stdout(predicate::str::contains("Shell Configuration").not())
+        .stdout(predicate::str::contains("AI TOOL INTEGRATION").not())
+        .stdout(predicate::str::contains("MCP installed").not())
         .stdout(predicate::str::contains("source ").not())
         .stdout(predicate::str::contains("Add these to your shell").not());
 
