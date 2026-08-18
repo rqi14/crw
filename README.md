@@ -14,9 +14,13 @@
 </p>
 
 <p align="center">
-  <a href="#one-command-install"><strong>Run locally ↓</strong></a> ·
-  <a href="https://fastcrw.com/register"><strong>Start free</strong></a> ·
+  <a href="https://fastcrw.com/register"><strong>Get 1000 free credits →</strong></a> ·
+  <a href="#one-command-install"><strong>Install</strong></a> ·
   <a href="https://docs.fastcrw.com"><strong>Docs</strong></a>
+</p>
+
+<p align="center">
+  <sub>No credit card. Continue with GitHub.</sub>
 </p>
 
 <p align="center">
@@ -34,14 +38,19 @@
 curl -fsSL https://fastcrw.com/install | sh
 ```
 
-Then set it up:
+Then point it at the Cloud:
 
 ```bash
 crw setup
 ```
 
-No account or API key is needed for local use. macOS and Linux are supported
-on Intel and ARM. [More install options →](https://docs.fastcrw.com/installation/)
+**1000 free credits, no credit card.** Managed proxies, JS rendering and search,
+with nothing to run or keep up to date.
+[Get my free key →](https://fastcrw.com/register)
+
+The same command configures a fully local install if you would rather run it
+yourself. macOS and Linux, Intel and ARM.
+[More install options →](https://docs.fastcrw.com/installation/)
 
 ## What it does
 
