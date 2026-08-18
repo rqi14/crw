@@ -3219,8 +3219,8 @@ impl FallbackRenderer {
                         // best-result-wins vs the ladder's thin_result: ONLY take
                         // the proxy result if it is content-OK (red line: a thin/
                         // empty proxy result must never turn a baseline Err into an
-                        // Ok(empty), nor replace a usable thin_result). Code-review
-                        // 🔴#1: gate `None` case on r_ok too, else all-tiers-errored
+                        // Ok(empty), nor replace a usable thin_result). The `None`
+                        // case is gated on r_ok too, else an all-tiers-errored run
                         // would ship an empty proxy body as success.
                         let better = r_ok
                             && match &thin_result {

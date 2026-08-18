@@ -64,7 +64,7 @@ pub fn offer_install() {
     }
 
     println!();
-    ui::print_section_header("🤖", "AI TOOL INTEGRATION (OPTIONAL)");
+    ui::print_section_header("AI TOOL INTEGRATION (OPTIONAL)");
     println!(
         "  Detected: {}",
         detected

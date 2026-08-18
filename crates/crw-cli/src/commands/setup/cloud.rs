@@ -34,7 +34,7 @@ pub enum ApiKeyStatus {
 /// shell-rc question. This gives brew / curl / cargo the same one-command
 /// cloud connect that `npx crw-mcp install --api-key` gives agents.
 pub async fn run_with_key(api_key: String) -> Result<(), SetupError> {
-    ui::print_section_header("☁️", "CLOUD SETUP");
+    ui::print_section_header("CLOUD SETUP");
 
     let api_key = api_key.trim().to_string();
     if api_key.is_empty() {
@@ -71,7 +71,7 @@ pub async fn run_with_key(api_key: String) -> Result<(), SetupError> {
 
 /// Run the cloud setup flow.
 pub async fn run() -> Result<(), SetupError> {
-    ui::print_section_header("☁️", "CLOUD SETUP");
+    ui::print_section_header("CLOUD SETUP");
 
     ui::print_step(1, 1, "Connect your CRW API key");
 
