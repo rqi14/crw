@@ -363,7 +363,7 @@ Don't want to run Docker locally? Use [fastCRW](https://fastcrw.com) as the back
 }
 ```
 
-500 free credits to start, no credit card required.
+1000 free credits to start, no credit card required.
 
 ## Further Reading
 

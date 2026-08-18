@@ -2,7 +2,7 @@
 
     pip install "crw[crewai]"
 
-CRW is cloud-first: set CRW_API_KEY (sign up for 500 free credits at
+CRW is cloud-first: set CRW_API_KEY (sign up for 1000 free credits at
 https://fastcrw.com/dashboard), or set CRW_LOCAL=1 to run the engine locally.
 """
 

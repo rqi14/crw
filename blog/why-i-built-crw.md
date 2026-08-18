@@ -217,7 +217,7 @@ Source code: [github.com/us/crw](https://github.com/us/crw) · [Documentation](h
 
 ### Hosted Path — fastCRW
 
-If you want the managed version with proxy networks and auto-scaling: [fastcrw.com](https://fastcrw.com) — 500 free credits, no credit card required.
+If you want the managed version with proxy networks and auto-scaling: [fastcrw.com](https://fastcrw.com) — 1000 free credits, no credit card required.
 
 ## Further Reading
 

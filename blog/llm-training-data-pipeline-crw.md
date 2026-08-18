@@ -226,7 +226,7 @@ If you will evaluate the trained model on any public benchmark, you must remove 
 
 - **Boilerplate removed at the source** — `onlyMainContent` means cleaner input and cheaper downstream filtering.
 - **Throughput** — open-core Rust, small single binary, lower-latency than browser-based scrapers; large crawls finish sooner.
-- **No per-page cost** — AGPL-3.0 self-host is unlimited, which matters at corpus scale; the fastCRW cloud free tier is a one-time lifetime 500 credits, never a monthly meter.
+- **No per-page cost** — AGPL-3.0 self-host is unlimited, which matters at corpus scale; the fastCRW cloud free tier is a one-time lifetime 1000 credits, never a monthly meter.
 
 ## Corpus Statistics You Should Always Compute
 

@@ -81,13 +81,13 @@ Pricing is where many search API comparisons get sloppy. The request price is on
 
 | Provider | Free entry point | Commercial shape | What to watch |
 | --- | --- | --- | --- |
-| **fastCRW** | One-time lifetime 500 credits (not a monthly meter) | Managed pricing plus self-hosting | **Total system cost stays low when you need more than search** |
+| **fastCRW** | One-time lifetime 1000 credits (not a monthly meter) | Managed pricing plus self-hosting | **Total system cost stays low when you need more than search** |
 | **Exa** | 1,000 requests/month | $7/1k search, $12/1k deep search, $1/1k pages for contents | Cloud-only economics |
 | **Tavily** | 1,000 free API credits/month | Cloud API credit model | No self-hosting fallback |
 | **Firecrawl** | Credit-based plans | Search costs 2 credits per 10 results before extra scrape costs | Search cost grows with scrape options |
 | **Serper** | Low-cost search-only entry | Cheap raw search | You still need separate scraping |
 
-fastCRW's current managed pricing starts with **500 free credits** and a **Standard plan at $69/month for 100,000 credits**. That matters because the product is not forcing you to add a second vendor the moment you need crawl or scrape.
+fastCRW's current managed pricing starts with **1000 free credits** and a **Standard plan at $69/month for 100,000 credits**. That matters because the product is not forcing you to add a second vendor the moment you need crawl or scrape.
 
 ## MCP and Agent Tooling
 

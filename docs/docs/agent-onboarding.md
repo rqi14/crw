@@ -174,7 +174,7 @@ Agents must distinguish between different failure modes — some are permanent, 
 
 These two codes have different meanings and require different handling:
 
-- **429** is used for both rate-limiting and the **free-tier lifetime credit cap** (500 one-time free credits). On the free tier, once credits are exhausted, retrying will not help — the user must upgrade.
+- **429** is used for both rate-limiting and the **free-tier lifetime credit cap**. Free credits are one-time and never reset, so once they are exhausted, retrying will not help — the user must upgrade.
 - **402** is used only when a **paid plan**'s auto-recharge was blocked (spending cap hit, card declined, bank SCA required, or no payment method on file). The response headers carry `X-FASTCRW-Stop-Reason`, `X-FASTCRW-Credits-Available`, and `X-FASTCRW-Upgrade-Url` to surface the exact cause.
 
 :::note

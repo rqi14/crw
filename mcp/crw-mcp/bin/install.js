@@ -90,7 +90,7 @@ if (fromConfig) {
   console.log(`\nMode: cloud — CRW_API_KEY ${apiKey.slice(0, 10)}… → ${apiUrl}`);
 } else {
   console.log("\nMode: local (free, embedded binary — no key needed).");
-  console.log("  Cloud mode: re-run with --api-key crw_live_… (500 free credits at https://fastcrw.com).");
+  console.log("  Cloud mode: re-run with --api-key crw_live_… (1000 free credits at https://fastcrw.com).");
 }
 console.log("\nRestart your agent to load the MCP server.");
 console.log("Docs: https://fastcrw.com/docs");

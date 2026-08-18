@@ -457,7 +457,7 @@ No binary to install — use the npm package backed by fastCRW's proxy network:
 }
 ```
 
-Sign up at [fastcrw.com](https://fastcrw.com) — 500 free credits, no credit card required.
+Sign up at [fastcrw.com](https://fastcrw.com) — 1000 free credits, no credit card required.
 
 ## Tips for Effective MCP Scraping
 

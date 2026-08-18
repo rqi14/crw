@@ -36,7 +36,7 @@ export const DOCS_URL = "https://us.github.io/crw";
 
 const SIGNUP_NUDGE =
   `No CRW API key found. CRW uses the managed cloud (${CLOUD_API_URL}) by default.\n` +
-  `  -> Sign up at ${DASHBOARD_URL} for 500 free credits — no payment, no monthly ` +
+  `  -> Sign up at ${DASHBOARD_URL} for 1000 free credits — no payment, no monthly ` +
   `reset (GitHub/Google, ~10s) — then set CRW_API_KEY (or pass apiKey).\n` +
   `  -> Prefer to self-host? Set CRW_LOCAL=1 to run the local engine. Docs: ${DOCS_URL}`;
 
@@ -60,7 +60,7 @@ export class CrwClient {
 
   /**
    * CRW is cloud-first. With no arguments the client targets the managed cloud
-   * (api.fastcrw.com) and needs an API key — sign up for 500 free credits at
+   * (api.fastcrw.com) and needs an API key — sign up for 1000 free credits at
    * https://fastcrw.com/dashboard. To self-host locally, set `CRW_LOCAL=1`.
    */
   constructor(opts: ClientOptions = {}) {

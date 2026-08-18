@@ -156,4 +156,4 @@ Self-hosting is ideal when you want full control and predictable costs. But if y
 - Auto-scaling for spiky traffic
 - Zero maintenance overhead
 
-…then [fastCRW](https://fastcrw.com) — the hosted version — is the better choice. You get the same API, same response format, and 500 free credits to start without a credit card.
+…then [fastCRW](https://fastcrw.com) — the hosted version — is the better choice. You get the same API, same response format, and 1000 free credits to start without a credit card.

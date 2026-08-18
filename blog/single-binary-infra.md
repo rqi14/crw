@@ -144,4 +144,4 @@ curl -L https://github.com/us/crw/releases/latest/download/crw-linux-x86_64 -o c
 chmod +x crw && ./crw serve
 ```
 
-For managed hosting: [fastcrw.com](https://fastcrw.com) — 500 free credits, no credit card.
+For managed hosting: [fastcrw.com](https://fastcrw.com) — 1000 free credits, no credit card.

@@ -360,7 +360,7 @@ docker run -p 3000:3000 ghcr.io/us/crw:latest
 
 ### Hosted Path — Use fastCRW
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed cloud version — same Firecrawl-compatible API, same low-latency engine, with infrastructure and scaling handled for you. Start with 500 free credits, no credit card required.
+Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed cloud version — same Firecrawl-compatible API, same low-latency engine, with infrastructure and scaling handled for you. Start with 1000 free credits, no credit card required.
 
 ## Further Reading
 
@@ -389,7 +389,7 @@ On Firecrawl's public 1,000-URL scrape-content-dataset-v1 (819 labeled URLs, har
 
 ### Is CRW free, and how does it compare to Scrapy Cloud?
 
-CRW's engine is open source under AGPL-3.0, so self-hosting it costs nothing beyond your own server — it runs as a single small static binary in one Docker container, comfortably on a $5 VPS. The managed fastCRW cloud has a Free plan with 500 one-time lifetime credits and paid tiers from $13/mo (Hobby, launch pricing through 2026-06-01). Scrapy itself is free (BSD), but Scrapy Cloud, Zyte's managed hosting, is a paid service.
+CRW's engine is open source under AGPL-3.0, so self-hosting it costs nothing beyond your own server — it runs as a single small static binary in one Docker container, comfortably on a $5 VPS. The managed fastCRW cloud has a Free plan with 1000 one-time lifetime credits and paid tiers from $13/mo (Hobby, launch pricing through 2026-06-01). Scrapy itself is free (BSD), but Scrapy Cloud, Zyte's managed hosting, is a paid service.
 
 ### Can I use CRW together with Scrapy and BeautifulSoup?
 

@@ -107,7 +107,7 @@
       "faqs": [
         {
           "q": "Should I use the hosted API or self-host CRW?",
-          "a": "The hosted API at https://api.fastcrw.com is the fastest path to a first successful response — sign up at fastcrw.com/register for an API key and 500 free credits. Self-hosting on http://localhost:3000 needs no auth header by default and is the right choice when you want full control of data flow or want to skip credit billing."
+          "a": "The hosted API at https://api.fastcrw.com is the fastest path to a first successful response — sign up at fastcrw.com/register for an API key and 1000 free credits. Self-hosting on http://localhost:3000 needs no auth header by default and is the right choice when you want full control of data flow or want to skip credit billing."
         },
         {
           "q": "Where do I get an API key?",

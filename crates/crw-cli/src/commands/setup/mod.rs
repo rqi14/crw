@@ -35,7 +35,7 @@ pub struct SetupArgs {
     /// Connect to CRW Cloud non-interactively with this API key. Validates the
     /// key, writes ~/.config/crw/config.toml (pointed at api.fastcrw.com), and
     /// skips every prompt. Implies cloud mode — get a key at
-    /// https://fastcrw.com/dashboard (500 free credits).
+    /// https://fastcrw.com/dashboard (1000 free credits).
     #[arg(long, value_name = "KEY", conflicts_with_all = ["local", "reset", "reset_shell"])]
     pub api_key: Option<String>,
 

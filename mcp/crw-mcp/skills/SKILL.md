@@ -33,7 +33,7 @@ npx crw-mcp@latest init      # skill only
 ## Authentication
 
 - **Embedded mode** (default): No key needed — the MCP server runs a self-contained scraper in ~14 MB RAM. No server required.
-- **Cloud mode** (fastcrw.com): Set `CRW_API_KEY=crw_live_...` and `CRW_API_URL=https://api.fastcrw.com`. Get a free key at https://fastcrw.com with 500 one-time lifetime credits (never resets, not monthly).
+- **Cloud mode** (fastcrw.com): Set `CRW_API_KEY=crw_live_...` and `CRW_API_URL=https://api.fastcrw.com`. Get a free key at https://fastcrw.com with 1000 one-time lifetime credits (never resets, not monthly).
 
 ## MCP Tools
 
@@ -194,7 +194,7 @@ Available fields: `title`, `url`, `description`, `snippet`, `position`,
 
 ## Links
 
-- Cloud API: https://fastcrw.com — 500 one-time lifetime free credits (never resets, not monthly)
+- Cloud API: https://fastcrw.com — 1000 one-time lifetime free credits (never resets, not monthly)
 - Docs: https://docs.fastcrw.com
 - GitHub: https://github.com/us/crw
 - Native API: `/v1/scrape`, `/v1/crawl`, `/v1/map`, and `/v1/search` are the recommended routes for new CRW integrations

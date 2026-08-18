@@ -36,7 +36,7 @@ class CrwLoader(BaseLoader):
             pip install 'crw[langchain]'
 
         CRW is cloud-first: by default it uses the managed cloud
-        (``api.fastcrw.com``). Sign up for 500 free credits at
+        (``api.fastcrw.com``). Sign up for 1000 free credits at
         https://fastcrw.com/dashboard and set ``CRW_API_KEY``. To self-host the
         engine locally instead, set ``CRW_LOCAL=1`` (zero-config, no key).
 

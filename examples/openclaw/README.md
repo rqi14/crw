@@ -17,7 +17,7 @@ Add to your OpenClaw MCP config:
 }
 ```
 
-Sign up for 500 free credits at https://fastcrw.com/dashboard, or omit
+Sign up for 1000 free credits at https://fastcrw.com/dashboard, or omit
 `CRW_API_KEY` and set `CRW_LOCAL=1`-style local config per the crw-mcp docs.
 
 Tools exposed: `crw_scrape`, `crw_crawl`, `crw_check_crawl_status`, `crw_map`,

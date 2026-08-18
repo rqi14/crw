@@ -52,7 +52,7 @@ use teardown::{CmdError, finish, install_signal_teardown};
         cargo install crw-cli                                           # Any Rust toolchain\n  \
         curl -fsSL https://fastcrw.com/install | sh\n\n\
         DOCS:    https://docs.fastcrw.com  ·  https://github.com/us/crw\n\
-        CLOUD:   https://fastcrw.com (500 free credits, no monthly reset)\n\
+        CLOUD:   https://fastcrw.com (1000 free credits, no monthly reset)\n\
         SEARCH:  `crw setup` connects Cloud; `crw setup --local` adds a private local backend.\n\
         "
 )]

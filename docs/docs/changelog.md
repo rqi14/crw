@@ -379,7 +379,7 @@ All notable changes to CRW are documented here.
 
 * **ci:** rebase-retry docs-sync push + sync 0.17.0 changelog ([597aa90](https://github.com/us/crw/commit/597aa90b56ad5188691e844e29f5a849a54c092e))
 * **install:** default to the crw CLI + drop the musl/glibc gate ([9958273](https://github.com/us/crw/commit/9958273bae8a5d954991b6a863dfee6ed7ef669a))
-* **install:** drop the GB figure from local, surface 500 credits everywhere ([f997aa0](https://github.com/us/crw/commit/f997aa0e75007db2a4ee9fe4a4cc191bf00da0d0))
+* **install:** drop the GB figure from local, surface 1000 credits everywhere ([f997aa0](https://github.com/us/crw/commit/f997aa0e75007db2a4ee9fe4a4cc191bf00da0d0))
 * **mcp:** clarify crawl/parse jsonSchema arg for MCP clients ([91be697](https://github.com/us/crw/commit/91be6977f88c259bdc2c846be92a183308d62ebe))
 * **mcp:** static musl linux binaries + correct `claude mcp add` docs ([75333d6](https://github.com/us/crw/commit/75333d678e4112a1d03ca8d1c416fd989345cce0))
 * **server:** make crw- model-prefix boot guard opt-in ([5cb867c](https://github.com/us/crw/commit/5cb867c17aeac45e03d30cd11897a7fc9a5b9e5f))

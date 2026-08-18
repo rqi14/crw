@@ -29,7 +29,7 @@ Two things to internalize. First, **crawl is the credit sink**: a single crawl c
 
 ## The free-tier credit cliff
 
-The most-cited surprise: Firecrawl's free tier is **1,000 credits one-time** — a lifetime grant, not a monthly refill. A 600-page crawl plus a few hundred test scrapes can exhaust the entire free allowance in one evaluation session, with no monthly reset to wait for. When you compare free tiers, "1,000 one-time" and "1,000/month" are completely different economics even though the page shows the same number. fastCRW's free tier, by contrast, is a one-time lifetime 500 credits *plus* a free unlimited local self-host mode — the local mode is the part that actually removes the cliff for development and CI.
+The most-cited surprise: Firecrawl's free tier is **1,000 credits one-time** — a lifetime grant, not a monthly refill. A 600-page crawl plus a few hundred test scrapes can exhaust the entire free allowance in one evaluation session, with no monthly reset to wait for. When you compare free tiers, "1,000 one-time" and "1,000/month" are completely different economics even though the page shows the same number. fastCRW's free tier, by contrast, is a one-time lifetime 1000 credits *plus* a free unlimited local self-host mode — the local mode is the part that actually removes the cliff for development and CI.
 
 ## How rate limits map to tiers
 
@@ -116,7 +116,7 @@ Roughly 1 credit per page crawled. A crawl over a 5,000-page site costs about 5,
 
 ### Do Firecrawl credits reset monthly on the free tier?
 
-No. The free tier is a one-time lifetime grant of 1,000 credits, not a monthly allowance. fastCRW's free tier is a one-time lifetime 500 credits plus a free unlimited local self-host mode that removes the cliff for dev and CI.
+No. The free tier is a one-time lifetime grant of 1,000 credits, not a monthly allowance. fastCRW's free tier is a one-time lifetime 1000 credits plus a free unlimited local self-host mode that removes the cliff for dev and CI.
 
 ### What hits first, the credit cap or the concurrency limit?
 

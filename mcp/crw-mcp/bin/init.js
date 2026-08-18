@@ -73,6 +73,6 @@ if (apiKey) {
   console.log("  export CRW_API_URL=https://api.fastcrw.com");
 } else {
   console.log("\nThe skill works in local mode out of the box (free, embedded).");
-  console.log("Cloud mode (managed, 500 free credits): https://fastcrw.com");
+  console.log("Cloud mode (managed, 1000 free credits): https://fastcrw.com");
 }
 console.log("\nDocs: https://fastcrw.com/docs");

@@ -114,7 +114,7 @@ The benchmark script, dataset, and full results are [open source](https://github
 
 ## Try It Yourself
 
-CRW's Search and Scrape APIs are live with a [one-time lifetime 500 credits](/pricing) (not a monthly meter) — no card required.
+CRW's Search and Scrape APIs are live with a [one-time lifetime 1000 credits](/pricing) (not a monthly meter) — no card required.
 
 ```
 # Search — parallel engine aggregation, low latency

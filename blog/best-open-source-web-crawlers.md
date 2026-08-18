@@ -293,7 +293,7 @@ AGPL-3.0 licensed. Single small static binary. Works on the cheapest VPS tier. [
 
 ### Try fastCRW Cloud
 
-Same API, no infrastructure. [fastCRW](https://fastcrw.com) — a one-time lifetime 500 credits (not a monthly meter), no credit card required.
+Same API, no infrastructure. [fastCRW](https://fastcrw.com) — a one-time lifetime 1000 credits (not a monthly meter), no credit card required.
 
 ## Further Reading
 

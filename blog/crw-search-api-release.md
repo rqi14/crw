@@ -145,7 +145,7 @@ The Python SDK enforces this clearly: calling `client.search()` without `api_url
 
 ## Try It
 
-Search is available right now in the [playground](/playground) — no API key needed for basic testing. For production use, [sign up](/login) and get 500 free credits to start.
+Search is available right now in the [playground](/playground) — no API key needed for basic testing. For production use, [sign up](/login) and get 1000 free credits to start.
 
 - [Search endpoint docs](https://docs.fastcrw.com/search)
 - [SDK examples](https://docs.fastcrw.com/sdk-examples)
