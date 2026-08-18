@@ -25,6 +25,18 @@ const TARGET_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const CHALLENGE_MAX_RETRIES: u32 = 3;
 /// Delay between challenge retry polls (ms).
 pub const CHALLENGE_POLL_INTERVAL_MS: u64 = 3000;
+
+/// Wall-clock the post-navigate challenge loop can actually consume, for the
+/// retry count THIS renderer was configured with.
+///
+/// Sized off the configured value, never `CHALLENGE_MAX_RETRIES`: the loop runs
+/// `retries` iterations, so reserving the constant inflated the CDP outer
+/// timeout (and through it the auto-extended request deadline) by every retry
+/// the deployment had already turned off. Prod runs 1, so the constant was
+/// reserving two poll intervals per CDP tier that no code path could spend.
+fn challenge_retry_budget(retries: u32) -> Duration {
+    Duration::from_millis(CHALLENGE_POLL_INTERVAL_MS * u64::from(retries))
+}
 /// Maximum time to poll for content stability when a loading placeholder
 /// is detected after the initial wait.
 pub const CONTENT_STABILITY_MAX_MS: u64 = 6000;
@@ -1771,8 +1783,7 @@ impl PageFetcher for CdpRenderer {
         // SPA selector poll instead of a fixed sleep — size the budget for
         // its worst-case SPA_SELECTOR_MAX_MS rather than the old 2s default.
         let wait_dur = Duration::from_millis(wait_for_ms.unwrap_or(SPA_SELECTOR_MAX_MS));
-        let challenge_budget =
-            Duration::from_millis(CHALLENGE_POLL_INTERVAL_MS * u64::from(CHALLENGE_MAX_RETRIES));
+        let challenge_budget = challenge_retry_budget(self.challenge_max_retries);
         let stability_budget = if wait_for_ms.is_none() {
             Duration::from_millis(CONTENT_STABILITY_MAX_MS)
         } else {
@@ -3635,6 +3646,36 @@ mod tests {
         lightpanda_safe_ua, outbound_block_label, screenshot_clip, split_caller_headers,
     };
     use std::collections::HashMap;
+
+    #[test]
+    fn challenge_reserve_follows_the_configured_retry_count() {
+        use crate::cdp::{
+            CHALLENGE_MAX_RETRIES, CHALLENGE_POLL_INTERVAL_MS, CdpRenderer, challenge_retry_budget,
+        };
+        use std::time::Duration;
+        // The outer CDP timeout used to reserve CHALLENGE_MAX_RETRIES (3) poll
+        // intervals no matter what the deployment configured. Prod runs 1, so
+        // every CDP tier carried 6s of budget the loop could never spend, and
+        // that padding propagated into the auto-extended request deadline.
+        assert_eq!(challenge_retry_budget(0), Duration::ZERO);
+        assert_eq!(
+            challenge_retry_budget(1),
+            Duration::from_millis(CHALLENGE_POLL_INTERVAL_MS)
+        );
+        // A self-hoster who leaves `chrome_challenge_max_retries` unset gets
+        // CHALLENGE_MAX_RETRIES at construction, so the full reserve still has
+        // to be available — under-reserving there would turn a legitimately
+        // slow-clearing challenge into a premature timeout.
+        assert_eq!(
+            challenge_retry_budget(CHALLENGE_MAX_RETRIES),
+            Duration::from_millis(CHALLENGE_POLL_INTERVAL_MS * u64::from(CHALLENGE_MAX_RETRIES))
+        );
+        assert_eq!(
+            CdpRenderer::new("chrome", "ws://x/", 1000, 1).challenge_max_retries,
+            CHALLENGE_MAX_RETRIES,
+            "an unconfigured renderer must still default to the full retry count"
+        );
+    }
 
     #[test]
     fn budget_truncated_warning_names_the_tier_that_ran_out() {
