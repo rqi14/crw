@@ -547,10 +547,29 @@ pub fn looks_like_cloudflare_challenge(html: &str) -> bool {
     // `crw_crawl::single::classify_block`).
     const STRONG_SCAN_LIMIT: usize = 512 * 1024;
     let strong_src = &html[..html.floor_char_boundary(STRONG_SCAN_LIMIT)];
+    // The challenge-platform entry is the ORCHESTRATE path, not the bare
+    // directory. Both live under `/cdn-cgi/challenge-platform/`, but they mean
+    // opposite things — measured live on 2026-08-18:
+    //
+    //   interstitial (rocketreach.co, glassdoor.com):
+    //       /cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1
+    //   ordinary Bot-Management response, INCLUDING a cleared page:
+    //       /cdn-cgi/challenge-platform/scripts/jsd/main.js
+    //
+    // The `/h/` segment is what separates them: the challenge orchestrator is
+    // always served from it, the telemetry loader never is.
+    //
+    // Matching the bare directory therefore fired on pages that had already been
+    // solved, which is exactly how `cloak.rs`'s accept gate came to reject its
+    // own successful solves: the sidecar returned the real page, this predicate
+    // saw the telemetry loader, and the recovery arm reported "still
+    // challenged". `crw_crawl::single::classify_block` had already dropped the
+    // bare directory for the same reason (a 783k post-solve Glassdoor capture);
+    // the two lists had drifted, and only this copy still carried it.
     const STRONG: [&str; 5] = [
         "cf-browser-verification",
         "cf-challenge-running",
-        "/cdn-cgi/challenge-platform/",
+        "challenge-platform/h/",
         "_cf_chl_opt", // substring of window._cf_chl_opt / __cf_chl_managed_tk__
         "__cf_chl_managed_tk__",
     ];
