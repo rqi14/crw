@@ -101,7 +101,7 @@ pub fn print_header() {
         println!(
             "  {}  {}{}",
             style("│").cyan(),
-            style(format!("🦀 CRW Setup Wizard v{}", version)).bold(),
+            style(format!("CRW Setup Wizard v{}", version)).bold(),
             style(format!("{}│", " ".repeat(35 - version.len()))).cyan()
         );
         println!(
@@ -128,21 +128,26 @@ pub fn print_header() {
 }
 
 /// Print a section header (e.g., CLOUD SETUP or LOCAL SETUP).
-pub fn print_section_header(icon: &str, title: &str) {
+///
+/// Deliberately takes no icon argument. The parameter existed only to carry an
+/// emoji, and emoji have no place in our output: they render inconsistently
+/// across terminals, misalign the rules above and below, and read as unserious
+/// in a tool people run on servers.
+pub fn print_section_header(title: &str) {
     println!();
     if colors_enabled() {
         println!(
             "  {}",
             style("═══════════════════════════════════════════════════════════").cyan()
         );
-        println!("  {}  {}", icon, style(title).bold().cyan());
+        println!("  {}", style(title).bold().cyan());
         println!(
             "  {}",
             style("═══════════════════════════════════════════════════════════").cyan()
         );
     } else {
         println!("  ===========================================================");
-        println!("  {}  {}", icon, title);
+        println!("  {}", title);
         println!("  ===========================================================");
     }
     println!();
@@ -237,7 +242,7 @@ pub fn print_summary(title: &str, items: &[SummaryItem]) {
     println!(
         "  {} {}",
         if colors_enabled() {
-            style("📋").to_string()
+            style("[i]").cyan().to_string()
         } else {
             "[i]".to_string()
         },

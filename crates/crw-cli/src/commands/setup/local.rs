@@ -17,7 +17,7 @@ use dialoguer::Select;
 /// interactive path. LLM setup is intentionally demand-driven by the first
 /// `--summary` or `--extract` invocation, not part of local setup.
 pub async fn run(non_interactive: bool) -> Result<(), SetupError> {
-    ui::print_section_header("🏠", "LOCAL SETUP");
+    ui::print_section_header("LOCAL SETUP");
 
     println!("  Basic local scraping already works without setup.");
     println!("  Add only the optional browser and search capabilities you need.");
