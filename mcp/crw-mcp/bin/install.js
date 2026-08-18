@@ -36,6 +36,7 @@ Options:
   --gemini-cli     Gemini CLI       --windsurf   Windsurf
   --api-key <key>  fastcrw.com API key → cloud mode (else local/embedded)
   --api-url <url>  API base (default https://api.fastcrw.com when a key is set)
+  --from-config    Read mode from ~/.config/crw/config.toml at runtime
   -h, --help       Show this help
 
 Without flags, auto-detects installed agents. Installs the skill (SKILL.md) and
@@ -44,7 +45,8 @@ registers the "crw" MCP server. Run \`crw-mcp init\` for the skill only.
   process.exit(0);
 }
 
-const apiKey = getApiKey(args);
+const fromConfig = args.includes("--from-config");
+const apiKey = fromConfig ? null : getApiKey(args);
 const apiUrl = argValue("--api-url") || (apiKey ? "https://api.fastcrw.com" : null);
 const env = apiKey ? { CRW_API_KEY: apiKey, CRW_API_URL: apiUrl } : {};
 
@@ -58,6 +60,7 @@ if (agents.length === 0) {
 
 const skill = readSkill();
 const results = [];
+const failures = [];
 for (const agent of agents) {
   try {
     const skillPath = installSkill(agent, skill);
@@ -65,6 +68,7 @@ for (const agent of agents) {
     results.push({ name: agent.name, skillPath, mcpLabel });
   } catch (err) {
     console.error(`  ${agent.name}: ${err.message}`);
+    failures.push(agent.name);
   }
 }
 
@@ -80,7 +84,9 @@ for (const r of results) {
   console.log(`    ${r.mcpLabel.replace(home, "~")}`);
 }
 
-if (apiKey) {
+if (fromConfig) {
+  console.log("\nMode: follows ~/.config/crw/config.toml (credentials are not copied into agent configs).");
+} else if (apiKey) {
   console.log(`\nMode: cloud — CRW_API_KEY ${apiKey.slice(0, 10)}… → ${apiUrl}`);
 } else {
   console.log("\nMode: local (free, embedded binary — no key needed).");
@@ -88,3 +94,7 @@ if (apiKey) {
 }
 console.log("\nRestart your agent to load the MCP server.");
 console.log("Docs: https://fastcrw.com/docs");
+if (failures.length > 0) {
+  console.error(`\nFailed targets: ${failures.join(", ")}. Existing configs were preserved.`);
+  process.exitCode = 1;
+}
