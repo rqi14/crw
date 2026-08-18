@@ -3,6 +3,7 @@
 //! Guides users through Cloud or Local installation with clear
 //! explanations at each step.
 
+mod agents;
 mod browser;
 mod cloud;
 pub(crate) mod config_file;
@@ -100,6 +101,11 @@ pub async fn run(args: SetupArgs) {
         }
     }
 
+    // MCP registration is a post-setup convenience, never part of scripted
+    // setup. `--api-key` is intentionally non-interactive even when the caller
+    // did not repeat `--non-interactive`.
+    let offer_agent_setup = !args.non_interactive && args.api_key.is_none();
+
     // If specific mode is requested, run that directly
     let result = if let Some(key) = args.api_key.clone() {
         // Non-interactive cloud connect (--api-key / installer pass-through).
@@ -129,7 +135,11 @@ pub async fn run(args: SetupArgs) {
     };
 
     match result {
-        Ok(()) => {}
+        Ok(()) => {
+            if offer_agent_setup {
+                agents::offer_install();
+            }
+        }
         Err(e) => {
             // Check if it was a cancellation
             if let ui::SetupError::Cancelled = e {

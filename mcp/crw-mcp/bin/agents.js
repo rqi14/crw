@@ -53,21 +53,51 @@ function installSkill(agent, skillContent) {
   const dir = path.join(home, agent.configDir, "skills", "crw");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, "SKILL.md");
-  fs.writeFileSync(file, skillContent, "utf-8");
+  atomicWriteText(file, skillContent);
   return file;
 }
 
 function readJson(file) {
+  if (!fs.existsSync(file)) return {};
   try {
-    return JSON.parse(fs.readFileSync(file, "utf-8"));
-  } catch {
-    return {};
+    const value = JSON.parse(fs.readFileSync(file, "utf-8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("top-level value must be an object");
+    }
+    return value;
+  } catch (error) {
+    throw new Error(`refusing to overwrite malformed JSON in ${file}: ${error.message}`);
+  }
+}
+
+function ensureObject(value, label, file) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`refusing to replace non-object ${label} in ${file}`);
+  }
+  return value;
+}
+
+function backupOnce(file) {
+  if (!fs.existsSync(file)) return;
+  const backup = `${file}.crw-backup`;
+  if (!fs.existsSync(backup)) fs.copyFileSync(file, backup);
+}
+
+function atomicWriteText(file, content) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  backupOnce(file);
+  const tmp = `${file}.crw-tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(tmp, content, { encoding: "utf-8", mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* already renamed or never created */ }
   }
 }
 
 function writeJson(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(obj, null, 2) + "\n", "utf-8");
+  atomicWriteText(file, JSON.stringify(obj, null, 2) + "\n");
 }
 
 /**
@@ -90,8 +120,15 @@ function installMcp(agent, env) {
 
   if (m.kind === "claude-cli") {
     // add-json avoids the `-e` variadic-name pitfall and merges ~/.claude.json
-    // (user scope) correctly. Idempotent-ish: remove a stale entry first.
+    // (user scope) correctly. Probe before touching state, then restore the
+    // exact prior user config if replacement fails.
     const server = { command: MCP_CMD, args: MCP_ARGS, ...(hasEnv ? { env } : {}) };
+    const probe = spawnSync("claude", ["--version"], { stdio: "ignore" });
+    if (probe.error || probe.status !== 0) {
+      throw new Error("Claude Code CLI was detected but is not launchable");
+    }
+    const configFile = path.join(home, ".claude.json");
+    const original = fs.existsSync(configFile) ? fs.readFileSync(configFile) : null;
     spawnSync("claude", ["mcp", "remove", "--scope", "user", "crw"], { stdio: "ignore" });
     const r = spawnSync(
       "claude",
@@ -99,7 +136,12 @@ function installMcp(agent, env) {
       { stdio: "ignore" },
     );
     if (r.error || r.status !== 0) {
-      return "MCP: run `claude mcp add-json --scope user crw '" + JSON.stringify(server) + "'` (claude CLI not found)";
+      if (original) {
+        fs.writeFileSync(configFile, original);
+      } else {
+        try { fs.unlinkSync(configFile); } catch { /* no file was created */ }
+      }
+      throw new Error("Claude Code rejected the MCP registration; previous config restored");
     }
     return "MCP via claude CLI (user scope)";
   }
@@ -107,7 +149,7 @@ function installMcp(agent, env) {
   if (m.kind === "json") {
     const file = path.join(home, m.file);
     const cfg = readJson(file);
-    cfg.mcpServers = cfg.mcpServers || {};
+    cfg.mcpServers = ensureObject(cfg.mcpServers, "mcpServers", file);
     cfg.mcpServers.crw = {
       ...(m.withType ? { type: "stdio" } : {}),
       command: MCP_CMD,
@@ -122,7 +164,7 @@ function installMcp(agent, env) {
     const file = path.join(home, m.file);
     const cfg = readJson(file);
     if (!cfg.$schema) cfg.$schema = "https://opencode.ai/config.json";
-    cfg.mcp = cfg.mcp || {};
+    cfg.mcp = ensureObject(cfg.mcp, "mcp", file);
     cfg.mcp.crw = {
       type: "local",
       command: [MCP_CMD, ...MCP_ARGS],
@@ -140,20 +182,38 @@ function installMcp(agent, env) {
     } catch {
       /* new file */
     }
-    if (/\[mcp_servers\.crw\]/.test(toml)) {
-      return `MCP already in ${m.file} (left as-is)`;
-    }
+    // The installer owns the crw section. Replace it so a previous install
+    // with embedded env credentials cannot override a later `--from-config`
+    // setup (and so re-runs remain idempotent).
+    toml = removeOwnedCodexSections(toml);
     const envLines = hasEnv
       ? "\n[mcp_servers.crw.env]\n" +
         Object.entries(env).map(([k, v]) => `${k} = "${v}"`).join("\n") + "\n"
       : "";
     const block = `\n[mcp_servers.crw]\ncommand = "${MCP_CMD}"\nargs = [${MCP_ARGS.map((a) => `"${a}"`).join(", ")}]\n${envLines}`;
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, (toml && !toml.endsWith("\n") ? "\n" : "") + block, "utf-8");
+    const next = toml + (toml && !toml.endsWith("\n") ? "\n" : "") + block;
+    atomicWriteText(file, next);
     return `MCP → ${m.file}`;
   }
 
   return "MCP: unsupported";
+}
+
+function removeOwnedCodexSections(toml) {
+  const lines = toml.split("\n");
+  const kept = [];
+  let skipping = false;
+  for (const line of lines) {
+    const isSection = /^\s*\[[^\]]+\]/.test(line);
+    const isOwned = /^\s*\[mcp_servers\.crw(?:\.[^\]]+)?\]\s*(?:#.*)?$/.test(line);
+    if (isOwned) {
+      skipping = true;
+      continue;
+    }
+    if (isSection) skipping = false;
+    if (!skipping) kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd();
 }
 
 module.exports = { AGENTS, detectAgents, getApiKey, readSkill, installSkill, installMcp, home };
