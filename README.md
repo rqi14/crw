@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="#install"><strong>Run locally ↓</strong></a> ·
+  <a href="#one-command-install"><strong>Run locally ↓</strong></a> ·
   <a href="https://fastcrw.com/register"><strong>Start free</strong></a> ·
   <a href="https://docs.fastcrw.com"><strong>Docs</strong></a>
 </p>
@@ -28,27 +28,20 @@
   <a href="https://github.com/us/crw/stargazers"><img src="https://img.shields.io/github/stars/us/crw?style=social" alt="GitHub Stars"></a>
 </p>
 
-On Firecrawl's own public benchmark dataset, fastCRW led every axis measured,
-against Crawl4AI and Firecrawl run over the same URLs through the same matcher,
-while idling at **~14 MB RAM**.
-
-<p align="center">
-  <a href="BENCHMARKS.md">
-    <img src=".github/benchmarks/bench-radar.svg" alt="fastCRW compared with Crawl4AI and Firecrawl on truth-recall, unique recoveries, median latency, download size, and recall depth" width="100%">
-  </a>
-</p>
-
-<p align="center"><sub><a href="BENCHMARKS.md">Methodology and one-command reproduction</a></sub></p>
-
-## Install
+## One-command install
 
 ```bash
 curl -fsSL https://fastcrw.com/install | sh
 ```
 
-Start scraping immediately—basic local use needs no account, API key, or
-setup. The installer supports macOS and Linux on Intel and ARM; other methods
-are in the [installation guide](https://docs.fastcrw.com/installation/).
+Then set it up:
+
+```bash
+crw setup
+```
+
+No account or API key is needed for local use. macOS and Linux are supported
+on Intel and ARM. [More install options →](https://docs.fastcrw.com/installation/)
 
 ## What it does
 
@@ -60,24 +53,72 @@ are in the [installation guide](https://docs.fastcrw.com/installation/).
 | **Search** | Search the web and optionally scrape selected results |
 | **Extract** | Produce structured fields from one or many URLs |
 
-Full request and response contracts belong in the
-[API reference](https://docs.fastcrw.com/#rest-api), not this landing page.
+[See the full API →](https://docs.fastcrw.com/#rest-api)
+
+## Why fastCRW
+
+On Firecrawl's own public 1,000-URL dataset, fastCRW recovered more truth than
+Crawl4AI and Firecrawl, matched the fastest median latency, and idled at
+**~14 MB RAM**.
+
+<p align="center">
+  <a href="BENCHMARKS.md">
+    <img src=".github/benchmarks/bench-radar.svg" alt="fastCRW compared with Crawl4AI and Firecrawl on truth-recall, unique recoveries, median latency, download size, and recall depth" width="100%">
+  </a>
+</p>
+
+<p align="center"><sub><a href="BENCHMARKS.md">Methodology, full numbers, and how to reproduce it</a></sub></p>
 
 ## Choose how you use it
 
 ### CLI
 
 ```bash
-crw https://example.com
-crw search "rust async runtime"
+crw https://example.com            # scrape, works right after install
+crw search "rust async runtime"    # search, after `crw setup`
 ```
 
-### REST and SDKs
+### Python SDK
 
-Use the [REST API reference](https://docs.fastcrw.com/#rest-api),
-[Python SDK](https://docs.fastcrw.com/sdk-examples/#python), or
-[Node.js SDK](https://docs.fastcrw.com/sdk-examples/#typescript). The guides
-cover both managed and self-hosted configuration.
+Using Cloud? [Get an API key](https://fastcrw.com/register), then export it once:
+
+```bash
+export CRW_API_KEY="crw_live_..."
+pip install crw
+```
+
+```python
+from crw import CrwClient
+
+client = CrwClient()
+page = client.scrape("https://example.com", formats=["markdown"])
+
+print(page["markdown"])
+```
+
+<details>
+<summary><strong>Node.js</strong></summary>
+
+```bash
+npm install crw-sdk
+```
+
+```javascript
+import { CrwClient } from "crw-sdk";
+
+const client = new CrwClient();
+
+const page = await client.scrape("https://example.com", {
+  formats: ["markdown"],
+});
+
+console.log(page.markdown);
+```
+
+</details>
+
+[Local mode and more SDK examples →](https://docs.fastcrw.com/sdk-examples/) ·
+[REST API →](https://docs.fastcrw.com/#rest-api)
 
 ### MCP for AI agents
 
@@ -85,20 +126,9 @@ cover both managed and self-hosted configuration.
 npx -y crw-mcp@latest install
 ```
 
-This registers the CRW skill and MCP server in detected supported agent hosts.
-With no API key it uses the local embedded engine. See
-[per-client setup](https://docs.fastcrw.com/mcp-clients/) for manual registration
-and cloud mode.
-
-### Optional setup
-
-```bash
-crw setup
-```
-
-Run setup only when you want to connect a Cloud API key or add local browser
-rendering and web search. AI features ask for an LLM provider only when you
-first invoke `--summary` or `--extract`.
+Installs the CRW skill and MCP server in your detected AI tools. `crw setup` can
+also do this step, so either path is enough.
+[Manual setup →](https://docs.fastcrw.com/mcp-clients/)
 
 ## Choose where it runs
 
@@ -108,14 +138,10 @@ first invoke `--summary` or `--extract`.
 | Start | [Create an API key](https://fastcrw.com/register), then `crw setup` | Install and run `crw <URL>` |
 | Operations | Managed proxies, billing, and hosted capabilities | You choose renderers, search, auth, proxies, and capacity |
 
-Both modes expose the core engine operations, but deployment capabilities,
-billing fields, and some response envelopes can differ. Check
-[`/v1/capabilities`](https://docs.fastcrw.com/capabilities/) and the
-[response-shape guide](https://docs.fastcrw.com/response-shapes/) instead of
-assuming that changing only the base URL makes every deployment identical.
+Capabilities and response shapes can differ by deployment:
+[`/v1/capabilities`](https://docs.fastcrw.com/capabilities/) · [response shapes](https://docs.fastcrw.com/response-shapes/)
 
-For deployment, authentication, containers, and production hardening, use the
-[self-hosting guide](https://docs.fastcrw.com/self-hosting/).
+[Self-hosting guide →](https://docs.fastcrw.com/self-hosting/)
 
 ## Learn more
 
@@ -135,12 +161,10 @@ cd crw
 make check-fast
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, repository map, and
-full pre-merge checks.
+[Read the contributor guide →](CONTRIBUTING.md)
 
-fastCRW is open source under [AGPL-3.0](LICENSE). Calling either a managed or
-self-hosted API does not apply the engine license to your client code. Commercial
-licensing for embedding the engine is available at hello@fastcrw.com.
+Engine and MCP server: [AGPL-3.0](LICENSE). Python and TypeScript SDKs: MIT.
+Embedding license: hello@fastcrw.com.
 
 ## Star History
 
@@ -168,5 +192,4 @@ licensing for embedding the engine is available at hello@fastcrw.com.
 
 </details>
 
-<sub>End users are responsible for respecting websites' policies when scraping.
-fastCRW respects `robots.txt` directives by default.</sub>
+<sub>Please respect website policies. Crawl and map follow `robots.txt` by default.</sub>

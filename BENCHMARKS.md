@@ -16,7 +16,7 @@ than crawl4ai and Firecrawl combined). Its **p50 latency is the fastest of the t
 tie with crawl4ai, ahead of Firecrawl), across **3,000 requests with 0 thrown errors and an 877/921
 (95.2%) scrape success rate on reachable URLs**. The 63.74% denominator is 819 labeled/matchable URLs.
 
-**Two modes, one config toggle.** *Recall mode* (the full renderer ladder — the numbers above)
+**Two modes, one config toggle.** *Recall mode* (the full renderer ladder, the numbers above)
 maximizes truth-recall. *Fast mode* (LightPanda-only, no Chrome tier) trades the recall tail for
 lower latency. Same binary, same API; pick accuracy or latency per workload.
 
@@ -28,7 +28,7 @@ lower latency. Same binary, same API; pick accuracy or latency per workload.
 | License | AGPL-3.0 (commercial avail.) | AGPL-3.0 (commercial avail.) | Apache-2.0 |
 | Self-host download | Single binary (~10 MB) | Multi-container (~500 MB+) | ~2 GB (browser bundled) |
 | Memory baseline (idle) | ~14 MB | Large (Chromium heap) | Large (Chromium heap) |
-| Firecrawl migration | Yes — `/firecrawl/v2/*` compat layer | Native | No |
+| Firecrawl migration | Yes, `/firecrawl/v2/*` compat layer | Native | No |
 | MCP server | Built-in (`crw-mcp`) | Separate package | Community add-on |
 | Hosted option | `api.fastcrw.com` | firecrawl.dev | None official |
 | Reproducible public benchmark | Yes | Vendor-published only | Vendor-published only |
@@ -39,10 +39,10 @@ at this scale and should not be used for this measurement.
 
 ## Reproduce it yourself
 
-The canonical harness is `bench/diagnose_3way.py` — it matches truth text against
+The canonical harness is `bench/diagnose_3way.py`. It matches truth text against
 `md + strip_md_links(md)`, applied identically to all three tools (a fairness control). It runs
 crw locally; the competitor steps below assume you have Crawl4AI and Firecrawl running locally
-too (adjust the paths/containers to your setup — they reflect ours).
+too (adjust the paths/containers to your setup; they reflect ours).
 
 ```bash
 cd ~/coding/crw/crw-opencore
