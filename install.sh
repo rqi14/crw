@@ -1,5 +1,5 @@
 #!/bin/sh
-# CRW installer — downloads the latest release binary for your platform.
+# CRW installer. Downloads the latest release binary for your platform.
 # Usage:
 #   curl -fsSL https://fastcrw.com/install | sh
 #   wget -qO- https://fastcrw.com/install | sh
@@ -9,7 +9,6 @@
 #   CRW_INSTALL_DIR=~/.local/bin   Custom install directory
 #   CRW_BINARY=crw-mcp    Install crw-mcp (MCP server) or crw-server instead of
 #                         the default crw CLI
-#   GITHUB_TOKEN=ghp_...  Avoid GitHub API rate limits
 
 set -eu
 
@@ -33,6 +32,13 @@ err()       { printf '%serror:%s %s\n' "${RED}${BOLD}" "${RESET}" "$*" >&2; exit
 
 need() {
   command -v "$1" >/dev/null 2>&1 || err "'$1' is required but not found"
+}
+
+# Print a binary's version line, or nothing. Only the `crw` CLI has a --version
+# flag; crw-mcp and crw-server reject it, so callers must treat an empty result
+# as "unknown" and fall back to the plain binary name.
+version_of() {
+  "$1" --version 2>/dev/null | head -1
 }
 
 # --- detect downloader ------------------------------------------------------
@@ -62,10 +68,10 @@ detect_platform() {
     *)       err "Unsupported OS: $OS. Try: cargo install $BINARY" ;;
   esac
 
-  # Rosetta 2 detection — uname returns x86_64 under Rosetta on Apple Silicon
+  # Rosetta 2 detection: uname returns x86_64 under Rosetta on Apple Silicon
   if [ "$PLATFORM" = "darwin" ] && [ "$ARCH" = "x86_64" ]; then
     if sysctl -n sysctl.proc_translated 2>/dev/null | grep -q '^1$'; then
-      info "Rosetta 2 detected — installing native arm64 binary"
+      info "Rosetta 2 detected, installing native arm64 binary"
       ARCH="arm64"
     fi
   fi
@@ -77,7 +83,7 @@ detect_platform() {
   esac
 
   # Linux binaries are static musl builds, so they run on ANY libc (glibc and
-  # musl/Alpine alike) — no libc gate needed.
+  # musl/Alpine alike), so no libc gate is needed.
 
   if [ "$PLATFORM" = "win32" ]; then
     ASSET="${BINARY}-${PLATFORM}-${ARCH_LABEL}.zip"
@@ -86,66 +92,38 @@ detect_platform() {
   fi
 }
 
-# --- fetch latest version ---------------------------------------------------
+# --- pick the download URL ----------------------------------------------------
 
-get_version() {
-  # Allow pinning to a specific version
+# Unpinned, we hand the download straight to GitHub's own
+# `releases/latest/download/<asset>` redirect instead of first asking the REST
+# API which tag is latest. That API allows 60 unauthenticated requests per hour
+# per IP, so on any shared address (CI runners, an office NAT, a cloud VM) the
+# tag lookup was what failed, never the download itself. The redirect is not
+# rate limited and needs no token.
+pick_url() {
   if [ -n "${CRW_VERSION:-}" ]; then
     VERSION="$CRW_VERSION"
-    return
-  fi
-
-  AUTH_HEADER=""
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    AUTH_HEADER="Authorization: token ${GITHUB_TOKEN}"
-  fi
-
-  CRW_TMPFILE="$(mktemp)"
-  if command -v curl >/dev/null 2>&1; then
-    if [ -n "$AUTH_HEADER" ]; then
-      curl -fsSL -H "$AUTH_HEADER" \
-        "https://api.github.com/repos/${REPO}/releases/latest" > "$CRW_TMPFILE" 2>/dev/null || true
-    else
-      curl -fsSL \
-        "https://api.github.com/repos/${REPO}/releases/latest" > "$CRW_TMPFILE" 2>/dev/null || true
-    fi
-  elif command -v wget >/dev/null 2>&1; then
-    if [ -n "$AUTH_HEADER" ]; then
-      wget --header="$AUTH_HEADER" --quiet \
-        -O "$CRW_TMPFILE" "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true
-    else
-      wget --quiet \
-        -O "$CRW_TMPFILE" "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true
-    fi
+    URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
   else
-    rm -f "$CRW_TMPFILE"
-    err "curl or wget is required"
+    # Empty means "whatever the redirect gives us"; messages say "latest" and
+    # the real tag is read back off the binary once it is installed.
+    VERSION=""
+    URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
   fi
-
-  # Check for rate limiting
-  if grep -q '"rate limit"' "$CRW_TMPFILE" 2>/dev/null; then
-    rm -f "$CRW_TMPFILE"
-    err "GitHub API rate limit exceeded. Set GITHUB_TOKEN or use: CRW_VERSION=v0.3.0"
-  fi
-
-  VERSION=$(grep '"tag_name"' "$CRW_TMPFILE" | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
-  rm -f "$CRW_TMPFILE"
-  [ -n "$VERSION" ] || err "Could not determine latest version. Use: CRW_VERSION=v0.3.0"
 }
 
 # --- download & install -----------------------------------------------------
 
 install() {
-  URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
   CRW_TMPDIR="$(mktemp -d)"
   trap 'rm -rf "$CRW_TMPDIR"' EXIT
 
   # Check for existing installation
   if command -v "$BINARY" >/dev/null 2>&1; then
-    INSTALLED=$("$BINARY" --version 2>/dev/null | head -1 || echo "unknown")
-    info "Upgrading from ${INSTALLED} to ${VERSION}..."
+    INSTALLED="$(version_of "$BINARY")"
+    info "Upgrading ${INSTALLED:-$BINARY} to ${VERSION:-latest}..."
   else
-    info "Downloading CRW ${VERSION} (${PLATFORM}/${ARCH_LABEL})..."
+    info "Downloading ${BINARY} ${VERSION:-latest} (${PLATFORM}/${ARCH_LABEL})..."
   fi
 
   download "$URL" "${CRW_TMPDIR}/${ASSET}"
@@ -179,7 +157,10 @@ install() {
     sudo chmod +x "${INSTALL_DIR}/${BINARY}"
   fi
 
-  success "CRW ${VERSION} installed to ${INSTALL_DIR}/${BINARY}"
+  # With the `latest` redirect the tag is never known up front, so report the
+  # version the installed binary actually is rather than the label we asked for.
+  INSTALLED_VERSION="$(version_of "${INSTALL_DIR}/${BINARY}")"
+  success "${INSTALLED_VERSION:-$BINARY} installed to ${INSTALL_DIR}/${BINARY}"
   echo ""
 
   # Check if install dir is in PATH
@@ -197,13 +178,13 @@ install() {
   if [ "$BINARY" = "crw" ]; then
     if [ -n "${CRW_API_KEY:-}" ]; then
       # One-command cloud connect: `curl … | CRW_API_KEY=crw_live_… sh`.
-      # Non-interactive — validates the key and writes config.toml, no /dev/tty
+      # Non-interactive: validates the key and writes config.toml, no /dev/tty
       # needed (works in CI too).
       echo ""
       info "Connecting to CRW Cloud with your API key…"
       echo ""
       "${INSTALL_DIR}/${BINARY}" setup --api-key "${CRW_API_KEY}" \
-        || info "Cloud connect failed — run 'crw setup --api-key <key>' to retry."
+        || info "Cloud connect failed. Run 'crw setup --api-key <key>' to retry."
     else
       echo ""
       echo "  Run:       crw https://example.com"
@@ -221,7 +202,7 @@ install() {
 # --- run --------------------------------------------------------------------
 
 detect_platform
-get_version
+pick_url
 install
 
 }
