@@ -27,8 +27,8 @@ This guide evaluates eight scraping APIs against these AI-specific criteria. We 
 
 | API | Avg Latency | Markdown Output | MCP Support | Self-Hostable | Free Tier | Best For |
 | --- | --- | --- | --- | --- | --- | --- |
-| **fastCRW / CRW** | Low (no browser in path) | ✅ Native | ✅ Built-in | ✅ AGPL-3.0 | One-time lifetime 500 credits | AI agents, RAG |
-| Firecrawl | Browser-render-first | ✅ Native | ✅ Separate pkg | ✅ AGPL-3.0 | 500 credits | Full-feature scraping |
+| **fastCRW / CRW** | Low (no browser in path) | ✅ Native | ✅ Built-in | ✅ AGPL-3.0 | One-time lifetime 1000 credits | AI agents, RAG |
+| Firecrawl | Browser-render-first | ✅ Native | ✅ Separate pkg | ✅ AGPL-3.0 | 1000 credits | Full-feature scraping |
 | Apify | Varies | Via actors | Community | ❌ | $5/mo free | Large-scale automation |
 | ScrapingBee | Proxy + render | ❌ HTML only | ❌ | ❌ | 1,000 credits | Simple HTML extraction |
 | ScraperAPI | Proxy + render | ❌ HTML only | ❌ | ❌ | 5,000 credits | Proxy rotation |
@@ -53,7 +53,7 @@ curl https://api.fastcrw.com/v1/scrape \
   -d '{"url": "https://example.com", "formats": ["markdown"]}'
 ```
 
-**Pricing:** Self-hosted is free (AGPL-3.0). fastCRW cloud starts with a one-time lifetime 500 credits (not a monthly meter), then pay-as-you-go across Hobby, Standard, Growth, and Scale tiers — see [fastcrw.com/pricing](https://fastcrw.com/pricing) for current tiers (single source of truth). Significantly cheaper per-page than Firecrawl or proxy-based APIs at volume.
+**Pricing:** Self-hosted is free (AGPL-3.0). fastCRW cloud starts with a one-time lifetime 1000 credits (not a monthly meter), then pay-as-you-go across Hobby, Standard, Growth, and Scale tiers — see [fastcrw.com/pricing](https://fastcrw.com/pricing) for current tiers (single source of truth). Significantly cheaper per-page than Firecrawl or proxy-based APIs at volume.
 
 **Limitations:** Screenshots need a Chrome-class renderer tier configured. Document parsing is PDF-only, with no OCR and no DOCX. Anti-bot handling is partial — sites with aggressive bot detection may need a proxy layer on top. JavaScript rendering via LightPanda is maturing but not at Playwright-level reliability for complex SPAs.
 
@@ -65,7 +65,7 @@ curl https://api.fastcrw.com/v1/scrape \
 
 **Why it stands out:** Firecrawl defined the modern "scraping API for LLMs" category. Its markdown output is well-tuned, the SDK ecosystem is mature, and it handles JavaScript-heavy SPAs through Playwright. The self-hosted version is available under AGPL-3.0.
 
-**Pricing:** Free tier with 500 credits. Paid plans start at $19/month. Self-hosted is free but requires more infrastructure (Redis, Playwright, ~1GB RAM minimum).
+**Pricing:** Free tier with 1000 credits. Paid plans start at $19/month. Self-hosted is free but requires more infrastructure (Redis, Playwright, ~1GB RAM minimum).
 
 **Limitations:** Higher latency from the per-request browser render. Self-hosting requires multiple services (Redis, workers, browser) and a large multi-service image. Per-request cost is higher than CRW at scale.
 
@@ -170,7 +170,7 @@ Pricing gets interesting at volume. Here's a rough comparison for 100,000 pages/
 | API | ~Cost for 100K pages/mo | Notes |
 | --- | --- | --- |
 | CRW (self-hosted) | $5–12/mo | Server cost only, no per-page fees |
-| fastCRW (cloud) | Varies by plan | Pay-as-you-go, starts with 500 free credits |
+| fastCRW (cloud) | Varies by plan | Pay-as-you-go, starts with 1000 free credits |
 | Firecrawl | $199+/mo | Growth plan, depending on page complexity |
 | Apify | $49–199/mo | Depends on compute units consumed |
 | ScrapingBee | $99–249/mo | Depends on JS rendering usage |
@@ -254,7 +254,7 @@ AGPL-3.0 licensed. No per-request fees. [GitHub](https://github.com/us/crw) · [
 
 ### Try fastCRW Cloud
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) gives you the same API as a managed service — a one-time lifetime 500 credits (not a monthly meter), no credit card required.
+Don't want to manage servers? [fastCRW](https://fastcrw.com) gives you the same API as a managed service — a one-time lifetime 1000 credits (not a monthly meter), no credit card required.
 
 ## Further Reading
 
@@ -280,7 +280,7 @@ For HTML scraping, crawling, and structured extraction: yes. CRW implements the 
 
 ### What is the cheapest web scraping API for high volume?
 
-Self-hosting CRW is the cheapest option — it is free under AGPL-3.0, so you pay only for your own server, and a small VPS handles moderate volume. For a managed service, fastCRW's Free tier gives 500 one-time lifetime credits, then paid tiers cover Hobby through Scale (see fastcrw.com/pricing for current tiers and any active launch pricing). Proxy-based APIs like Bright Data and ScrapingBee cost more per page but may be necessary for sites with aggressive anti-bot protection.
+Self-hosting CRW is the cheapest option — it is free under AGPL-3.0, so you pay only for your own server, and a small VPS handles moderate volume. For a managed service, fastCRW's Free tier gives 1000 one-time lifetime credits, then paid tiers cover Hobby through Scale (see fastcrw.com/pricing for current tiers and any active launch pricing). Proxy-based APIs like Bright Data and ScrapingBee cost more per page but may be necessary for sites with aggressive anti-bot protection.
 
 ### Which scraping API is most accurate for a RAG pipeline?
 

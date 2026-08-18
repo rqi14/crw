@@ -198,6 +198,6 @@ AGPL-3.0 licensed. No per-request fees. [GitHub](https://github.com/us/crw) · [
 
 ### Try fastCRW Cloud
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 500 free credits, no credit card required. Same API, no infrastructure to maintain.
+Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 1000 free credits, no credit card required. Same API, no infrastructure to maintain.
 
 Also see: [CRW vs Crawl4AI: detailed comparison](/blog/crw-vs-crawl4ai) · [CRW vs Firecrawl](/blog/firecrawl-vs-crawl4ai-vs-crw) · [Best self-hosted scrapers](/blog/best-self-hosted-scrapers)

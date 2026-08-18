@@ -26,7 +26,7 @@ openclaw plugins install openclaw-plugin-crw
 
 ### Option A: Cloud (fastcrw.com) — Quickest Start
 
-[Sign up at fastcrw.com](https://fastcrw.com) and get **500 free credits**. Add to your OpenClaw config:
+[Sign up at fastcrw.com](https://fastcrw.com) and get **1000 free credits**. Add to your OpenClaw config:
 
 ```
 {
@@ -118,7 +118,7 @@ OpenClaw already has a Firecrawl plugin. Here's how CRW compares:
 - [openclaw-plugin-crw on npm](https://www.npmjs.com/package/openclaw-plugin-crw)
 - [GitHub: us/openclaw-plugin-crw](https://github.com/us/openclaw-plugin-crw)
 - [CRW on GitHub](https://github.com/us/crw)
-- [fastcrw.com — 500 free credits](https://fastcrw.com)
+- [fastcrw.com — 1000 free credits](https://fastcrw.com)
 
 ## Get Started
 

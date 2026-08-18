@@ -233,7 +233,7 @@ Bright Data's pricing starts high and scales with usage. Here's how alternatives
 - **Apify:** $49/month for the starter plan.
 - **ScrapingBee:** $49/month for 1,000 credits.
 - **CRW self-hosted:** $5/month (VPS). Zero per-request fees. No proxy cost if you don't need proxies.
-- **fastCRW cloud:** 500 free credits to start, then usage-based.
+- **fastCRW cloud:** 1000 free credits to start, then usage-based.
 - **Crawl4AI self-hosted:** $12/month (VPS). Free software.
 - **Firecrawl self-hosted:** $12-24/month (VPS with enough RAM).
 
@@ -265,6 +265,6 @@ AGPL-3.0 licensed. No per-request fees. [GitHub](https://github.com/us/crw) · [
 
 ### Try fastCRW Cloud
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 500 free credits, no credit card required. Same API, no infrastructure to maintain.
+Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 1000 free credits, no credit card required. Same API, no infrastructure to maintain.
 
 Also see: [CRW vs Firecrawl](/blog/firecrawl-vs-crawl4ai-vs-crw) · [CRW vs Crawl4AI](/blog/crw-vs-crawl4ai) · [Best self-hosted scrapers](/blog/best-self-hosted-scrapers) · [CRW benchmarks](/blog/benchmark-crw)

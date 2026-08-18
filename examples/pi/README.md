@@ -14,6 +14,6 @@ Pi speaks MCP, so point it at the `crw-mcp` server — no bespoke package needed
 }
 ```
 
-Sign up for 500 free credits at https://fastcrw.com/dashboard. Tools:
+Sign up for 1000 free credits at https://fastcrw.com/dashboard. Tools:
 `crw_scrape`, `crw_crawl`, `crw_check_crawl_status`, `crw_map`, `crw_search`,
 `crw_parse_file`.

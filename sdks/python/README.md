@@ -51,7 +51,7 @@ MCP client config (works with Cursor, Windsurf, Cline, Claude Desktop, etc.):
 ## SDK Usage
 
 CRW is **cloud-first**. By default the client uses the managed cloud
-(`api.fastcrw.com`) — [sign up for 500 free credits](https://fastcrw.com/dashboard)
+(`api.fastcrw.com`) — [sign up for 1000 free credits](https://fastcrw.com/dashboard)
 (no payment, no monthly reset; GitHub/Google, ~10s) and set `CRW_API_KEY`.
 To self-host the engine locally instead, set `CRW_LOCAL=1` (zero-config, no key).
 

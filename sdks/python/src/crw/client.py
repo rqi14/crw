@@ -24,7 +24,7 @@ DOCS_URL = "https://us.github.io/crw"
 
 _SIGNUP_NUDGE = (
     "No CRW API key found. CRW uses the managed cloud ({cloud}) by default.\n"
-    "  → Sign up at {dashboard} for 500 free credits — no payment, no monthly "
+    "  → Sign up at {dashboard} for 1000 free credits — no payment, no monthly "
     "reset (GitHub/Google, ~10s) — then set CRW_API_KEY (or pass api_key=...).\n"
     "  → Prefer to self-host? Set CRW_LOCAL=1 to run the local engine. Docs: {docs}"
 ).format(cloud=CLOUD_API_URL, dashboard=DASHBOARD_URL, docs=DOCS_URL)
@@ -114,7 +114,7 @@ class CrwClient:
     """CRW web scraper client.
 
     CRW is cloud-first. With no arguments the client talks to the managed cloud
-    (``api.fastcrw.com``) and needs an API key — sign up for 500 free credits at
+    (``api.fastcrw.com``) and needs an API key — sign up for 1000 free credits at
     https://fastcrw.com/dashboard. To self-host the engine locally instead, set
     ``CRW_LOCAL=1`` (zero-config subprocess mode, no key, no server).
 

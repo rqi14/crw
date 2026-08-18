@@ -125,7 +125,7 @@ if API_KEY:
     headers["Authorization"] = f"Bearer {API_KEY}"
 elif BASE.startswith("https://api.fastcrw.com"):
     sys.exit("error: CRW_API_KEY is required for the hosted API. "
-             "Get one at https://fastcrw.com (500 free credits) "
+             "Get one at https://fastcrw.com (1000 free credits) "
              "or set CRW_API_URL=http://localhost:3000 to self-host.")
 
 req = urllib.request.Request(
@@ -510,7 +510,7 @@ def poll_crawl(crawl_id: str, api_key: str, interval: float = 3.0) -&gt; dict:
 <h3 id="402-vs-429-credit-awareness">402 vs 429: credit awareness</h3>
 <p>These two codes have different meanings and require different handling:</p>
 <ul>
-<li><strong>429</strong> is used for both rate-limiting and the <strong>free-tier lifetime credit cap</strong> (500 one-time free credits). On the free tier, once credits are exhausted, retrying will not help — the user must upgrade.</li>
+<li><strong>429</strong> is used for both rate-limiting and the <strong>free-tier lifetime credit cap</strong>. Free credits are one-time and never reset, so once they are exhausted, retrying will not help — the user must upgrade.</li>
 <li><strong>402</strong> is used only when a <strong>paid plan</strong>&#39;s auto-recharge was blocked (spending cap hit, card declined, bank SCA required, or no payment method on file). The response headers carry <code>X-FASTCRW-Stop-Reason</code>, <code>X-FASTCRW-Credits-Available</code>, and <code>X-FASTCRW-Upgrade-Url</code> to surface the exact cause.</li>
 </ul>
 <div class="callout callout-note"><div class="callout-icon"></div><div class="callout-content">Stop-reason values (`cap_reached`, `card_declined`, `action_required`, `no_payment_method`) and the response headers listed above (`X-FASTCRW-Stop-Reason`, `X-FASTCRW-Credits-Available`, `X-FASTCRW-Upgrade-Url`) are SaaS billing internals — verify against the [fastcrw.com dashboard docs](https://fastcrw.com/docs) if exact values matter for your integration.</div></div><p>Your agent should check the status code, not guess from the error message:</p>
@@ -568,8 +568,8 @@ elif resp.status_code == 429:
           <span>CRW</span>
         </div>
         <div class="toc-cta-title">Ready to scrape?</div>
-        <div class="toc-cta-desc">Sign up and get 500 free credits instantly. No credit card required.</div>
-        <a href="https://fastcrw.com/register" target="_blank" rel="noopener" class="toc-cta-btn primary">Get started — 500 free credits</a>
+        <div class="toc-cta-desc">Sign up and get 1000 free credits instantly. No credit card required.</div>
+        <a href="https://fastcrw.com/register" target="_blank" rel="noopener" class="toc-cta-btn primary">Get started, 1000 free credits</a>
         <a href="https://github.com/us/crw" target="_blank" rel="noopener" class="toc-cta-btn outline">View on GitHub</a>
       </div>
     </aside>

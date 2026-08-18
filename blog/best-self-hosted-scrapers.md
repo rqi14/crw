@@ -307,7 +307,7 @@ With its tiny idle footprint, CRW can run many instances on a single small serve
 
 A rough estimate: a team running 50 concurrent scraping workers self-hosted would spend ~$12/mo on infrastructure for CRW (a single 1 GB Droplet is sufficient) vs ~$192/mo for Firecrawl (requiring 32 GB+ for Redis, workers, and browser instances), using commodity cloud VMs. That gap widens as concurrency grows, because Firecrawl's per-instance memory floor limits how many workers you can pack onto a given machine.
 
-For teams that want CRW's economics without managing servers, [fastCRW](https://fastcrw.com) provides the same API as a managed service with 500 free credits to start.
+For teams that want CRW's economics without managing servers, [fastCRW](https://fastcrw.com) provides the same API as a managed service with 1000 free credits to start.
 
 ## Honest Limitations by Tool
 
@@ -337,7 +337,7 @@ AGPL-3.0 licensed. No per-request fees. [GitHub](https://github.com/us/crw) · [
 
 ### Hosted Path — fastCRW Cloud
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 500 free credits, no credit card required. Same API, no infrastructure to maintain.
+Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 1000 free credits, no credit card required. Same API, no infrastructure to maintain.
 
 ## FAQ
 
@@ -363,4 +363,4 @@ For HTML scraping, crawling, and structured extraction: yes. CRW implements Fire
 
 ### What does it cost to run a self-hosted scraper versus a managed API?
 
-Self-hosting the AGPL-3.0 engine is free — you pay only for your own server, so a small VPS can handle moderate volume. If you would rather not manage infrastructure, fastCRW cloud uses the same API: the Free tier gives 500 one-time lifetime credits, and paid tiers cover Hobby through Scale (see fastcrw.com/pricing for current tiers and any active launch pricing). A scrape costs 1 credit (2 with the chrome-stealth fallback).
+Self-hosting the AGPL-3.0 engine is free — you pay only for your own server, so a small VPS can handle moderate volume. If you would rather not manage infrastructure, fastCRW cloud uses the same API: the Free tier gives 1000 one-time lifetime credits, and paid tiers cover Hobby through Scale (see fastcrw.com/pricing for current tiers and any active launch pricing). A scrape costs 1 credit (2 with the chrome-stealth fallback).

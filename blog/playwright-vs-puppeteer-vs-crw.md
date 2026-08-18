@@ -318,7 +318,7 @@ docker run -p 3000:3000 ghcr.io/us/crw:latest
 
 ### Hosted Path — Use fastCRW
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed cloud version — same Firecrawl-compatible API, same low-latency engine, with infrastructure and scaling handled for you. Start with a one-time lifetime 500 credits (not a monthly meter), no credit card required.
+Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed cloud version — same Firecrawl-compatible API, same low-latency engine, with infrastructure and scaling handled for you. Start with a one-time lifetime 1000 credits (not a monthly meter), no credit card required.
 
 ## Further Reading
 

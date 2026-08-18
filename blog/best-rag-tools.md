@@ -90,7 +90,7 @@ results = vectorstore.similarity_search("How do I configure authentication?")
 
 **MCP for agent-driven RAG:** CRW's built-in MCP server lets AI agents scrape on demand during their reasoning process. An agent can decide it needs more context, scrape a relevant page, and incorporate the content — all without you writing custom integration code. See our [MCP scraping guide](/blog/mcp-web-scraping).
 
-**Pricing:** Self-hosted CRW is free (AGPL-3.0). [fastCRW cloud](https://fastcrw.com) starts with 500 free credits. For RAG pipelines that run on a schedule, self-hosted is significantly cheaper at volume — server cost only, no per-page fees.
+**Pricing:** Self-hosted CRW is free (AGPL-3.0). [fastCRW cloud](https://fastcrw.com) starts with 1000 free credits. For RAG pipelines that run on a schedule, self-hosted is significantly cheaper at volume — server cost only, no per-page fees.
 
 ### 2. LangChain — Orchestration Framework
 
@@ -320,7 +320,7 @@ AGPL-3.0 licensed. Works with LangChain and LlamaIndex out of the box. [GitHub](
 
 ### Or Use fastCRW Cloud
 
-Same API, no infrastructure. [fastCRW](https://fastcrw.com) — 500 free credits, no credit card required.
+Same API, no infrastructure. [fastCRW](https://fastcrw.com) — 1000 free credits, no credit card required.
 
 ## Further Reading
 

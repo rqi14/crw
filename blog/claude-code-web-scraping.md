@@ -194,7 +194,7 @@ If you don't want to run a local binary, you can use fastCRW's managed cloud. Th
 claude mcp add crw -- crw-mcp --env CRW_API_URL=https://api.fastcrw.com --env CRW_API_KEY=your-api-key
 ```
 
-Sign up at [fastcrw.com](https://fastcrw.com) for 500 free credits.
+Sign up at [fastcrw.com](https://fastcrw.com) for 1000 free credits.
 
 ### JS Rendering for SPAs
 
@@ -316,7 +316,7 @@ CRW is an open-source web scraper with a built-in MCP (Model Context Protocol) s
 
 ### Does Claude Code web scraping require an API key?
 
-No. The self-hosted CRW binary works without any API key — it scrapes pages directly from your machine. If you want to use the fastCRW managed cloud for its proxy network and JS rendering, you can start free on the Free plan, which includes 500 one-time lifetime credits.
+No. The self-hosted CRW binary works without any API key — it scrapes pages directly from your machine. If you want to use the fastCRW managed cloud for its proxy network and JS rendering, you can start free on the Free plan, which includes 1000 one-time lifetime credits.
 
 ### Can Claude Code scrape JavaScript-rendered pages?
 

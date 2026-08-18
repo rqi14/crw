@@ -285,7 +285,7 @@ Self-host CRW and run your own benchmark:
 docker run -p 3000:3000 -e CRW_API_KEY=your-key ghcr.io/us/crw:latest
 ```
 
-Or use [fastCRW](https://fastcrw.com) — the managed version with a one-time lifetime 500 credits (not a monthly meter), no credit card required.
+Or use [fastCRW](https://fastcrw.com) — the managed version with a one-time lifetime 1000 credits (not a monthly meter), no credit card required.
 
 ## FAQ
 

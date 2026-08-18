@@ -282,7 +282,7 @@ Single small static binary. Works on the cheapest VPS tier. No Redis, no Playwri
 
 ### Hosted via fastCRW
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) runs the same engine for you — one-time lifetime 500 credits on the Free tier (not a monthly meter), then pay-as-you-go. See [fastcrw.com/pricing](https://fastcrw.com/pricing) for current tiers (single source of truth).
+Don't want to manage servers? [fastCRW](https://fastcrw.com) runs the same engine for you — one-time lifetime 1000 credits on the Free tier (not a monthly meter), then pay-as-you-go. See [fastcrw.com/pricing](https://fastcrw.com/pricing) for current tiers (single source of truth).
 
 ## Further Reading
 

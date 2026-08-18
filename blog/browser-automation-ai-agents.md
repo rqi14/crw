@@ -356,7 +356,7 @@ The fastest path from "no web access" to "full browser automation capabilities" 
 
 ### 1. Get an API key
 
-[Sign up at fastcrw.com](https://fastcrw.com) — 500 free credits, no credit card required.
+[Sign up at fastcrw.com](https://fastcrw.com) — 1000 free credits, no credit card required.
 
 ### 2. Install the SDK
 
@@ -444,4 +444,4 @@ Agentic computer use such as Claude Computer Use or OpenAI Operator uses a full 
 
 ### Is CRW free to use for AI agents?
 
-fastCRW's Free plan gives 500 one-time lifetime credits with no credit card required, where a scrape costs 1 credit and a search costs 1 credit per query. Paid tiers start at $13/mo for Hobby (3,000 credits, launch pricing through 2026-06-01). The engine is also AGPL-3.0 open source, so self-hosting it is free — you pay only for your own server.
+fastCRW's Free plan gives 1000 one-time lifetime credits with no credit card required, where a scrape costs 1 credit and a search costs 1 credit per query. Paid tiers start at $13/mo for Hobby (3,000 credits, launch pricing through 2026-06-01). The engine is also AGPL-3.0 open source, so self-hosting it is free — you pay only for your own server.

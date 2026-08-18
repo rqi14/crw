@@ -125,7 +125,7 @@ if API_KEY:
     headers["Authorization"] = f"Bearer {API_KEY}"
 elif BASE.startswith("https://api.fastcrw.com"):
     sys.exit("error: CRW_API_KEY is required for the hosted API. "
-             "Get one at https://fastcrw.com (500 free credits) "
+             "Get one at https://fastcrw.com (1000 free credits) "
              "or set CRW_API_URL=http://localhost:3000 to self-host.")
 
 req = urllib.request.Request(
@@ -590,7 +590,7 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <ul>
 <li><strong>ci:</strong> rebase-retry docs-sync push + sync 0.17.0 changelog (<a href="https://github.com/us/crw/commit/597aa90b56ad5188691e844e29f5a849a54c092e">597aa90</a>)</li>
 <li><strong>install:</strong> default to the crw CLI + drop the musl/glibc gate (<a href="https://github.com/us/crw/commit/9958273bae8a5d954991b6a863dfee6ed7ef669a">9958273</a>)</li>
-<li><strong>install:</strong> drop the GB figure from local, surface 500 credits everywhere (<a href="https://github.com/us/crw/commit/f997aa0e75007db2a4ee9fe4a4cc191bf00da0d0">f997aa0</a>)</li>
+<li><strong>install:</strong> drop the GB figure from local, surface 1000 credits everywhere (<a href="https://github.com/us/crw/commit/f997aa0e75007db2a4ee9fe4a4cc191bf00da0d0">f997aa0</a>)</li>
 <li><strong>mcp:</strong> clarify crawl/parse jsonSchema arg for MCP clients (<a href="https://github.com/us/crw/commit/91be6977f88c259bdc2c846be92a183308d62ebe">91be697</a>)</li>
 <li><strong>mcp:</strong> static musl linux binaries + correct <code>claude mcp add</code> docs (<a href="https://github.com/us/crw/commit/75333d678e4112a1d03ca8d1c416fd989345cce0">75333d6</a>)</li>
 <li><strong>server:</strong> make crw- model-prefix boot guard opt-in (<a href="https://github.com/us/crw/commit/5cb867c17aeac45e03d30cd11897a7fc9a5b9e5f">5cb867c</a>)</li>
@@ -1204,8 +1204,8 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
           <span>CRW</span>
         </div>
         <div class="toc-cta-title">Ready to scrape?</div>
-        <div class="toc-cta-desc">Sign up and get 500 free credits instantly. No credit card required.</div>
-        <a href="https://fastcrw.com/register" target="_blank" rel="noopener" class="toc-cta-btn primary">Get started — 500 free credits</a>
+        <div class="toc-cta-desc">Sign up and get 1000 free credits instantly. No credit card required.</div>
+        <a href="https://fastcrw.com/register" target="_blank" rel="noopener" class="toc-cta-btn primary">Get started, 1000 free credits</a>
         <a href="https://github.com/us/crw" target="_blank" rel="noopener" class="toc-cta-btn outline">View on GitHub</a>
       </div>
     </aside>

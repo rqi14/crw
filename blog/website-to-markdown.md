@@ -274,7 +274,7 @@ curl -X POST https://api.fastcrw.com/v1/scrape \
   -d '{"url": "https://example.com", "formats": ["markdown"]}'
 ```
 
-Sign up at [fastcrw.com](https://fastcrw.com) — 500 free credits, no credit card.
+Sign up at [fastcrw.com](https://fastcrw.com) — 1000 free credits, no credit card.
 
 ## Frequently Asked Questions
 

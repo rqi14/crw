@@ -24,7 +24,7 @@ def _make_client(api_url: str | None, api_key: str | None) -> CrwClient:
     """Create a CrwClient instance.
 
     CRW is cloud-first: with no api_url and no key the SDK targets the managed
-    cloud (sign up for 500 free credits, set CRW_API_KEY). Pass an api_url for a
+    cloud (sign up for 1000 free credits, set CRW_API_KEY). Pass an api_url for a
     self-hosted server, or set CRW_LOCAL=1 to run the local engine.
     """
     return CrwClient(api_url=api_url, api_key=api_key)
@@ -46,7 +46,7 @@ class CrwScrapeWebsiteTool(BaseTool):
     Args:
         api_url: CRW server URL for a self-hosted server. If None, uses the
             managed cloud by default (set CRW_LOCAL=1 to run locally instead).
-        api_key: Cloud API key (or CRW_API_KEY env). Sign up for 500 free credits
+        api_key: Cloud API key (or CRW_API_KEY env). Sign up for 1000 free credits
             at fastcrw.com/dashboard.
         config: Scrape configuration options.
 
@@ -141,7 +141,7 @@ class CrwCrawlWebsiteTool(BaseTool):
     Args:
         api_url: CRW server URL for a self-hosted server. If None, uses the
             managed cloud by default (set CRW_LOCAL=1 to run locally instead).
-        api_key: Cloud API key (or CRW_API_KEY env). Sign up for 500 free credits
+        api_key: Cloud API key (or CRW_API_KEY env). Sign up for 1000 free credits
             at fastcrw.com/dashboard.
         config: Crawl configuration options.
         poll_interval: Seconds between status checks. Default: 2
@@ -233,7 +233,7 @@ class CrwMapWebsiteTool(BaseTool):
     Args:
         api_url: CRW server URL for a self-hosted server. If None, uses the
             managed cloud by default (set CRW_LOCAL=1 to run locally instead).
-        api_key: Cloud API key (or CRW_API_KEY env). Sign up for 500 free credits
+        api_key: Cloud API key (or CRW_API_KEY env). Sign up for 1000 free credits
             at fastcrw.com/dashboard.
         config: Map configuration options.
 

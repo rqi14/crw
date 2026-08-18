@@ -570,7 +570,7 @@ curl -X POST https://api.fastcrw.com/v1/scrape   -H "Authorization: Bearer crw_l
 
 ### Hosted Path — fastCRW Cloud
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — same API, same performance, with proxy networks and auto-scaling. A one-time lifetime 500 credits (not a monthly meter), no credit card required. See [pricing](/pricing), the [playground](/playground), the full [Firecrawl alternative breakdown](/alternatives/firecrawl), the [Crawl4AI comparison](/alternatives/crawl4ai), the [public benchmark methodology](/benchmarks), and the [MCP server integration](/integrations/mcp).
+Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — same API, same performance, with proxy networks and auto-scaling. A one-time lifetime 1000 credits (not a monthly meter), no credit card required. See [pricing](/pricing), the [playground](/playground), the full [Firecrawl alternative breakdown](/alternatives/firecrawl), the [Crawl4AI comparison](/alternatives/crawl4ai), the [public benchmark methodology](/benchmarks), and the [MCP server integration](/integrations/mcp).
 
 ## Frequently Asked Questions
 

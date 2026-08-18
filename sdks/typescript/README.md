@@ -14,7 +14,7 @@ npm install crw-sdk
 
 ## Quick start — Cloud (default)
 
-CRW is **cloud-first**. [Sign up for 500 free credits](https://fastcrw.com/dashboard)
+CRW is **cloud-first**. [Sign up for 1000 free credits](https://fastcrw.com/dashboard)
 — no payment, no monthly reset (GitHub/Google, ~10s) — then set `CRW_API_KEY`:
 
 ```ts

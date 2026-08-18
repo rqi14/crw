@@ -33,7 +33,7 @@ def _local_client(monkeypatch: pytest.MonkeyPatch) -> CrwClient:
 class TestInit:
     def test_default_cloud_requires_key(self) -> None:
         # Cloud-first: no key, no CRW_LOCAL → friendly onboarding nudge.
-        with pytest.raises(CrwError, match="500 free credits"):
+        with pytest.raises(CrwError, match="1000 free credits"):
             CrwClient()
 
     def test_default_cloud_with_key(self) -> None:

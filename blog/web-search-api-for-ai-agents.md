@@ -113,7 +113,7 @@ For custom agents, you want direct API access. Here's the step-by-step integrati
 
 Two options:
 
-- **Cloud:** Sign up at [fastcrw.com](https://fastcrw.com) and grab your API key from the dashboard. The free tier is a one-time lifetime 500 credits (not a monthly meter).
+- **Cloud:** Sign up at [fastcrw.com](https://fastcrw.com) and grab your API key from the dashboard. The free tier is a one-time lifetime 1000 credits (not a monthly meter).
 - **Self-hosted:** Run CRW locally (see Option 3 below). No API key needed — or set one with the `CRW_API_KEY` env variable.
 
 ### Step 2: Search the Web

@@ -290,7 +290,7 @@ Self-hosted crw supports per-request BYOP (bring-your-own-proxy) via `--proxy UR
 | Search | Requires a local search-backend sidecar | Included (managed backend) |
 | Proxy pool | BYOP via config | Managed proxy network |
 | Rate limiting | Token-bucket (configurable) | Per-plan limits; `X-RateLimit-*` headers |
-| Credits | N/A | 500 one-time lifetime free credits |
+| Credits | N/A | 1000 one-time lifetime free credits |
 | AGPL obligation | Applies if you expose to third parties | Carve-out included |
 
 ## 8. Links

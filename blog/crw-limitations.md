@@ -267,7 +267,7 @@ docker run -p 3000:3000 ghcr.io/us/crw:latest
 
 ### Hosted Path — fastCRW
 
-[fastCRW](https://fastcrw.com) — 500 free credits, no credit card required.
+[fastCRW](https://fastcrw.com) — 1000 free credits, no credit card required.
 
 ## FAQ
 

@@ -234,7 +234,7 @@ Apify charges based on compute units. For continuous scraping workloads, this ad
 
 - **Apify:** A moderate workload (10,000 pages/day) costs roughly $49-149/month on their platform, depending on Actor complexity and compute needs. After the rental sunset, costs may shift further depending on which standard Actors you use.
 - **fastCRW self-hosted:** The same workload runs on a $5-12/month VPS. fastCRW's tiny idle footprint means you can handle significant throughput on minimal hardware. AGPL-3.0 license — you pay for the server, not the software.
-- **fastCRW Cloud:** 500 free credits to start, then $69/mo Standard for 100k credits — generally cheaper than Apify for continuous workloads because there's no compute overhead.
+- **fastCRW Cloud:** 1000 free credits to start, then $69/mo Standard for 100k credits — generally cheaper than Apify for continuous workloads because there's no compute overhead.
 
 The break-even point is low. If you're scraping more than a few hundred pages per day, self-hosting fastCRW (or moving to fastCRW Cloud) saves money immediately.
 
@@ -258,7 +258,7 @@ AGPL-3.0 licensed. No per-request fees. [GitHub](https://github.com/us/crw) · [
 
 ### Try fastCRW Cloud
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 500 free credits, no credit card required. Same API, no infrastructure to maintain.
+Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 1000 free credits, no credit card required. Same API, no infrastructure to maintain.
 
 ## Sources
 
@@ -301,4 +301,4 @@ Apify announced on 14 April 2026 that it would sunset rental Actor pricing withi
 
 ### How much does fastCRW cost compared to Apify at scale?
 
-Self-hosting fastCRW is free under AGPL-3.0 — you pay only for your server, and a moderate workload runs on a $5–12/month VPS. fastCRW Cloud starts with 500 free lifetime credits, then $69/mo on the Standard plan for 100,000 credits during launch pricing (which ends 2026-06-01). Apify's pay-per-compute model grows linearly with usage, so for continuous scraping workloads fastCRW is dramatically cheaper.
+Self-hosting fastCRW is free under AGPL-3.0 — you pay only for your server, and a moderate workload runs on a $5–12/month VPS. fastCRW Cloud starts with 1000 free lifetime credits, then $69/mo on the Standard plan for 100,000 credits during launch pricing (which ends 2026-06-01). Apify's pay-per-compute model grows linearly with usage, so for continuous scraping workloads fastCRW is dramatically cheaper.

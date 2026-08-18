@@ -435,7 +435,7 @@ crw serve
 
 ### Hosted Path — Use fastCRW
 
-Don't want to manage infrastructure? [fastCRW](https://fastcrw.com) runs CRW's engine for you — with proxy networks, auto-scaling, and a free tier of 500 credits. No credit card required to start.
+Don't want to manage infrastructure? [fastCRW](https://fastcrw.com) runs CRW's engine for you — with proxy networks, auto-scaling, and a free tier of 1000 credits. No credit card required to start.
 
 ## Want a Broader Three-Way Comparison?
 

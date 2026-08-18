@@ -125,7 +125,7 @@ if API_KEY:
     headers["Authorization"] = f"Bearer {API_KEY}"
 elif BASE.startswith("https://api.fastcrw.com"):
     sys.exit("error: CRW_API_KEY is required for the hosted API. "
-             "Get one at https://fastcrw.com (500 free credits) "
+             "Get one at https://fastcrw.com (1000 free credits) "
              "or set CRW_API_URL=http://localhost:3000 to self-host.")
 
 req = urllib.request.Request(
@@ -295,7 +295,7 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <p><strong>What you get:</strong> <code>crw_scrape</code>, <code>crw_crawl</code>, <code>crw_check_crawl_status</code>, <code>crw_map</code>, <code>crw_extract</code>, <code>crw_check_extract_status</code>, <code>crw_cancel_extract</code>, <code>crw_parse_file</code>. <code>crw_search</code> requires a search backend — use cloud mode to get it instantly.</p>
 </blockquote>
 <h3 id="option-b-cloud-mode-all-9-tools-including-crw_search">Option B: Cloud mode (all 9 tools, including <code>crw_search</code>)</h3>
-<p>Get a free API key at <a href="https://fastcrw.com">fastcrw.com</a> — 500 one-time lifetime credits, no monthly reset.</p>
+<p>Get a free API key at <a href="https://fastcrw.com">fastcrw.com</a> — 1000 one-time lifetime credits, no monthly reset.</p>
 <pre data-lang="bash"><code class="language-bash">claude mcp add crw \
   -e CRW_API_URL=https://api.fastcrw.com \
   -e CRW_API_KEY=crw_live_xxxxxxxxxxxx \
@@ -460,8 +460,8 @@ All 9 tools registered by `crw-mcp`:
           <span>CRW</span>
         </div>
         <div class="toc-cta-title">Ready to scrape?</div>
-        <div class="toc-cta-desc">Sign up and get 500 free credits instantly. No credit card required.</div>
-        <a href="https://fastcrw.com/register" target="_blank" rel="noopener" class="toc-cta-btn primary">Get started — 500 free credits</a>
+        <div class="toc-cta-desc">Sign up and get 1000 free credits instantly. No credit card required.</div>
+        <a href="https://fastcrw.com/register" target="_blank" rel="noopener" class="toc-cta-btn primary">Get started, 1000 free credits</a>
         <a href="https://github.com/us/crw" target="_blank" rel="noopener" class="toc-cta-btn outline">View on GitHub</a>
       </div>
     </aside>

@@ -213,7 +213,7 @@ The biggest reason teams leave ScrapingBee is cost. Here's how the alternatives 
 - **ScrapingBee:** $49-149/month depending on plan and credit usage.
 - **ScraperAPI:** $49-149/month — similar pricing structure.
 - **CRW self-hosted:** $5/month (single VPS). Zero per-request fees. As a single small static binary, a $5 VPS handles this workload easily.
-- **fastCRW cloud:** 500 free credits to start, then usage-based — still significantly cheaper than ScrapingBee for most workloads.
+- **fastCRW cloud:** 1000 free credits to start, then usage-based — still significantly cheaper than ScrapingBee for most workloads.
 - **Firecrawl self-hosted:** $12-24/month (VPS with enough RAM for Redis + Playwright).
 - **Crawl4AI self-hosted:** $12-24/month (VPS with enough RAM for Python + Chromium).
 
@@ -245,6 +245,6 @@ AGPL-3.0 licensed. No per-request fees. [GitHub](https://github.com/us/crw) · [
 
 ### Try fastCRW Cloud
 
-Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 500 free credits, no credit card required. Same API, no infrastructure to maintain.
+Don't want to manage servers? [fastCRW](https://fastcrw.com) is the managed version — 1000 free credits, no credit card required. Same API, no infrastructure to maintain.
 
 Also see: [CRW vs Firecrawl](/blog/firecrawl-vs-crawl4ai-vs-crw) · [Best self-hosted scrapers](/blog/best-self-hosted-scrapers) · [CRW benchmarks](/blog/benchmark-crw) · [CRW on a $5 VPS](/blog/crw-on-5-dollar-vps)

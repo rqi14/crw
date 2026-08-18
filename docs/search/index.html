@@ -125,7 +125,7 @@ if API_KEY:
     headers["Authorization"] = f"Bearer {API_KEY}"
 elif BASE.startswith("https://api.fastcrw.com"):
     sys.exit("error: CRW_API_KEY is required for the hosted API. "
-             "Get one at https://fastcrw.com (500 free credits) "
+             "Get one at https://fastcrw.com (1000 free credits) "
              "or set CRW_API_URL=http://localhost:3000 to self-host.")
 
 req = urllib.request.Request(
@@ -787,8 +787,8 @@ with nothing to report are omitted, not emitted as <code>null</code> or <code>[]
           <span>CRW</span>
         </div>
         <div class="toc-cta-title">Ready to scrape?</div>
-        <div class="toc-cta-desc">Sign up and get 500 free credits instantly. No credit card required.</div>
-        <a href="https://fastcrw.com/register" target="_blank" rel="noopener" class="toc-cta-btn primary">Get started — 500 free credits</a>
+        <div class="toc-cta-desc">Sign up and get 1000 free credits instantly. No credit card required.</div>
+        <a href="https://fastcrw.com/register" target="_blank" rel="noopener" class="toc-cta-btn primary">Get started, 1000 free credits</a>
         <a href="https://github.com/us/crw" target="_blank" rel="noopener" class="toc-cta-btn outline">View on GitHub</a>
       </div>
     </aside>

@@ -37,7 +37,7 @@ function mockFetch(body: unknown, ok = true, status = 200) {
 }
 
 test("cloud-first: no key throws onboarding nudge", () => {
-  assert.throws(() => new CrwClient(), /500 free credits/);
+  assert.throws(() => new CrwClient(), /1000 free credits/);
 });
 
 test("cloud-first: with key targets the cloud", () => {

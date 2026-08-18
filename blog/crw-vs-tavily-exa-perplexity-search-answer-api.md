@@ -184,7 +184,7 @@ Pre-indexed search APIs skip the live-scrape step by serving cached pages. fastC
 
 ### Does fastCRW have a free tier?
 
-Yes — a one-time lifetime 500 credits (not a monthly meter; it never resets or recurs). A search with answer + 3 scrapes costs 4 credits, so the free grant covers ~125 search-answer queries total. LLM tokens are separate (BYOK); DeepSeek gives ~$5 of free credit on signup, enough for thousands of queries.
+Yes — a one-time lifetime 1000 credits (not a monthly meter; it never resets or recurs). A search with answer + 3 scrapes costs 4 credits, so the free grant covers ~125 search-answer queries total. LLM tokens are separate (BYOK); DeepSeek gives ~$5 of free credit on signup, enough for thousands of queries.
 
 ### Can I mix providers — search with one API, answer with another?
 
