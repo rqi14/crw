@@ -19,7 +19,7 @@ export default {
     {
       label: "Start",
       href: "/quick-start",
-      match: ["introduction", "quick-start", "choose-endpoint", "authentication", "playground", "rest-api", "installation"],
+      match: ["introduction", "quick-start", "migrate-from-firecrawl", "choose-endpoint", "authentication", "playground", "rest-api", "installation"],
     },
     {
       label: "Endpoints",
@@ -34,7 +34,7 @@ export default {
     {
       label: "Guides",
       href: "/recipe-rag",
-      match: ["recipe-rag", "recipe-mcp-5min", "recipe-monitoring", "recipe-js-spa", "recipe-batch", "recipe-product-catalog", "recipe-pdf", "migrate-from-firecrawl", "troubleshooting"],
+      match: ["recipe-rag", "recipe-mcp-5min", "recipe-monitoring", "recipe-js-spa", "recipe-batch", "recipe-product-catalog", "recipe-pdf", "troubleshooting"],
     },
     {
       label: "Self-Host",
@@ -61,6 +61,7 @@ export default {
       children: [
         { title: "Introduction", slug: "introduction", icon: "rocket" },
         { title: "Quick Start", slug: "quick-start", icon: "play" },
+        { title: "Migrate from Firecrawl", slug: "migrate-from-firecrawl", icon: "git-branch" },
         { title: "Choose Your Endpoint", slug: "choose-endpoint", icon: "git-branch" },
         { title: "Authentication", slug: "authentication", icon: "key" },
         { title: "API Playground", slug: "playground", icon: "play" },
@@ -108,7 +109,6 @@ export default {
         { title: "Batch-Scrape a URL List", slug: "recipe-batch", icon: "layers" },
         { title: "Product Catalog Extraction", slug: "recipe-product-catalog", icon: "zap" },
         { title: "Parse PDF Reports", slug: "recipe-pdf", icon: "file-text" },
-        { title: "Migrate from Firecrawl", slug: "migrate-from-firecrawl", icon: "git-branch" },
         { title: "Troubleshooting / FAQ", slug: "troubleshooting", icon: "info" },
       ],
     },

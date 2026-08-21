@@ -3,6 +3,7 @@
   <url><loc>https://docs.fastcrw.com/</loc><priority>1.0</priority><changefreq>weekly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/introduction</loc><priority>0.9</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/quick-start</loc><priority>0.9</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
+  <url><loc>https://docs.fastcrw.com/migrate-from-firecrawl</loc><priority>0.9</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/choose-endpoint</loc><priority>0.9</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/authentication</loc><priority>0.9</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/playground</loc><priority>0.9</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
@@ -30,7 +31,6 @@
   <url><loc>https://docs.fastcrw.com/recipe-batch</loc><priority>0.6</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/recipe-product-catalog</loc><priority>0.6</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/recipe-pdf</loc><priority>0.6</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
-  <url><loc>https://docs.fastcrw.com/migrate-from-firecrawl</loc><priority>0.6</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/troubleshooting</loc><priority>0.6</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/self-hosting</loc><priority>0.7</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
   <url><loc>https://docs.fastcrw.com/docker</loc><priority>0.7</priority><changefreq>monthly</changefreq><lastmod>2026-08-21</lastmod></url>
