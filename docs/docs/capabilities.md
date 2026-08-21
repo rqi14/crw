@@ -53,7 +53,7 @@ No request body. No query parameters.
     "parsers": ["pdf"],
     "fileUpload": {
       "supported": true,
-      "endpoint": "/firecrawl/v2/parse",
+      "endpoint": "/v2/parse",
       "maxBytes": 52428800,
       "types": ["application/pdf"],
       "ocr": false
@@ -152,7 +152,7 @@ Bring-your-own-key is always accepted and cannot be turned off. So on a BYOK-onl
 |-------|------|-------------|
 | `parsers` | `string[]` | Active document parser types. `["pdf"]` when the PDF feature is compiled in and `[document] enabled = true` in config. `[]` when PDF is disabled or not compiled. |
 | `fileUpload.supported` | `boolean` | `true` when the parse endpoint accepts uploads: a parser is compiled and enabled, and the enforced cap is above zero. |
-| `fileUpload.endpoint` | `string` | The canonical upload path, `/firecrawl/v2/parse`. The deprecated root alias `/v2/parse` is still mounted and behaves identically. |
+| `fileUpload.endpoint` | `string` | The upload path, returned as `/v2/parse`. The same handler is also mounted at `/firecrawl/v2/parse`; read this field rather than hard-coding either. |
 | `fileUpload.maxBytes` | `number` | The **enforced** upload cap in bytes — the same value the body-limit layer applies, i.e. `[document] max_upload_bytes` clamped by a 50 MiB in-memory ceiling. Lowering the knob lowers the enforced cap; raising it past the ceiling does not. |
 | `fileUpload.types` | `string[]` | Accepted MIME types. `["application/pdf"]` when PDF is enabled, `[]` otherwise. |
 | `fileUpload.ocr` | `boolean` | Always `false`. The built-in PDF parser does not include an OCR engine — scanned or image-only PDFs yield empty or partial text. |

@@ -45,28 +45,46 @@ curl -X POST https://api.fastcrw.com/v1/scrape \
 ```
 :::
 
-**Self-hosted:** if you run your own `crw-server`, replace `https://api.fastcrw.com` with your server's address (e.g. `http://crw:3000`). Authentication is optional on self-hosted; disable it with `[server] auth_required = false` in your `config.toml`.
+**Self-hosted:** if you run your own `crw-server`, use your server's address (e.g. `http://crw:3000`) wherever this guide says `https://api.fastcrw.com`. Authentication is optional on self-hosted; disable it with `[server] auth_required = false` in your `config.toml`.
 
-:::note{title="Keeping the Firecrawl SDK? Just repoint the API URL"}
-You don't have to swap SDKs. fastCRW mirrors Firecrawl's v2 API under a dedicated **`/firecrawl/*`** namespace, so an existing Firecrawl client works once you point its base URL at fastCRW. How you set it differs by language because the two SDKs build request URLs differently:
+:::note{title="Keeping the Firecrawl SDK? Change one line"}
+You don't have to swap SDKs. Point your existing Firecrawl client at
+**`https://compat.fastcrw.com`** and it works. Same string in every language, no
+path suffix, nothing else to change:
 
-**TypeScript / JavaScript** (`@mendable/firecrawl-js`) — include `/firecrawl` in `apiUrl`. The SDK concatenates the path, so requests land on `/firecrawl/v2/*`:
 ```typescript
 const app = new FirecrawlApp({
   apiKey: process.env.CRW_API_KEY,
-  apiUrl: "https://api.fastcrw.com/firecrawl",
+  apiUrl: "https://compat.fastcrw.com",
 });
 ```
-
-**Python** (`firecrawl-py`) — use the **bare host**, no `/firecrawl`. The Python SDK resolves endpoint paths against the host root (via `urljoin`), so a `/firecrawl` suffix is silently dropped; you land on the equivalent root `/v2/*` surface, which is the same engine:
 ```python
 app = FirecrawlApp(
     api_key=os.environ["CRW_API_KEY"],
-    api_url="https://api.fastcrw.com",  # resolves to /v2/* — the same compat surface
+    api_url="https://compat.fastcrw.com",
 )
 ```
 
-Both reach the same Firecrawl-compatible engine. The **v2 SDK is the supported drop-in**; the legacy v1 SDK is compatible only for `scrape`.
+That host exists because the SDKs disagree about base paths. `firecrawl-py`'s v2
+client resolves each endpoint against the base *origin* and drops any path you
+put there, while the JS client and `firecrawl-py`'s v1 client keep it. A hostname
+is the one form all of them honour.
+
+The **v2 SDK is the supported drop-in**; the legacy v1 SDK is compatible only for
+`scrape`.
+
+**Self-hosting?** Ignore all of this and use your own address
+(`http://crw:3000`). Your engine serves every surface at the root already.
+:::
+
+:::warning{title="Scheduled change: the root /v2 alias"}
+`https://api.fastcrw.com/v2/*` still answers and is what earlier versions of this
+guide told Python users to use. It is scheduled to close in **October 2026**, so
+that `api.fastcrw.com` serves only our native `/v1` API.
+
+If you are on it, move your base URL to `https://compat.fastcrw.com`. Nothing else
+changes: same shapes, same keys, same credits. Self-hosted deployments are not
+affected.
 :::
 
 ---
@@ -268,7 +286,7 @@ console.log(result.json);
 
 ## Behavioral differences to validate
 
-The following table lists the gaps documented in [COMPATIBILITY-firecrawl.md](../../COMPATIBILITY-firecrawl.md). Validate each that applies to your workload **before** switching production traffic.
+The following table lists the gaps documented in [the capability matrix](https://github.com/us/crw/blob/main/COMPATIBILITY-firecrawl.md). Validate each that applies to your workload **before** switching production traffic.
 
 | Feature | Firecrawl | fastCRW | Action required |
 |---|---|---|---|
@@ -385,4 +403,4 @@ The following Firecrawl Cloud capabilities have no equivalent in fastCRW and are
 
 Bring-your-own-proxy IS supported on a self-hosted instance: set a pool in `[proxy]`, or pass `proxy` on the scrape body. See [Proxies](/docs/proxies).
 
-For any capability not in the matrix above, check [`COMPATIBILITY-firecrawl.md`](../../COMPATIBILITY-firecrawl.md) which is the authoritative reference.
+For any capability not in the matrix above, check [the capability matrix](https://github.com/us/crw/blob/main/COMPATIBILITY-firecrawl.md) which is the authoritative reference.

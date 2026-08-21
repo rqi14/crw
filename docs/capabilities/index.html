@@ -328,7 +328,7 @@ Authorization: Bearer YOUR_API_KEY</code></pre>
     &quot;parsers&quot;: [&quot;pdf&quot;],
     &quot;fileUpload&quot;: {
       &quot;supported&quot;: true,
-      &quot;endpoint&quot;: &quot;/firecrawl/v2/parse&quot;,
+      &quot;endpoint&quot;: &quot;/v2/parse&quot;,
       &quot;maxBytes&quot;: 52428800,
       &quot;types&quot;: [&quot;application/pdf&quot;],
       &quot;ocr&quot;: false
@@ -536,7 +536,7 @@ Authorization: Bearer YOUR_API_KEY</code></pre>
 <tr>
 <td><code>fileUpload.endpoint</code></td>
 <td><code>string</code></td>
-<td>The canonical upload path, <code>/firecrawl/v2/parse</code>. The deprecated root alias <code>/v2/parse</code> is still mounted and behaves identically.</td>
+<td>The upload path, returned as <code>/v2/parse</code>. The same handler is also mounted at <code>/firecrawl/v2/parse</code>; read this field rather than hard-coding either.</td>
 </tr>
 <tr>
 <td><code>fileUpload.maxBytes</code></td>

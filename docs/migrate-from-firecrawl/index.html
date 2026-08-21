@@ -313,20 +313,35 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
     &quot;url&quot;: &quot;https://news.ycombinator.com&quot;,
     &quot;formats&quot;: [&quot;markdown&quot;]
   }'</code></pre></div>
-    </div><p><strong>Self-hosted:</strong> if you run your own <code>crw-server</code>, replace <code>https://api.fastcrw.com</code> with your server&#39;s address (e.g. <code>http://crw:3000</code>). Authentication is optional on self-hosted; disable it with <code>[server] auth_required = false</code> in your <code>config.toml</code>.</p>
-<p>:::note{title=&quot;Keeping the Firecrawl SDK? Just repoint the API URL&quot;}
-You don&#39;t have to swap SDKs. fastCRW mirrors Firecrawl&#39;s v2 API under a dedicated <strong><code>/firecrawl/*</code></strong> namespace, so an existing Firecrawl client works once you point its base URL at fastCRW. How you set it differs by language because the two SDKs build request URLs differently:</p>
-<p><strong>TypeScript / JavaScript</strong> (<code>@mendable/firecrawl-js</code>) — include <code>/firecrawl</code> in <code>apiUrl</code>. The SDK concatenates the path, so requests land on <code>/firecrawl/v2/*</code>:</p>
+    </div><p><strong>Self-hosted:</strong> if you run your own <code>crw-server</code>, use your server&#39;s address (e.g. <code>http://crw:3000</code>) wherever this guide says <code>https://api.fastcrw.com</code>. Authentication is optional on self-hosted; disable it with <code>[server] auth_required = false</code> in your <code>config.toml</code>.</p>
+<p>:::note{title=&quot;Keeping the Firecrawl SDK? Change one line&quot;}
+You don&#39;t have to swap SDKs. Point your existing Firecrawl client at
+<strong><code>https://compat.fastcrw.com</code></strong> and it works. Same string in every language, no
+path suffix, nothing else to change:</p>
 <pre data-lang="typescript"><code class="language-typescript">const app = new FirecrawlApp({
   apiKey: process.env.CRW_API_KEY,
-  apiUrl: &quot;https://api.fastcrw.com/firecrawl&quot;,
+  apiUrl: &quot;https://compat.fastcrw.com&quot;,
 });</code></pre>
-<p><strong>Python</strong> (<code>firecrawl-py</code>) — use the <strong>bare host</strong>, no <code>/firecrawl</code>. The Python SDK resolves endpoint paths against the host root (via <code>urljoin</code>), so a <code>/firecrawl</code> suffix is silently dropped; you land on the equivalent root <code>/v2/*</code> surface, which is the same engine:</p>
 <pre data-lang="python"><code class="language-python">app = FirecrawlApp(
     api_key=os.environ[&quot;CRW_API_KEY&quot;],
-    api_url=&quot;https://api.fastcrw.com&quot;,  # resolves to /v2/* — the same compat surface
+    api_url=&quot;https://compat.fastcrw.com&quot;,
 )</code></pre>
-<p>Both reach the same Firecrawl-compatible engine. The <strong>v2 SDK is the supported drop-in</strong>; the legacy v1 SDK is compatible only for <code>scrape</code>.
+<p>That host exists because the SDKs disagree about base paths. <code>firecrawl-py</code>&#39;s v2
+client resolves each endpoint against the base <em>origin</em> and drops any path you
+put there, while the JS client and <code>firecrawl-py</code>&#39;s v1 client keep it. A hostname
+is the one form all of them honour.</p>
+<p>The <strong>v2 SDK is the supported drop-in</strong>; the legacy v1 SDK is compatible only for
+<code>scrape</code>.</p>
+<p><strong>Self-hosting?</strong> Ignore all of this and use your own address
+(<code>http://crw:3000</code>). Your engine serves every surface at the root already.
+:::</p>
+<p>:::warning{title=&quot;Scheduled change: the root /v2 alias&quot;}
+<code>https://api.fastcrw.com/v2/*</code> still answers and is what earlier versions of this
+guide told Python users to use. It is scheduled to close in <strong>October 2026</strong>, so
+that <code>api.fastcrw.com</code> serves only our native <code>/v1</code> API.</p>
+<p>If you are on it, move your base URL to <code>https://compat.fastcrw.com</code>. Nothing else
+changes: same shapes, same keys, same credits. Self-hosted deployments are not
+affected.
 :::</p>
 <hr>
 <h2 id="step-2-swap-the-sdk-package">Step 2 — Swap the SDK package</h2>
@@ -480,7 +495,7 @@ const result = await client.scrape(&quot;https://example.com/product&quot;, {
 console.log(result.json);</code></pre></div>
     </div><hr>
 <h2 id="behavioral-differences-to-validate">Behavioral differences to validate</h2>
-<p>The following table lists the gaps documented in <a href="../../COMPATIBILITY-firecrawl.md">COMPATIBILITY-firecrawl.md</a>. Validate each that applies to your workload <strong>before</strong> switching production traffic.</p>
+<p>The following table lists the gaps documented in <a href="https://github.com/us/crw/blob/main/COMPATIBILITY-firecrawl.md">the capability matrix</a>. Validate each that applies to your workload <strong>before</strong> switching production traffic.</p>
 <table>
 <thead>
 <tr>
@@ -616,7 +631,7 @@ print(&quot;All checks passed — safe to promote to production.&quot;)</code></
 <li>Fire-engine proprietary anti-bot layer</li>
 </ul>
 <p>Bring-your-own-proxy IS supported on a self-hosted instance: set a pool in <code>[proxy]</code>, or pass <code>proxy</code> on the scrape body. See <a href="/docs/proxies">Proxies</a>.</p>
-<p>For any capability not in the matrix above, check <a href="../../COMPATIBILITY-firecrawl.md"><code>COMPATIBILITY-firecrawl.md</code></a> which is the authoritative reference.</p>
+<p>For any capability not in the matrix above, check <a href="https://github.com/us/crw/blob/main/COMPATIBILITY-firecrawl.md">the capability matrix</a> which is the authoritative reference.</p>
 </article>
     </main>
 
