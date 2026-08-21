@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::errors::{ErrorCode, ErrorResponse, RetryHint};
 use crate::response::ToolResponse;
-use crate::session::BrowserSession;
+use crate::session::{BrowserSession, RefLookup};
 
 /// Upper bound for per-call `timeout_ms` — anything larger gets clamped. Keeps
 /// a rogue client from pinning a CDP session for hours on a typoed value. When
@@ -73,12 +73,12 @@ pub(crate) async fn resolve_ref(
     ref_id: &str,
 ) -> Result<i64, ErrorResponse> {
     match session.lookup_ref(ref_id).await {
-        Ok(Some(id)) => Ok(id),
-        Ok(None) => Err(ErrorResponse::new(
+        RefLookup::Node(id) => Ok(id),
+        RefLookup::NoDomNode => Err(ErrorResponse::new(
             ErrorCode::ElementNotFound,
             format!("ref {ref_id} resolves to an AX node with no DOM mapping"),
         )),
-        Err(()) => {
+        RefLookup::Unknown => {
             let max = session.max_ref();
             let parsed = crate::session::parse_ref_index(ref_id);
             let is_known_range = parsed.is_some_and(|n| n >= 1 && n <= max);
