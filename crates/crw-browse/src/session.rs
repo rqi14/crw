@@ -75,6 +75,22 @@ const SHORT_ID_RETRIES: u32 = 5;
 /// base62 alphabet size used for short_id generation.
 const SHORT_ID_LEN: usize = 4;
 
+/// The outcome of resolving a `@e<N>` ref against the current snapshot.
+///
+/// Each variant becomes a different error for the caller, which is why they
+/// are named: `NoDomNode` means the ref was issued but the AX node has no DOM
+/// counterpart, while `Unknown` means the ref is not in the map at all and the
+/// snapshot needs retaking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefLookup {
+    /// The ref maps to a live DOM node id.
+    Node(i64),
+    /// The ref exists in the map but carries no DOM node.
+    NoDomNode,
+    /// The ref is absent: stale, never issued, or malformed.
+    Unknown,
+}
+
 /// A single browser session — one CDP WebSocket, one ref registry.
 pub struct BrowserSession {
     pub id: Uuid,
@@ -254,14 +270,16 @@ impl BrowserSession {
         self.ref_map.lock().await.clear();
     }
 
-    /// Look up a `@e<N>` ref. Returns `Ok(Some(id))` when the ref maps to a
-    /// DOM node, `Ok(None)` when the ref exists but the AX node had no DOM
-    /// counterpart (caller should surface `ELEMENT_NOT_FOUND`), and
-    /// `Err(())` when the ref isn't in the map at all (caller should surface
-    /// `NODE_STALE` and ask the LLM to re-snapshot).
-    pub async fn lookup_ref(&self, ref_id: &str) -> Result<Option<i64>, ()> {
+    /// Look up a `@e<N>` ref. The three outcomes are distinct and the caller
+    /// maps each to a different error, so they are named rather than encoded
+    /// as `Result<Option<_>, ()>`.
+    pub async fn lookup_ref(&self, ref_id: &str) -> RefLookup {
         let map = self.ref_map.lock().await;
-        map.get(ref_id).copied().ok_or(())
+        match map.get(ref_id).copied() {
+            Some(Some(id)) => RefLookup::Node(id),
+            Some(None) => RefLookup::NoDomNode,
+            None => RefLookup::Unknown,
+        }
     }
 
     pub async fn last_url(&self) -> Option<String> {
