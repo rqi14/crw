@@ -157,7 +157,7 @@ Capabilities and response shapes can differ by deployment:
 - [Quickstart](https://docs.fastcrw.com/quick-start/)
 - [API reference](https://docs.fastcrw.com/#rest-api)
 - [Benchmarks](BENCHMARKS.md)
-- [Firecrawl migration](COMPATIBILITY-firecrawl.md)
+- [Firecrawl migration](https://docs.fastcrw.com/migrate-from-firecrawl/)
 - [Self-hosting](https://docs.fastcrw.com/self-hosting/)
 
 ## Contributing
