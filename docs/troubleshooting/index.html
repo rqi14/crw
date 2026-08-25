@@ -295,7 +295,7 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <ol>
 <li>Check <code>success</code> in the response body — <code>false</code> means a hard failure.</li>
 <li>Check <code>error_code</code> (snake_case string) for the machine-readable cause.</li>
-<li>Check <code>data.warnings[]</code> when <code>success: true</code> — soft issues like truncation, unsupported formats, and renderer fallbacks surface there. Anti-bot blocks are <strong>not</strong> in <code>data.warnings[]</code>; they always return <code>success: false</code> + <code>error_code: &quot;anti_bot&quot;</code> (see pattern 2). A page the origin answered with a <code>&gt;= 400</code> status returns <code>success: false</code> + <code>error_code: &quot;http_error&quot;</code>, with the error page still in <code>data</code>.</li>
+<li>Check <code>data.warnings[]</code> when <code>success: true</code> — soft issues like truncation, unsupported formats, and renderer fallbacks surface there. Anti-bot blocks are <strong>not</strong> in <code>data.warnings[]</code>; they always return <code>success: false</code> + <code>error_code: &quot;anti_bot&quot;</code> (see pattern 2). A page the origin answered with a <code>&gt;= 400</code> status returns <code>success: false</code>; if it is a plain origin error page the code is <code>&quot;http_error&quot;</code> and the page stays in <code>data</code>, but when the anti-bot classifier recognises it as a wall (Cloudflare and friends serve their challenge with a 403) the code is <code>&quot;anti_bot&quot;</code> and the challenge shell is stripped from <code>data</code>.</li>
 <li>Check <code>metadata.statusCode</code> — this is the <strong>target site&#39;s</strong> HTTP status, not fastCRW&#39;s.</li>
 <li>Check the fastCRW HTTP status separately — <code>401</code>/<code>422</code>/<code>429</code> all mean different things.</li>
 </ol>
@@ -639,12 +639,12 @@ if data[&quot;balance&quot;] &lt; 100:
 <tr>
 <td><code>http_error</code></td>
 <td>502, or 200 with <code>success: false</code></td>
-<td>The origin answered with a <code>&gt;= 400</code> status and what came back is its error page. The body is kept in <code>data</code> so you can read the error page and <code>metadata.statusCode</code>. A large page served under an error status is still returned as a success — some sites answer 403/404 while serving the real content</td>
+<td>The origin answered with a <code>&gt;= 400</code> status and what came back is its error page. The body is kept in <code>data</code> so you can read the error page and <code>metadata.statusCode</code>. A large page served under an error status is still returned as a success — some sites answer 403/404 while serving the real content. If the page is also recognised as an anti-bot wall, <code>anti_bot</code> wins instead and the body is cleared</td>
 </tr>
 <tr>
 <td><code>no_usable_content</code></td>
 <td>200 with <code>success: false</code></td>
-<td>The fetch worked, the page held nothing extractable (parked domain, un-hydrated JS shell, error stub). Not an anti-bot block</td>
+<td>The fetch worked and produced nothing you asked for — a parked domain, an un-hydrated JS shell, an error stub, an oversized PDF the decompression-bomb guard refused, or any requested format that came back empty. Not an anti-bot block</td>
 </tr>
 <tr>
 <td><code>timeout</code></td>
