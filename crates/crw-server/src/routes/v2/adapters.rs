@@ -475,4 +475,503 @@ mod tests {
         assert_eq!(v["images"][0], "https://example.com/a.png");
         assert!(v["images"][0].is_string());
     }
+
+    // ── to_v2_document: field-by-field shape pinning ───────────────────────
+    // `/v2` is a deprecated Firecrawl-compat alias whose wire shape must not
+    // drift silently, so every field name and every optional-field omission
+    // rule is pinned explicitly here.
+
+    #[test]
+    fn all_optional_fields_present_round_trip_unchanged() {
+        let mut data = fake_doc("https://example.com/full");
+        data.html = Some("<p>hi</p>".to_string());
+        data.raw_html = Some("<html><p>hi</p></html>".to_string());
+        data.links = Some(vec!["https://a".to_string(), "https://b".to_string()]);
+        data.json = Some(serde_json::json!({"a": 1}));
+        data.summary = Some("a summary".to_string());
+        data.warning = Some("careful".to_string());
+        data.screenshot = Some("data:image/png;base64,AAAA".to_string());
+        data.metadata.description = Some("desc".to_string());
+        data.metadata.language = Some("en".to_string());
+        data.metadata.page_count = Some(3);
+        data.metadata.source_filename = Some("doc.pdf".to_string());
+        data.change_tracking = Some(ChangeTrackingResult {
+            status: crw_core::types::ChangeStatus::Same,
+            first_observation: true,
+            content_hash: "h".to_string(),
+            snapshot: None,
+            diff: None,
+            judgment: None,
+            tag: None,
+            truncated: false,
+        });
+
+        let doc = to_v2_document(data, "basic", "sid-1".to_string());
+        let v = serde_json::to_value(&doc).unwrap();
+
+        assert_eq!(v["markdown"], "# hi");
+        assert_eq!(v["html"], "<p>hi</p>");
+        assert_eq!(v["rawHtml"], "<html><p>hi</p></html>");
+        assert_eq!(v["links"], serde_json::json!(["https://a", "https://b"]));
+        assert_eq!(v["json"], serde_json::json!({"a": 1}));
+        assert_eq!(v["summary"], "a summary");
+        assert_eq!(v["warning"], "careful");
+        assert_eq!(v["screenshot"], "data:image/png;base64,AAAA");
+        assert_eq!(v["changeTracking"]["status"], "same");
+        assert_eq!(v["metadata"]["description"], "desc");
+        assert_eq!(v["metadata"]["language"], "en");
+        assert_eq!(v["metadata"]["numPages"], 3);
+        assert_eq!(v["metadata"]["sourceFilename"], "doc.pdf");
+    }
+
+    #[test]
+    fn all_optional_fields_none_are_omitted_from_json() {
+        // fake_doc() ships a content_type, so clear it: this test is about the
+        // None case being omitted, and the Some case is covered separately by
+        // metadata_status_code_and_content_type_pass_through.
+        let mut src = fake_doc("https://example.com");
+        src.content_type = None;
+        let doc = to_v2_document(src, "basic", "sid".to_string());
+        let v = serde_json::to_value(&doc).unwrap();
+        for key in [
+            "html",
+            "rawHtml",
+            "links",
+            "images",
+            "json",
+            "summary",
+            "changeTracking",
+            "screenshot",
+            "warning",
+        ] {
+            assert!(
+                v.get(key).is_none(),
+                "expected `{key}` to be omitted, found {:?}",
+                v.get(key)
+            );
+        }
+        for key in [
+            "description",
+            "language",
+            "contentType",
+            "numPages",
+            "sourceFilename",
+        ] {
+            assert!(
+                v["metadata"].get(key).is_none(),
+                "expected metadata.`{key}` to be omitted"
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_source_url_is_camel_case_with_capital_url() {
+        let doc = to_v2_document(fake_doc("https://x.example"), "basic", "sid".to_string());
+        let v = serde_json::to_value(&doc).unwrap();
+        // Firecrawl's field is `sourceURL`, not `sourceUrl`.
+        assert_eq!(v["metadata"]["sourceURL"], "https://x.example");
+        assert!(v["metadata"].get("sourceUrl").is_none());
+        assert_eq!(v["metadata"]["url"], "https://x.example");
+    }
+
+    #[test]
+    fn metadata_status_code_and_content_type_pass_through() {
+        let mut data = fake_doc("https://x");
+        data.metadata.status_code = 404;
+        data.content_type = Some("application/pdf".to_string());
+        let doc = to_v2_document(data, "basic", "sid".to_string());
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_eq!(v["metadata"]["statusCode"], 404);
+        assert_eq!(v["metadata"]["contentType"], "application/pdf");
+    }
+
+    #[test]
+    fn metadata_proxy_used_reflects_the_argument() {
+        let doc = to_v2_document(fake_doc("https://x"), "stealth", "sid".to_string());
+        assert_eq!(doc.metadata.proxy_used, "stealth");
+        let doc2 = to_v2_document(fake_doc("https://x"), "basic", "sid".to_string());
+        assert_eq!(doc2.metadata.proxy_used, "basic");
+    }
+
+    #[test]
+    fn metadata_cache_state_is_always_miss() {
+        let doc = to_v2_document(fake_doc("https://x"), "basic", "sid".to_string());
+        assert_eq!(doc.metadata.cache_state, "miss");
+    }
+
+    #[test]
+    fn metadata_concurrency_limited_is_always_false() {
+        let doc = to_v2_document(fake_doc("https://x"), "basic", "sid".to_string());
+        assert!(!doc.metadata.concurrency_limited);
+    }
+
+    #[test]
+    fn credits_used_defaults_to_one_when_engine_reports_zero() {
+        let mut data = fake_doc("https://x");
+        data.credit_cost = 0;
+        let doc = to_v2_document(data, "basic", "sid".to_string());
+        assert_eq!(doc.metadata.credits_used, 1);
+    }
+
+    #[test]
+    fn credits_used_passes_through_nonzero_engine_cost() {
+        let mut data = fake_doc("https://x");
+        data.credit_cost = 5;
+        let doc = to_v2_document(data, "basic", "sid".to_string());
+        assert_eq!(doc.metadata.credits_used, 5);
+    }
+
+    #[test]
+    fn scrape_id_is_exactly_the_supplied_string() {
+        let doc = to_v2_document(fake_doc("https://x"), "basic", "unique-id-123".to_string());
+        assert_eq!(doc.metadata.scrape_id, "unique-id-123");
+    }
+
+    #[test]
+    fn empty_images_vec_still_serializes_as_empty_array() {
+        // `skip_serializing_if` only fires on `None`, not on an empty `Some(vec![])`.
+        let mut data = fake_doc("https://x");
+        data.images = Some(vec![]);
+        let doc = to_v2_document(data, "basic", "sid".to_string());
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_eq!(v["images"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn links_preserve_order() {
+        let mut data = fake_doc("https://x");
+        data.links = Some(vec!["c".into(), "a".into(), "b".into()]);
+        let doc = to_v2_document(data, "basic", "sid".to_string());
+        assert_eq!(
+            doc.links,
+            Some(vec!["c".to_string(), "a".to_string(), "b".to_string()])
+        );
+    }
+
+    #[test]
+    fn unicode_image_urls_flatten_correctly() {
+        let mut data = fake_doc("https://x");
+        data.images = Some(vec![crw_core::types::ScrapedImage {
+            url: "https://example.com/日本語.png".into(),
+            alt: Some("日本語 alt".into()),
+        }]);
+        let doc = to_v2_document(data, "basic", "sid".to_string());
+        assert_eq!(
+            doc.images,
+            Some(vec!["https://example.com/日本語.png".to_string()])
+        );
+    }
+
+    // ── status_str: every CrawlStatus variant pinned ───────────────────────
+
+    #[test]
+    fn status_str_covers_every_variant() {
+        assert_eq!(status_str(CrawlStatus::InProgress), "scraping");
+        assert_eq!(status_str(CrawlStatus::Completed), "completed");
+        assert_eq!(status_str(CrawlStatus::Failed), "failed");
+        assert_eq!(status_str(CrawlStatus::Cancelled), "cancelled");
+    }
+
+    // ── build_crawl_status: success flag, error, totals, blocked pages ─────
+
+    #[test]
+    fn success_is_false_only_for_failed_status() {
+        for (status, expect_success) in [
+            (CrawlStatus::InProgress, true),
+            (CrawlStatus::Completed, true),
+            (CrawlStatus::Cancelled, true),
+            (CrawlStatus::Failed, false),
+        ] {
+            let s = state(status, 1, 1, 1);
+            let p = build_crawl_status(
+                &s,
+                Instant::now(),
+                86_400,
+                0,
+                10,
+                "https://api",
+                "/v2/crawl",
+                Uuid::nil(),
+                "basic",
+            );
+            assert_eq!(p.success, expect_success, "status={status:?}");
+        }
+    }
+
+    #[test]
+    fn job_error_message_passes_through() {
+        let mut s = state(CrawlStatus::Failed, 1, 0, 0);
+        s.error = Some("upstream exploded".to_string());
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            0,
+            10,
+            "https://api",
+            "/v2/crawl",
+            Uuid::nil(),
+            "basic",
+        );
+        assert_eq!(p.error.as_deref(), Some("upstream exploded"));
+    }
+
+    #[test]
+    fn total_is_the_max_of_reported_total_and_buffered_docs() {
+        // More docs buffered than the job's own `total` counter (can happen
+        // transiently) — the response must never under-report.
+        let s = state(CrawlStatus::InProgress, 3, 5, 5);
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            0,
+            10,
+            "https://api",
+            "/v2/crawl",
+            Uuid::nil(),
+            "basic",
+        );
+        assert_eq!(p.total, 5);
+    }
+
+    #[test]
+    fn blocked_pages_are_excluded_from_credits_used_but_still_returned() {
+        let mut s = state(CrawlStatus::Completed, 2, 2, 2);
+        s.blocked = 1;
+        s.data[0].block = Some(crw_core::types::BlockOutcome {
+            vendor: "cloudflare".to_string(),
+            reason: "challenge".to_string(),
+        });
+        s.data[0].credit_cost = 1;
+        s.data[1].credit_cost = 1;
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            0,
+            10,
+            "https://api",
+            "/v2/crawl",
+            Uuid::nil(),
+            "basic",
+        );
+        assert_eq!(p.blocked, 1);
+        assert_eq!(p.credits_used, 1); // only the non-blocked doc is billed
+        assert_eq!(p.data.len(), 2); // both docs are still returned to the caller
+    }
+
+    #[test]
+    fn limit_zero_is_clamped_to_one() {
+        let s = state(CrawlStatus::Completed, 3, 3, 3);
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            0,
+            0,
+            "https://api",
+            "/v2/crawl",
+            Uuid::nil(),
+            "basic",
+        );
+        assert_eq!(p.data.len(), 1);
+    }
+
+    #[test]
+    fn next_url_uses_the_given_path_prefix_and_id() {
+        let s = state(CrawlStatus::Completed, 5, 5, 5);
+        let id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            0,
+            2,
+            "https://custom.host",
+            "/v2/batch/scrape",
+            id,
+            "basic",
+        );
+        assert_eq!(
+            p.next.as_deref(),
+            Some("https://custom.host/v2/batch/scrape/11111111-1111-1111-1111-111111111111?skip=2")
+        );
+    }
+
+    #[test]
+    fn running_job_with_skip_past_total_still_emits_next() {
+        // Nothing left to buffer, but the job is still running, so the SDK
+        // must keep polling forward instead of treating this as terminal.
+        let s = state(CrawlStatus::InProgress, 10, 10, 10);
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            999,
+            10,
+            "https://api",
+            "/v2/crawl",
+            Uuid::nil(),
+            "basic",
+        );
+        assert_eq!(p.data.len(), 0);
+        assert!(p.next.is_some());
+    }
+
+    #[test]
+    fn completed_job_exactly_at_the_end_has_no_next() {
+        let s = state(CrawlStatus::Completed, 10, 10, 10);
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            10, // == total_docs
+            10,
+            "https://api",
+            "/v2/crawl",
+            Uuid::nil(),
+            "basic",
+        );
+        assert_eq!(p.data.len(), 0);
+        assert!(p.next.is_none());
+    }
+
+    #[test]
+    fn byte_cap_still_emits_at_least_one_oversized_document_alone() {
+        // `emitted > 0 && bytes + doc_bytes > CAP` only breaks AFTER the first
+        // doc, so a single doc bigger than the cap is still returned rather
+        // than starving the page entirely.
+        let mut s = state(CrawlStatus::Completed, 2, 2, 2);
+        s.data[0].markdown = Some("x".repeat(PAGE_BYTE_CAP + 1));
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            0,
+            10,
+            "https://api",
+            "/v2/crawl",
+            Uuid::nil(),
+            "basic",
+        );
+        assert_eq!(p.data.len(), 1, "oversized doc emitted alone");
+    }
+
+    #[test]
+    fn byte_cap_stops_before_a_second_doc_that_would_exceed_it() {
+        let mut s = state(CrawlStatus::Completed, 2, 2, 2);
+        s.data[0].markdown = Some("x".repeat(PAGE_BYTE_CAP));
+        s.data[1].markdown = Some("y".repeat(100));
+        let p = build_crawl_status(
+            &s,
+            Instant::now(),
+            86_400,
+            0,
+            10,
+            "https://api",
+            "/v2/crawl",
+            Uuid::nil(),
+            "basic",
+        );
+        assert_eq!(p.data.len(), 1);
+    }
+
+    // ── expires_at_rfc3339 / system_time_rfc3339 ────────────────────────────
+
+    const RFC3339_SHAPE: &str = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$";
+
+    fn matches_rfc3339_shape(s: &str) -> bool {
+        // Hand-rolled check (no regex dependency): fixed-width fields at fixed
+        // positions, matching `RFC3339_SHAPE` above.
+        let bytes = s.as_bytes();
+        bytes.len() == 24
+            && bytes[4] == b'-'
+            && bytes[7] == b'-'
+            && bytes[10] == b'T'
+            && bytes[13] == b':'
+            && bytes[16] == b':'
+            && bytes[19] == b'.'
+            && &bytes[20..] == b"000Z"
+            && bytes[..4].iter().all(u8::is_ascii_digit)
+    }
+
+    #[test]
+    fn expires_at_elapsed_beyond_ttl_saturates_to_now_not_negative() {
+        // `created_at` far enough in the past that `ttl - elapsed` would go
+        // negative; `saturating_sub` must floor it at 0 rather than panic or wrap.
+        let long_ago = Instant::now() - std::time::Duration::from_secs(10_000);
+        let s = expires_at_rfc3339(long_ago, 10);
+        assert!(
+            matches_rfc3339_shape(&s),
+            "{s} does not match {RFC3339_SHAPE}"
+        );
+    }
+
+    #[test]
+    fn expires_at_fresh_job_produces_well_formed_timestamp() {
+        let s = expires_at_rfc3339(Instant::now(), 86_400);
+        assert!(
+            matches_rfc3339_shape(&s),
+            "{s} does not match {RFC3339_SHAPE}"
+        );
+    }
+
+    #[test]
+    fn system_time_rfc3339_matches_the_known_epoch() {
+        let t = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        assert_eq!(system_time_rfc3339(t), "2023-11-14T22:13:20.000Z");
+    }
+
+    #[test]
+    fn system_time_rfc3339_before_epoch_falls_back_to_epoch_zero() {
+        // `duration_since(UNIX_EPOCH)` errors for a time before the epoch;
+        // `unwrap_or(0)` must not panic.
+        let before_epoch = UNIX_EPOCH - std::time::Duration::from_secs(1);
+        assert_eq!(
+            system_time_rfc3339(before_epoch),
+            "1970-01-01T00:00:00.000Z"
+        );
+    }
+
+    #[test]
+    fn rfc3339_leap_day_2000_is_computed_correctly() {
+        // 2000 is a leap year (divisible by 400). Independently derived from
+        // the well-known anchor 2000-01-01T00:00:00Z == 946684800: +31 days
+        // (Jan) +28 days (to reach the 29th) = 951782400.
+        assert_eq!(rfc3339_utc(951_782_400), "2000-02-29T00:00:00.000Z");
+    }
+
+    #[test]
+    fn rfc3339_non_leap_year_rolls_feb28_into_mar1() {
+        // 2001 is not a leap year. Derived from 2001-01-01T00:00:00Z ==
+        // 978307200 (946684800 + 366 days of leap-year 2000).
+        assert_eq!(rfc3339_utc(983_318_400), "2001-02-28T00:00:00.000Z");
+        assert_eq!(rfc3339_utc(983_404_800), "2001-03-01T00:00:00.000Z");
+    }
+
+    #[test]
+    fn v2_link_serializes_with_optional_fields_omitted() {
+        let link = V2Link {
+            url: "https://x".to_string(),
+            title: None,
+            description: None,
+        };
+        let v = serde_json::to_value(&link).unwrap();
+        assert_eq!(v["url"], "https://x");
+        assert!(v.get("title").is_none());
+        assert!(v.get("description").is_none());
+    }
+
+    #[test]
+    fn v2_link_serializes_with_optional_fields_present() {
+        let link = V2Link {
+            url: "https://x".to_string(),
+            title: Some("Title".to_string()),
+            description: Some("Desc".to_string()),
+        };
+        let v = serde_json::to_value(&link).unwrap();
+        assert_eq!(v["title"], "Title");
+        assert_eq!(v["description"], "Desc");
+    }
 }

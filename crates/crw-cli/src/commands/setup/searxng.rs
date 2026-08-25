@@ -590,4 +590,171 @@ search:
         assert!(reject_symlink(&dir.join("nope")).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn reject_symlink_blocks_dangling_symlink() {
+        // symlink_metadata must report the link itself, not follow through to
+        // a target that no longer exists — a dangling link is still a link.
+        use std::os::unix::fs;
+        let dir = std::env::temp_dir().join(format!("crw-test-sym-dangle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing_target = dir.join("does-not-exist.txt");
+        let link = dir.join("dangling-link.txt");
+        fs::symlink(&missing_target, &link).unwrap();
+        let err = reject_symlink(&link).unwrap_err();
+        assert!(err.contains("symlink"), "got: {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn yaml_has_uncommented_needle_must_appear_on_a_real_line() {
+        // A needle that only ever shows up inside a comment must not match,
+        // even if it also happens to appear as a substring of another word.
+        assert!(!yaml_has_uncommented("# formats: disabled", "formats:"));
+        // Same needle uncommented elsewhere must still match.
+        assert!(yaml_has_uncommented(
+            "# formats: disabled\nformats:\n  - json",
+            "formats:"
+        ));
+    }
+
+    #[test]
+    fn yaml_has_uncommented_is_case_sensitive() {
+        assert!(yaml_has_uncommented("Secret_Key: x", "Secret_Key:"));
+        assert!(!yaml_has_uncommented("Secret_Key: x", "secret_key:"));
+    }
+
+    #[test]
+    fn yaml_has_uncommented_empty_haystack_is_false() {
+        assert!(!yaml_has_uncommented("", "secret_key:"));
+    }
+
+    #[test]
+    fn yaml_has_uncommented_tab_indented_comment_is_skipped() {
+        assert!(!yaml_has_uncommented("\t# secret_key: x", "secret_key:"));
+    }
+
+    #[test]
+    fn settings_file_is_valid_empty_string_is_false() {
+        assert!(!settings_file_is_valid(""));
+    }
+
+    #[test]
+    fn settings_file_is_valid_missing_secret_key_only() {
+        let yaml = "search:\n  formats:\n    - json\n";
+        assert!(!settings_file_is_valid(yaml));
+    }
+
+    #[test]
+    fn settings_file_is_valid_tolerates_unrelated_surrounding_content() {
+        let yaml = r#"use_default_settings: true
+outgoing:
+  request_timeout: 5.0
+server:
+  secret_key: "abc"
+  limiter: false
+search:
+  formats:
+    - html
+    - json
+  autocomplete: ""
+"#;
+        assert!(settings_file_is_valid(yaml));
+    }
+
+    #[test]
+    fn build_settings_yaml_empty_secret_still_well_formed() {
+        let yaml = build_settings_yaml("");
+        assert!(yaml.contains("secret_key: \"\""));
+        assert!(settings_file_is_valid(&yaml));
+    }
+
+    #[test]
+    fn build_settings_yaml_unicode_secret_round_trips() {
+        // Secrets are always hex from generate_secret(), but the formatter
+        // itself does no escaping — prove it doesn't mangle non-hex input.
+        let yaml = build_settings_yaml("日本語-üñïçødé");
+        assert!(yaml.contains("secret_key: \"日本語-üñïçødé\""));
+    }
+
+    #[test]
+    fn generate_secret_never_produces_uppercase() {
+        for _ in 0..200 {
+            let s = generate_secret();
+            assert_eq!(s.len(), 64);
+            assert!(
+                s.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            );
+        }
+    }
+
+    #[test]
+    fn generate_secret_1000_calls_are_all_unique() {
+        use std::collections::HashSet;
+        let secrets: HashSet<String> = (0..1000).map(|_| generate_secret()).collect();
+        assert_eq!(secrets.len(), 1000, "collisions in 1000 secrets");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_then_read_secret_file_round_trips_unicode() {
+        let dir = std::env::temp_dir().join(format!("crw-test-rw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret.yml");
+        let content = "line one\n日本語テスト\nline three: üñïçødé\n";
+        write_secret_file(&path, content).unwrap();
+        let read_back = read_secret_file(&path).unwrap();
+        assert_eq!(read_back, content);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_file_empty_content_round_trips() {
+        let dir = std::env::temp_dir().join(format!("crw-test-rw-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret.yml");
+        write_secret_file(&path, "").unwrap();
+        assert_eq!(read_secret_file(&path).unwrap(), "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_file_overwrites_previous_content() {
+        let dir = std::env::temp_dir().join(format!("crw-test-rw-ow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret.yml");
+        write_secret_file(&path, "first version, much longer than the second").unwrap();
+        write_secret_file(&path, "second").unwrap();
+        assert_eq!(read_secret_file(&path).unwrap(), "second");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_secure_config_dir_creates_nested_missing_dirs() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("crw-test-nested-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let nested = root.join("a").join("b").join("c");
+        assert!(!nested.exists());
+        ensure_secure_config_dir(&nested).unwrap();
+        assert!(nested.is_dir());
+        let mode = std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn searxng_constants_are_stable_public_contract() {
+        // Docker container name / image / port are baked into user-facing
+        // messages and `docker` invocations elsewhere; pin them explicitly so
+        // a typo'd edit shows up as a failing test, not a silent breakage.
+        assert_eq!(SEARXNG_IMAGE, "searxng/searxng:latest");
+        assert_eq!(SEARXNG_CONTAINER_NAME, "searxng");
+        assert_eq!(SEARXNG_DEFAULT_PORT, 8080);
+    }
 }

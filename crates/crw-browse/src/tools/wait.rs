@@ -614,4 +614,331 @@ mod tests {
             started.elapsed()
         );
     }
+
+    // -- validate_wait_args: exhaustive case-sensitivity and combination ----
+
+    #[test]
+    fn validate_accepts_visible_case_insensitive() {
+        assert_eq!(
+            validate_wait_args(Some("#x"), Some("VISIBLE"), None).expect("ok"),
+            WaitMode::SelectorVisible("#x".into())
+        );
+        assert_eq!(
+            validate_wait_args(Some("#x"), Some("Visible"), None).expect("ok"),
+            WaitMode::SelectorVisible("#x".into())
+        );
+    }
+
+    #[test]
+    fn validate_accepts_present_case_insensitive() {
+        assert_eq!(
+            validate_wait_args(Some("#x"), Some("PRESENT"), None).expect("ok"),
+            WaitMode::SelectorPresent("#x".into())
+        );
+    }
+
+    #[test]
+    fn validate_accepts_load_case_insensitive() {
+        assert_eq!(
+            validate_wait_args(None, Some("LOAD"), None).expect("ok"),
+            WaitMode::Load
+        );
+        assert_eq!(
+            validate_wait_args(None, Some("Load"), None).expect("ok"),
+            WaitMode::Load
+        );
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_selector() {
+        let err = validate_wait_args(Some("   "), None, None).expect_err("err");
+        assert!(err.message.contains("selector must not be empty"));
+    }
+
+    #[test]
+    fn validate_rejects_whitespace_only_condition() {
+        let err = validate_wait_args(None, Some("   "), None).expect_err("err");
+        assert!(err.message.contains("condition must not be empty"));
+    }
+
+    #[test]
+    fn validate_empty_selector_check_runs_before_bad_condition_check() {
+        // Both `selector` and `condition` are invalid here; the empty
+        // selector must be reported first since that's checked first in the
+        // function body, and its message is the more actionable one.
+        let err = validate_wait_args(Some(""), Some("bogus"), None).expect_err("err");
+        assert!(err.message.contains("selector must not be empty"));
+    }
+
+    #[test]
+    fn validate_empty_condition_check_runs_before_ms_exclusivity_check() {
+        let err = validate_wait_args(None, Some(""), Some(5)).expect_err("err");
+        assert!(err.message.contains("condition must not be empty"));
+    }
+
+    #[test]
+    fn validate_ms_combined_with_both_selector_and_condition_rejected() {
+        let err = validate_wait_args(Some("#x"), Some("load"), Some(5)).expect_err("err");
+        assert!(err.message.contains("cannot be combined"));
+    }
+
+    #[test]
+    fn validate_accepts_ms_at_exact_cap() {
+        let m = validate_wait_args(None, None, Some(MAX_WAIT_MS)).expect("ok");
+        assert_eq!(m, WaitMode::Sleep(MAX_WAIT_MS));
+    }
+
+    #[test]
+    fn validate_accepts_ms_minimum_value() {
+        let m = validate_wait_args(None, None, Some(1)).expect("ok");
+        assert_eq!(m, WaitMode::Sleep(1));
+    }
+
+    #[test]
+    fn validate_selector_present_explicit_vs_default_are_distinct_modes() {
+        let default_mode = validate_wait_args(Some("#x"), None, None).expect("ok");
+        let present_mode = validate_wait_args(Some("#x"), Some("present"), None).expect("ok");
+        assert_ne!(default_mode, present_mode);
+    }
+
+    // -- handle(): session-dependent modes fail fast with SessionClosed -----
+    // These never require a live CDP connection: `default_session_get`
+    // returns `None` on a freshly constructed server without ever dialing
+    // out, so the SessionClosed branch is reached deterministically.
+
+    #[tokio::test]
+    async fn handle_selector_without_session_returns_session_closed() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: Some("#login".into()),
+                condition: None,
+                ms: None,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = err_text(&res);
+        assert!(body.contains("no session"), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn handle_condition_load_without_session_returns_session_closed() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: None,
+                condition: Some("load".into()),
+                ms: None,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = err_text(&res);
+        assert!(body.contains("no session"), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn handle_condition_networkidle_without_session_returns_session_closed() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: None,
+                condition: Some("networkidle".into()),
+                ms: None,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = err_text(&res);
+        assert!(body.contains("no session"), "got: {body}");
+    }
+
+    // -- handle(): validation errors short-circuit before any session lookup
+
+    #[tokio::test]
+    async fn handle_rejects_empty_selector_before_session_lookup() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: Some("".into()),
+                condition: None,
+                ms: None,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = err_text(&res);
+        assert!(body.contains("selector must not be empty"), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_no_selector_no_condition_no_ms() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: None,
+                condition: None,
+                ms: None,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = err_text(&res);
+        assert!(body.contains("wait requires"), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_ms_over_cap_without_sleeping() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let started = Instant::now();
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: None,
+                condition: None,
+                ms: Some(MAX_WAIT_MS + 1),
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = err_text(&res);
+        assert!(body.contains(&MAX_WAIT_MS.to_string()), "got: {body}");
+        // The rejection must happen during validation, before any sleep —
+        // otherwise a misuse could pin the call for the (invalid) duration.
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_zero_ms() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: None,
+                condition: None,
+                ms: Some(0),
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = err_text(&res);
+        assert!(body.contains("ms must be > 0"), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn handle_rejects_condition_only_bogus_without_selector() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: None,
+                condition: Some("bogus".into()),
+                ms: None,
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = err_text(&res);
+        assert!(body.contains("requires no selector"), "got: {body}");
+    }
+
+    // -- handle(): ms mode timeout_ms clamping is still reported ------------
+
+    #[tokio::test]
+    async fn handle_ms_mode_reports_timeout_clamp_warning() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: None,
+                condition: None,
+                ms: Some(10),
+                timeout_ms: Some(MAX_TIMEOUT_MS + 1),
+            },
+        )
+        .await
+        .expect("handle");
+        assert_ne!(res.is_error, Some(true));
+        let body = res
+            .content
+            .first()
+            .and_then(|c| c.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default();
+        assert!(body.contains("clamped"), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn handle_ms_mode_response_data_shape() {
+        let server = CrwBrowse::new(BrowseConfig::default());
+        let res = handle(
+            &server,
+            WaitInput {
+                selector: None,
+                condition: None,
+                ms: Some(5),
+                timeout_ms: None,
+            },
+        )
+        .await
+        .expect("handle");
+        let body = res
+            .content
+            .first()
+            .and_then(|c| c.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default();
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["data"]["waited_for"], "ms");
+        assert_eq!(json["session"], "none");
+        assert!(json["data"]["waited_ms"].as_u64().unwrap() >= 5);
+    }
+
+    // -- WaitInput / WaitData: serde shape ------------------------------------
+
+    #[test]
+    fn wait_input_deserializes_from_empty_object_with_all_defaults_none() {
+        let input: WaitInput = serde_json::from_str("{}").unwrap();
+        assert!(input.selector.is_none());
+        assert!(input.condition.is_none());
+        assert!(input.ms.is_none());
+        assert!(input.timeout_ms.is_none());
+    }
+
+    #[test]
+    fn wait_input_round_trips_through_json() {
+        let input = WaitInput {
+            selector: Some("#x".into()),
+            condition: None,
+            ms: None,
+            timeout_ms: Some(1000),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        let back: WaitInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.selector, input.selector);
+        assert_eq!(back.timeout_ms, input.timeout_ms);
+    }
+
+    #[test]
+    fn wait_data_serializes_expected_fields() {
+        let data = WaitData {
+            waited_for: "load".into(),
+            waited_ms: 123,
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(json["waited_for"], "load");
+        assert_eq!(json["waited_ms"], 123);
+    }
 }

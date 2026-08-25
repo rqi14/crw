@@ -637,3 +637,522 @@ fn resolve_client_credentials(
         None => (None, cli_key, hide_credits),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    // --- truncate ---
+
+    #[test]
+    fn truncate_shorter_than_max_returns_whole_string() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_length_equals_max() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_longer_string_cuts_to_max() {
+        assert_eq!(truncate("hello world", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_empty_string() {
+        assert_eq!(truncate("", 5), "");
+    }
+
+    #[test]
+    fn truncate_max_zero_returns_empty() {
+        assert_eq!(truncate("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_unicode_multibyte_boundary_never_panics() {
+        // Each "é" is 2 bytes in UTF-8; max=3 lands mid-character.
+        let s = "ééé";
+        let out = truncate(s, 3);
+        // floor_char_boundary rounds down, so we get exactly one full "é".
+        assert_eq!(out, "é");
+        assert!(out.len() <= 3);
+    }
+
+    #[test]
+    fn truncate_emoji_boundary_never_panics() {
+        // Each emoji is 4 bytes; max=2 lands mid-character, must round down to 0.
+        let s = "🎉🎉";
+        let out = truncate(s, 2);
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn truncate_very_long_string() {
+        let s = "a".repeat(10_000);
+        let out = truncate(&s, 500);
+        assert_eq!(out.len(), 500);
+    }
+
+    #[test]
+    fn truncate_max_greater_than_len_by_one() {
+        assert_eq!(truncate("hi", 3), "hi");
+    }
+
+    #[test]
+    fn truncate_ascii_exact_char_boundary_unaffected() {
+        // Pure ASCII: every byte offset is a valid char boundary.
+        assert_eq!(truncate("abcdef", 3), "abc");
+    }
+
+    // --- Backend accessors (Proxy variant; no network involved) ---
+
+    fn proxy_backend(hide_credits: bool) -> Backend {
+        Backend::Proxy {
+            client: reqwest::Client::new(),
+            base_url: "https://example.invalid".to_string(),
+            api_key: None,
+            hide_credits,
+        }
+    }
+
+    #[test]
+    fn backend_proxy_is_proxy_true() {
+        assert!(proxy_backend(false).is_proxy());
+    }
+
+    #[test]
+    fn backend_proxy_search_available_always_true() {
+        // Proxy defers the decision to the remote server.
+        assert!(proxy_backend(false).search_available());
+        assert!(proxy_backend(true).search_available());
+    }
+
+    #[test]
+    fn backend_proxy_hide_credits_passthrough_false() {
+        assert!(!proxy_backend(false).hide_credits());
+    }
+
+    #[test]
+    fn backend_proxy_hide_credits_passthrough_true() {
+        assert!(proxy_backend(true).hide_credits());
+    }
+
+    #[cfg(feature = "embedded")]
+    #[tokio::test]
+    async fn backend_embedded_is_proxy_false() {
+        let config = crw_core::config::AppConfig {
+            server: Default::default(),
+            renderer: Default::default(),
+            crawler: Default::default(),
+            extraction: Default::default(),
+            auth: Default::default(),
+            request: Default::default(),
+            search: Default::default(),
+            map: Default::default(),
+            document: Default::default(),
+            client: Default::default(),
+            mcp: Default::default(),
+        };
+        let state = crw_server::state::AppState::new(config).expect("default config builds");
+        let backend = Backend::Embedded { state };
+        assert!(!backend.is_proxy());
+        // Default config has no search backend configured.
+        assert!(!backend.search_available());
+        // Embedded strips credits inside call_tool, not at this layer.
+        assert!(!backend.hide_credits());
+    }
+
+    // --- handle_request (protocol methods; no network) ---
+
+    fn req(method: &str, id: Option<Value>, params: Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id,
+            method: method.to_string(),
+            params,
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_request_invalid_jsonrpc_version_errors() {
+        let backend = proxy_backend(false);
+        let bad = JsonRpcRequest {
+            jsonrpc: "1.0".to_string(),
+            id: Some(json!(1)),
+            method: "ping".to_string(),
+            params: json!({}),
+        };
+        let resp = backend.handle_request(bad).await.expect("response");
+        let err = resp.error.expect("error");
+        assert_eq!(err.code, -32600);
+        assert_eq!(resp.id, json!(1));
+    }
+
+    #[tokio::test]
+    async fn handle_request_initialize_returns_server_info() {
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req("initialize", Some(json!(1)), json!({})))
+            .await
+            .expect("response");
+        let result = resp.result.expect("result");
+        assert_eq!(result["serverInfo"]["name"], "crw-mcp");
+        assert_eq!(result["serverInfo"]["version"], SERVER_VERSION);
+        assert_eq!(result["capabilities"]["tools"]["listChanged"], false);
+    }
+
+    #[tokio::test]
+    async fn handle_request_tools_list_includes_search_for_proxy() {
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req("tools/list", Some(json!(1)), json!({})))
+            .await
+            .expect("response");
+        let tools = resp.result.expect("result")["tools"]
+            .as_array()
+            .expect("tools array")
+            .clone();
+        assert!(tools.iter().any(|t| t["name"] == "crw_search"));
+    }
+
+    #[tokio::test]
+    async fn handle_request_ping_returns_empty_object() {
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req("ping", Some(json!(1)), json!({})))
+            .await
+            .expect("response");
+        assert_eq!(resp.result.expect("result"), json!({}));
+    }
+
+    #[tokio::test]
+    async fn handle_request_notification_initialized_returns_none() {
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req("notifications/initialized", None, json!({})))
+            .await;
+        assert!(resp.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_request_notification_cancelled_returns_none() {
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req("notifications/cancelled", None, json!({})))
+            .await;
+        assert!(resp.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_request_unknown_method_with_id_errors() {
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req("totally/unknown", Some(json!(7)), json!({})))
+            .await
+            .expect("response");
+        let err = resp.error.expect("error");
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("totally/unknown"));
+    }
+
+    #[tokio::test]
+    async fn handle_request_unknown_method_without_id_returns_none() {
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req("totally/unknown", None, json!({})))
+            .await;
+        assert!(resp.is_none());
+    }
+
+    #[tokio::test]
+    async fn handle_request_tools_call_unknown_tool_errors_without_network() {
+        // Unknown tool names short-circuit before the backend is ever
+        // dispatched, so this must not attempt any HTTP request.
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req(
+                "tools/call",
+                Some(json!(9)),
+                json!({ "name": "crw_not_a_real_tool", "arguments": {} }),
+            ))
+            .await
+            .expect("response");
+        let err = resp.error.expect("error");
+        assert_eq!(err.code, -32602);
+        assert!(err.message.contains("crw_not_a_real_tool"));
+    }
+
+    #[tokio::test]
+    async fn handle_request_tools_call_missing_name_treated_as_unknown() {
+        let backend = proxy_backend(false);
+        let resp = backend
+            .handle_request(req(
+                "tools/call",
+                Some(json!(9)),
+                json!({ "arguments": {} }),
+            ))
+            .await
+            .expect("response");
+        let err = resp.error.expect("error");
+        assert_eq!(err.code, -32602);
+    }
+
+    // --- resolve_client_credentials / Cli env precedence ---
+    //
+    // These mutate real process env vars (CRW_*), so every test below
+    // acquires ENV_LOCK first and clears the relevant vars, and points
+    // CRW_USER_CONFIG_DIR at a scratch dir so the developer's own
+    // ~/.config/crw/config.toml is never read.
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clear_crw_env() {
+        // SAFETY: serialized by ENV_LOCK; no other thread touches env vars
+        // for the duration a guard is held.
+        unsafe {
+            std::env::remove_var("CRW_API_URL");
+            std::env::remove_var("CRW_API_KEY");
+            std::env::remove_var("CRW_CLIENT__API_URL");
+            std::env::remove_var("CRW_CLIENT__API_KEY");
+            std::env::remove_var("CRW_MCP__HIDE_CREDITS");
+            std::env::remove_var("CRW_CONFIG");
+        }
+    }
+
+    /// Scratch dir standing in for `~/.config/crw` for the duration of one
+    /// test. Honored by `crw_core::config::user_config_path()` via
+    /// `CRW_USER_CONFIG_DIR`, so the real per-user config on this machine is
+    /// never touched.
+    struct ScratchConfigDir(std::path::PathBuf);
+
+    impl ScratchConfigDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "crw-mcp-test-{}-{tag}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            unsafe { std::env::set_var("CRW_USER_CONFIG_DIR", &dir) };
+            Self(dir)
+        }
+
+        fn write_config(&self, toml: &str) {
+            std::fs::write(self.0.join("config.toml"), toml).unwrap();
+        }
+    }
+
+    impl Drop for ScratchConfigDir {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("CRW_USER_CONFIG_DIR") };
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn resolve_credentials_no_env_no_config_returns_all_none() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let _dir = ScratchConfigDir::new("no-config");
+
+        let (url, key, hide) = resolve_client_credentials(None, None);
+        assert_eq!(url, None);
+        assert_eq!(key, None);
+        assert!(!hide);
+    }
+
+    #[test]
+    fn resolve_credentials_cli_url_wins_and_skips_config_lookup() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let dir = ScratchConfigDir::new("cli-url-wins");
+        dir.write_config("[client]\napi_url = \"https://from-config.example\"\n");
+
+        let (url, key, _hide) =
+            resolve_client_credentials(Some("https://cli.example".to_string()), None);
+        assert_eq!(url, Some("https://cli.example".to_string()));
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn resolve_credentials_falls_back_to_config_file_client_section() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let dir = ScratchConfigDir::new("config-fallback");
+        dir.write_config(
+            "[client]\napi_url = \"https://from-config.example\"\napi_key = \"cfg-key\"\n",
+        );
+
+        let (url, key, _hide) = resolve_client_credentials(None, None);
+        assert_eq!(url, Some("https://from-config.example".to_string()));
+        assert_eq!(key, Some("cfg-key".to_string()));
+    }
+
+    #[test]
+    fn resolve_credentials_cli_key_wins_over_config_key() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let dir = ScratchConfigDir::new("cli-key-wins");
+        dir.write_config(
+            "[client]\napi_url = \"https://from-config.example\"\napi_key = \"cfg-key\"\n",
+        );
+
+        let (_url, key, _hide) = resolve_client_credentials(None, Some("cli-key".to_string()));
+        assert_eq!(key, Some("cli-key".to_string()));
+    }
+
+    #[test]
+    fn resolve_credentials_no_config_but_cli_key_present() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let _dir = ScratchConfigDir::new("cli-key-only");
+
+        let (url, key, hide) = resolve_client_credentials(None, Some("k".to_string()));
+        assert_eq!(url, None);
+        assert_eq!(key, Some("k".to_string()));
+        assert!(!hide);
+    }
+
+    #[test]
+    fn resolve_credentials_hide_credits_from_config_applies_even_with_cli_url() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let dir = ScratchConfigDir::new("hide-credits-cfg");
+        dir.write_config("[mcp]\nhide_credits = true\n");
+
+        let (_url, _key, hide) =
+            resolve_client_credentials(Some("https://cli.example".to_string()), None);
+        assert!(
+            hide,
+            "hide_credits is read from config independent of cli_url"
+        );
+    }
+
+    #[test]
+    fn resolve_credentials_env_client_api_url_overrides_config_file() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let dir = ScratchConfigDir::new("env-overrides-file");
+        dir.write_config("[client]\napi_url = \"https://from-config.example\"\n");
+        unsafe { std::env::set_var("CRW_CLIENT__API_URL", "https://from-env.example") };
+
+        let (url, _key, _hide) = resolve_client_credentials(None, None);
+        assert_eq!(url, Some("https://from-env.example".to_string()));
+
+        unsafe { std::env::remove_var("CRW_CLIENT__API_URL") };
+    }
+
+    #[test]
+    fn resolve_credentials_env_mcp_hide_credits_true() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let _dir = ScratchConfigDir::new("env-hide-credits");
+        unsafe { std::env::set_var("CRW_MCP__HIDE_CREDITS", "true") };
+
+        let (_url, _key, hide) = resolve_client_credentials(None, None);
+        assert!(hide);
+
+        unsafe { std::env::remove_var("CRW_MCP__HIDE_CREDITS") };
+    }
+
+    #[test]
+    fn resolve_credentials_malformed_config_file_degrades_to_none_not_panic() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let dir = ScratchConfigDir::new("malformed-config");
+        dir.write_config("this is not valid toml [[[");
+
+        let (url, key, hide) = resolve_client_credentials(None, Some("k".to_string()));
+        // AppConfig::load() fails -> .ok() -> None -> graceful fallback, cli_key kept.
+        assert_eq!(url, None);
+        assert_eq!(key, Some("k".to_string()));
+        assert!(!hide);
+    }
+
+    // --- Cli (clap) parsing / env precedence ---
+
+    #[test]
+    fn cli_parse_no_args_defaults_to_none_and_false() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let cli = Cli::parse_from(["crw-mcp"]);
+        assert_eq!(cli.api_url, None);
+        assert_eq!(cli.api_key, None);
+        assert_eq!(cli.config, None);
+        assert!(!cli.hide_credits);
+    }
+
+    #[test]
+    fn cli_parse_explicit_flags() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let cli = Cli::parse_from([
+            "crw-mcp",
+            "--api-url",
+            "https://api.example",
+            "--api-key",
+            "secret",
+            "--hide-credits",
+        ]);
+        assert_eq!(cli.api_url, Some("https://api.example".to_string()));
+        assert_eq!(cli.api_key, Some("secret".to_string()));
+        assert!(cli.hide_credits);
+    }
+
+    #[test]
+    fn cli_parse_reads_env_when_flag_absent() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        unsafe {
+            std::env::set_var("CRW_API_URL", "https://env.example");
+            std::env::set_var("CRW_MCP__HIDE_CREDITS", "true");
+        }
+
+        let cli = Cli::parse_from(["crw-mcp"]);
+        assert_eq!(cli.api_url, Some("https://env.example".to_string()));
+        assert!(cli.hide_credits);
+
+        clear_crw_env();
+    }
+
+    #[test]
+    fn cli_parse_explicit_flag_wins_over_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        unsafe { std::env::set_var("CRW_API_URL", "https://env.example") };
+
+        let cli = Cli::parse_from(["crw-mcp", "--api-url", "https://flag.example"]);
+        assert_eq!(cli.api_url, Some("https://flag.example".to_string()));
+
+        clear_crw_env();
+    }
+
+    #[test]
+    fn cli_parse_config_flag_sets_config_path() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let cli = Cli::parse_from(["crw-mcp", "--config", "/tmp/some-config.toml"]);
+        assert_eq!(cli.config, Some("/tmp/some-config.toml".to_string()));
+    }
+
+    #[test]
+    fn cli_parse_rejects_unknown_flag() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let result = Cli::try_parse_from(["crw-mcp", "--not-a-real-flag"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_parse_hide_credits_boolean_flag_is_false_by_default_without_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_crw_env();
+        let cli = Cli::parse_from(["crw-mcp"]);
+        assert!(!cli.hide_credits);
+    }
+}

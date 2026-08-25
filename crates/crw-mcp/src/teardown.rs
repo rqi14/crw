@@ -80,3 +80,94 @@ pub fn finish(result: Result<(), CmdError>) -> ! {
         }
     }
 }
+
+// TESTABILITY: `finish` and the `#[cfg(unix)]` branch of
+// `install_signal_teardown` both terminate via `std::process::exit`, which
+// would kill the test harness itself — there is no way to observe them
+// return without a subprocess, and RULES.md forbids spawning processes for
+// this kind of hermetic unit test. Everything else in this file is covered
+// below.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- CmdError ---
+
+    #[test]
+    fn cmd_error_code_only_has_no_message() {
+        let e = CmdError::code_only(1);
+        assert_eq!(e.code, 1);
+        assert!(e.msg.is_none());
+    }
+
+    #[test]
+    fn cmd_error_code_only_preserves_arbitrary_code() {
+        assert_eq!(CmdError::code_only(0).code, 0);
+        assert_eq!(CmdError::code_only(255).code, 255);
+        assert_eq!(CmdError::code_only(-1).code, -1);
+    }
+
+    #[test]
+    fn cmd_error_struct_literal_carries_message() {
+        let e = CmdError {
+            code: 2,
+            msg: Some("boom".to_string()),
+        };
+        assert_eq!(e.code, 2);
+        assert_eq!(e.msg.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn cmd_error_debug_format_does_not_panic() {
+        // Struct derives Debug; just exercise it so a future field addition
+        // that breaks Debug is caught here.
+        let e = CmdError::code_only(1);
+        let formatted = format!("{e:?}");
+        assert!(formatted.contains('1'));
+    }
+
+    // --- teardown_once ---
+    //
+    // `TEARING_DOWN` is a module-level static shared by every test in this
+    // binary, so we can only assert the *idempotency* contract (repeated
+    // calls never panic and never double-run), not the pre/post flag value
+    // relative to other tests.
+
+    #[test]
+    fn teardown_once_is_idempotent_across_repeated_calls() {
+        // First call may or may not be the very first in the binary (test
+        // order is unspecified), but calling it several times in a row must
+        // never panic regardless of which call actually "wins" the swap.
+        teardown_once();
+        teardown_once();
+        teardown_once();
+    }
+
+    #[test]
+    fn teardown_once_flag_is_true_after_any_call() {
+        teardown_once();
+        assert!(TEARING_DOWN.load(Ordering::SeqCst));
+    }
+
+    // --- install_signal_teardown ---
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn install_signal_teardown_does_not_panic_on_install() {
+        // Installing the signal listeners must succeed and return
+        // immediately (it only spawns a background task); we don't send a
+        // real signal or await the spawned task, we just verify the install
+        // call itself is safe to make from an async context.
+        install_signal_teardown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn install_signal_teardown_can_be_called_multiple_times() {
+        // Each call spawns its own independent listener set; repeated
+        // installs (e.g. across retried startup paths) must not panic or
+        // conflict with each other.
+        install_signal_teardown();
+        install_signal_teardown();
+    }
+}

@@ -636,4 +636,187 @@ mod tests {
         assert!(!json.contains("leakeduser"));
         assert!(!json.contains("leakedpass"));
     }
+
+    #[test]
+    fn proxy_parse_check_passes_with_no_proxy_configured() {
+        let config = AppConfig::default();
+        let result = proxy_parse_check(&config);
+        assert_eq!(result.status, Status::Pass);
+        assert!(result.message.contains("no proxy configured"));
+        assert!(result.fix.is_none());
+    }
+
+    #[test]
+    fn proxy_parse_check_passes_with_a_single_valid_proxy() {
+        let mut config = AppConfig::default();
+        config.crawler.proxy = Some("http://127.0.0.1:8888".to_string());
+        let result = proxy_parse_check(&config);
+        assert_eq!(result.status, Status::Pass);
+        assert!(
+            result.message.contains("1 proxy entry parsed"),
+            "got: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn proxy_parse_check_pluralizes_entries_correctly() {
+        let mut config = AppConfig::default();
+        config.crawler.proxy_list = vec![
+            "http://127.0.0.1:8888".to_string(),
+            "http://127.0.0.1:8889".to_string(),
+        ];
+        let result = proxy_parse_check(&config);
+        assert_eq!(result.status, Status::Pass);
+        assert!(
+            result.message.contains("2 proxy entries parsed"),
+            "got: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn proxy_parse_check_reports_count_from_proxy_list_when_multiple_malformed() {
+        let mut config = AppConfig::default();
+        config.crawler.proxy_list = vec![
+            "not a url at all".to_string(),
+            "also not a url".to_string(),
+            "still not a url".to_string(),
+        ];
+        let result = proxy_parse_check(&config);
+        assert_eq!(result.status, Status::Fail);
+        assert!(
+            result.message.contains("one of 3 configured entries"),
+            "got: {}",
+            result.message
+        );
+    }
+
+    #[test]
+    fn proxy_parse_check_reports_singular_when_single_scalar_proxy_malformed() {
+        let mut config = AppConfig::default();
+        config.crawler.proxy = Some("not a url at all".to_string());
+        let result = proxy_parse_check(&config);
+        assert_eq!(result.status, Status::Fail);
+        assert!(
+            result.message.contains("one of 1 configured entry"),
+            "got: {}",
+            result.message
+        );
+        let fix = result.fix.unwrap();
+        assert!(fix.contains("crawler.proxy"));
+    }
+
+    #[test]
+    fn binary_check_reports_pass_with_version_and_features() {
+        let result = binary_check();
+        assert_eq!(result.id, "binary.build");
+        assert_eq!(result.status, Status::Pass);
+        assert!(result.message.contains(env!("CARGO_PKG_VERSION")));
+        assert!(result.message.contains("features:"));
+    }
+
+    #[test]
+    fn mcp_mode_check_reports_proxy_mode_with_redacted_url() {
+        let mut config = AppConfig::default();
+        config.client.api_url = Some("https://user:pass@api.fastcrw.com".to_string());
+        let result = mcp_mode_check(&config);
+        assert_eq!(result.status, Status::Pass);
+        assert!(result.message.contains("proxy mode via"));
+        assert!(
+            !result.message.contains("pass"),
+            "credentials must be redacted"
+        );
+    }
+
+    #[test]
+    fn mcp_mode_check_reports_embedded_mode_when_no_api_url() {
+        let config = AppConfig::default();
+        let result = mcp_mode_check(&config);
+        assert_eq!(result.status, Status::Pass);
+        assert!(result.message.contains("embedded mode"));
+    }
+
+    #[tokio::test]
+    async fn listen_port_check_passes_for_a_free_ephemeral_port() {
+        // Bind to port 0 to let the OS hand back a free port, then release it
+        // immediately so the check can bind it itself.
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let mut config = AppConfig::default();
+        config.server.host = "127.0.0.1".to_string();
+        config.server.port = port;
+        let result = listen_port_check(&config).await;
+        assert_eq!(result.status, Status::Pass);
+        assert!(result.message.contains("is free"));
+    }
+
+    #[tokio::test]
+    async fn listen_port_check_warns_when_port_already_bound() {
+        let held = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = held.local_addr().unwrap().port();
+
+        let mut config = AppConfig::default();
+        config.server.host = "127.0.0.1".to_string();
+        config.server.port = port;
+        let result = listen_port_check(&config).await;
+        assert_eq!(result.status, Status::Warn);
+        assert!(result.message.contains("unavailable"));
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn proxy_reachability_check_skips_when_unconfigured() {
+        let config = AppConfig::default();
+        let result = proxy_reachability_check(&config).await;
+        assert_eq!(result.status, Status::Skip);
+    }
+
+    #[tokio::test]
+    async fn proxy_reachability_check_passes_against_a_local_listener() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Keep the listener alive for the duration of the connect attempt.
+        let _accept_task = tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let mut config = AppConfig::default();
+        config.crawler.proxy = Some(format!("http://127.0.0.1:{port}"));
+        let result = proxy_reachability_check(&config).await;
+        assert_eq!(result.status, Status::Pass);
+        assert!(result.message.contains("reachable"));
+    }
+
+    #[tokio::test]
+    async fn proxy_reachability_check_warns_on_a_closed_port() {
+        // Bind then drop to get a port nothing is listening on.
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let mut config = AppConfig::default();
+        config.crawler.proxy = Some(format!("http://127.0.0.1:{port}"));
+        let result = proxy_reachability_check(&config).await;
+        assert_eq!(result.status, Status::Warn);
+        assert!(result.message.contains("unreachable"));
+    }
+
+    #[tokio::test]
+    async fn proxy_reachability_check_prefers_proxy_list_head_over_scalar_proxy() {
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let mut config = AppConfig::default();
+        // Scalar `proxy` would report a different (bogus, non-parsing) host;
+        // `proxy_list`'s first entry must win so the redacted message reflects
+        // the entry actually probed.
+        config.crawler.proxy = Some("http://this-should-be-ignored.invalid:1".to_string());
+        config.crawler.proxy_list = vec![format!("http://127.0.0.1:{port}")];
+        let result = proxy_reachability_check(&config).await;
+        assert!(!result.message.contains("this-should-be-ignored"));
+    }
 }

@@ -807,3 +807,606 @@ fn build_request(
         screenshot_full_page: false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::{Args as ClapArgs, FromArgMatches, ValueEnum};
+
+    // ---- clap parsing helpers -------------------------------------------
+
+    fn parse(argv: &[&str]) -> Result<ScrapeArgs, clap::Error> {
+        let mut full = vec!["scrape"];
+        full.extend_from_slice(argv);
+        let cmd = ScrapeArgs::augment_args(clap::Command::new("scrape"));
+        let matches = cmd.try_get_matches_from(full)?;
+        ScrapeArgs::from_arg_matches(&matches)
+    }
+
+    fn format_name(f: &Format) -> String {
+        f.to_possible_value()
+            .expect("Format always has a possible_value")
+            .get_name()
+            .to_string()
+    }
+
+    // ---- argument parsing: defaults & positional url ---------------------
+
+    #[test]
+    fn bare_url_parses_with_all_defaults() {
+        let args = parse(&["https://example.com"]).unwrap();
+        assert_eq!(args.url, "https://example.com");
+        assert_eq!(format_name(&args.format), "markdown");
+        assert!(args.output.is_none());
+        assert!(!args.raw);
+        assert!(!args.js);
+        assert!(args.css.is_none());
+        assert!(args.xpath.is_none());
+        assert!(args.proxy.is_none());
+        assert!(!args.stealth);
+        assert!(!args.summary);
+        assert!(args.prompt.is_none());
+        assert!(args.extract.is_none());
+        assert!(args.llm_provider.is_none());
+        assert!(args.llm_key.is_none());
+        assert!(args.llm_model.is_none());
+        assert!(args.llm_base_url.is_none());
+    }
+
+    #[test]
+    fn missing_url_positional_is_a_clap_error() {
+        let err = match parse(&[]) {
+            Ok(_) => panic!("expected a parse error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn url_positional_accepts_a_non_url_string_unvalidated() {
+        // Argument parsing does no URL validation — that happens at runtime
+        // in `run()` (auto-https-prepend / local-file check). Any string
+        // must parse as the positional `url`.
+        let args = parse(&["not a url at all"]).unwrap();
+        assert_eq!(args.url, "not a url at all");
+    }
+
+    // ---- --format / -f ----------------------------------------------------
+
+    #[test]
+    fn format_accepts_every_documented_value() {
+        for (flag_value, expected_name) in [
+            ("markdown", "markdown"),
+            ("json", "json"),
+            ("html", "html"),
+            ("rawhtml", "rawhtml"),
+            ("text", "text"),
+            ("links", "links"),
+            ("images", "images"),
+        ] {
+            let args = parse(&["--format", flag_value, "https://example.com"]).unwrap();
+            assert_eq!(format_name(&args.format), expected_name, "for {flag_value}");
+        }
+    }
+
+    #[test]
+    fn format_short_flag_is_equivalent_to_long_flag() {
+        let args = parse(&["-f", "json", "https://example.com"]).unwrap();
+        assert_eq!(format_name(&args.format), "json");
+    }
+
+    #[test]
+    fn format_rejects_summary_as_invalid() {
+        // The setup wizard once wrongly advertised `-f summary`; it is not
+        // (and must never become) a valid --format value. AI output modes
+        // are their own flag (`--summary`), not a format.
+        let err = match parse(&["--format", "summary", "https://example.com"]) {
+            Ok(_) => panic!("expected a parse error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn format_rejects_unknown_value_with_helpful_message() {
+        let err = match parse(&["--format", "yaml", "https://example.com"]) {
+            Ok(_) => panic!("expected a parse error"),
+            Err(e) => e,
+        };
+        let rendered = err.to_string();
+        assert!(rendered.contains("yaml"));
+        // clap lists the valid values in the error to guide the user.
+        assert!(rendered.contains("markdown"));
+    }
+
+    #[test]
+    fn format_is_case_sensitive() {
+        let err = match parse(&["--format", "Markdown", "https://example.com"]) {
+            Ok(_) => panic!("expected a parse error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn format_flag_cannot_be_repeated() {
+        // -f is a single-value arg, so clap rejects a second occurrence rather
+        // than letting the last one win.
+        let err = match parse(&["-f", "json", "-f", "text", "https://example.com"]) {
+            Ok(_) => panic!("expected a parse error on a repeated --format"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn format_has_exactly_the_seven_known_variants() {
+        let names: Vec<String> = Format::value_variants().iter().map(format_name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "markdown", "json", "html", "rawhtml", "text", "links", "images"
+            ]
+        );
+    }
+
+    // ---- other flags --------------------------------------------------
+
+    #[test]
+    fn output_short_and_long_flag_set_the_path() {
+        let args = parse(&["-o", "out.md", "https://example.com"]).unwrap();
+        assert_eq!(args.output.as_deref(), Some("out.md"));
+        let args = parse(&["--output", "out2.md", "https://example.com"]).unwrap();
+        assert_eq!(args.output.as_deref(), Some("out2.md"));
+    }
+
+    #[test]
+    fn boolean_flags_default_off_and_flip_on_when_present() {
+        let args = parse(&["--raw", "--js", "--stealth", "https://example.com"]).unwrap();
+        assert!(args.raw);
+        assert!(args.js);
+        assert!(args.stealth);
+    }
+
+    #[test]
+    fn css_and_xpath_accept_selector_values_including_unicode() {
+        let args = parse(&[
+            "--css",
+            "div.日本語-title",
+            "--xpath",
+            "//h1[@id='título']",
+            "https://example.com",
+        ])
+        .unwrap();
+        assert_eq!(args.css.as_deref(), Some("div.日本語-title"));
+        assert_eq!(args.xpath.as_deref(), Some("//h1[@id='título']"));
+    }
+
+    #[test]
+    fn proxy_accepts_a_url_value() {
+        let args = parse(&[
+            "--proxy",
+            "socks5://user:pass@host:1080",
+            "https://example.com",
+        ])
+        .unwrap();
+        assert_eq!(args.proxy.as_deref(), Some("socks5://user:pass@host:1080"));
+    }
+
+    #[test]
+    fn llm_override_flags_all_accept_values() {
+        let args = parse(&[
+            "--llm-provider",
+            "anthropic",
+            "--llm-key",
+            "sk-test",
+            "--llm-model",
+            "claude-sonnet-4-20250514",
+            "--llm-base-url",
+            "https://api.anthropic.com",
+            "https://example.com",
+        ])
+        .unwrap();
+        assert_eq!(args.llm_provider.as_deref(), Some("anthropic"));
+        assert_eq!(args.llm_key.as_deref(), Some("sk-test"));
+        assert_eq!(args.llm_model.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert_eq!(
+            args.llm_base_url.as_deref(),
+            Some("https://api.anthropic.com")
+        );
+    }
+
+    // ---- --summary / --extract / --prompt interplay -----------------------
+
+    #[test]
+    fn summary_and_extract_conflict() {
+        let err = match parse(&["--summary", "--extract", "{}", "https://example.com"]) {
+            Ok(_) => panic!("expected a parse error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn prompt_without_summary_is_a_missing_required_argument() {
+        let err = match parse(&["--prompt", "in 3 bullets", "https://example.com"]) {
+            Ok(_) => panic!("expected a parse error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn prompt_with_summary_parses_fine() {
+        let args = parse(&[
+            "--summary",
+            "--prompt",
+            "in 3 bullets",
+            "https://example.com",
+        ])
+        .unwrap();
+        assert!(args.summary);
+        assert_eq!(args.prompt.as_deref(), Some("in 3 bullets"));
+    }
+
+    #[test]
+    fn extract_alone_parses_without_requiring_summary() {
+        let args = parse(&["--extract", "{\"type\":\"object\"}", "https://example.com"]).unwrap();
+        assert_eq!(args.extract.as_deref(), Some("{\"type\":\"object\"}"));
+        assert!(!args.summary);
+    }
+
+    // ---- build_request(): pure field-mapping tests -------------------------
+
+    #[test]
+    fn build_request_maps_simple_fields_through_unchanged() {
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![OutputFormat::Markdown, OutputFormat::Links],
+            true,
+            None,
+            Some("div.main".to_string()),
+            Some("//h1".to_string()),
+            Some("http://proxy:8080".to_string()),
+            false,
+            Some("as a haiku".to_string()),
+            None,
+        );
+        assert_eq!(req.url, "https://example.com");
+        assert_eq!(
+            req.formats,
+            vec![OutputFormat::Markdown, OutputFormat::Links]
+        );
+        assert!(req.only_main_content);
+        assert_eq!(req.render_js, None);
+        assert_eq!(req.css_selector.as_deref(), Some("div.main"));
+        assert_eq!(req.xpath.as_deref(), Some("//h1"));
+        assert_eq!(req.proxy.as_deref(), Some("http://proxy:8080"));
+        assert_eq!(req.summary_prompt.as_deref(), Some("as a haiku"));
+    }
+
+    #[test]
+    fn build_request_stealth_true_sets_some_true() {
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![OutputFormat::Markdown],
+            true,
+            None,
+            None,
+            None,
+            None,
+            true,
+            None,
+            None,
+        );
+        assert_eq!(req.stealth, Some(true));
+    }
+
+    #[test]
+    fn build_request_stealth_false_sets_none_not_some_false() {
+        // Deliberately not `Some(false)`: downstream code treats "stealth
+        // configured at all" as a signal, so a false stealth flag must look
+        // identical to "never asked for stealth".
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![OutputFormat::Markdown],
+            true,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(req.stealth, None);
+    }
+
+    #[test]
+    fn build_request_render_js_forced_true_when_js_flag_set() {
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![OutputFormat::Markdown],
+            true,
+            Some(true),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        );
+        assert_eq!(req.render_js, Some(true));
+    }
+
+    #[test]
+    fn build_request_no_extract_schema_leaves_extract_and_json_schema_none() {
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![OutputFormat::Markdown],
+            true,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        );
+        assert!(req.extract.is_none());
+        assert!(req.json_schema.is_none());
+    }
+
+    #[test]
+    fn build_request_extract_schema_populates_both_extract_and_json_schema() {
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"title": {"type": "string"}}});
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![OutputFormat::Markdown, OutputFormat::Json],
+            true,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            Some(schema.clone()),
+        );
+        assert_eq!(req.json_schema, Some(schema.clone()));
+        let extract = req.extract.expect("extract must be populated");
+        assert_eq!(extract.schema, Some(schema));
+        assert!(
+            extract.prompt.is_none(),
+            "build_request never sets ExtractOptions::prompt (that's summary_prompt's job)"
+        );
+    }
+
+    #[test]
+    fn build_request_only_main_content_false_when_raw() {
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![OutputFormat::Markdown],
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        );
+        assert!(!req.only_main_content);
+    }
+
+    #[test]
+    fn build_request_leaves_unwired_fields_at_their_zero_value() {
+        // These fields have no CLI flag wiring them up yet; a future accidental
+        // wiring should show up as a failing test here, not ship silently.
+        let schema = serde_json::json!({"type": "object"});
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![OutputFormat::Markdown],
+            true,
+            Some(true),
+            Some("div".to_string()),
+            Some("//p".to_string()),
+            Some("http://proxy:1".to_string()),
+            true,
+            Some("prompt".to_string()),
+            Some(schema),
+        );
+        assert!(!req.basis);
+        assert!(req.headers.is_empty());
+        assert!(req.include_tags.is_empty());
+        assert!(req.exclude_tags.is_empty());
+        assert!(req.chunk_strategy.is_none());
+        assert!(req.query.is_none());
+        assert!(req.filter_mode.is_none());
+        assert!(req.top_k.is_none());
+        assert!(req.proxy_list.is_empty());
+        assert!(req.proxy_rotation.is_none());
+        assert!(req.country.is_none());
+        assert!(req.actions.is_none());
+        assert!(req.llm_api_key.is_none());
+        assert!(req.llm_provider.is_none());
+        assert!(req.llm_model.is_none());
+        assert!(req.base_url.is_none());
+        assert!(req.max_content_chars.is_none());
+        assert!(req.renderer.is_none());
+        assert!(req.force_cloak.is_none());
+        assert!(req.deadline_ms.is_none());
+        assert!(req.debug.is_none());
+        assert!(req.change_tracking.is_none());
+        assert!(req.goal.is_none());
+        assert!(req.judge_enabled.is_none());
+        assert!(req.parsers.is_none());
+        assert!(!req.screenshot_full_page);
+    }
+
+    #[test]
+    fn build_request_empty_formats_vec_round_trips_empty() {
+        let req = build_request(
+            "https://example.com".to_string(),
+            vec![],
+            true,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+        );
+        assert!(req.formats.is_empty());
+    }
+
+    // ---- run_local_file(): is-PDF sniffing, all offline (no network, no LLM) --
+
+    fn temp_file(label: &str, contents: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "crw-scrape-test-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn base_scrape_args(url: String) -> ScrapeArgs {
+        ScrapeArgs {
+            url,
+            format: Format::Markdown,
+            output: None,
+            raw: false,
+            js: false,
+            css: None,
+            xpath: None,
+            proxy: None,
+            stealth: false,
+            summary: false,
+            prompt: None,
+            extract: None,
+            llm_provider: None,
+            llm_key: None,
+            llm_model: None,
+            llm_base_url: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn run_local_file_rejects_a_plain_non_pdf_file() {
+        let path = temp_file("not-pdf", b"just some plain text, not a PDF");
+        let args = base_scrape_args(path.display().to_string());
+        let err = run_local_file(&args).await.unwrap_err();
+        assert_eq!(err.code, 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn run_local_file_routes_by_pdf_extension_even_with_non_pdf_bytes() {
+        // `.pdf` extension alone is enough to route into the PDF parser,
+        // regardless of content. `convert_pdf_bytes` soft-fails (never
+        // returns Err) on unparsable bytes, so this must still return Ok
+        // with an empty/warned result rather than the "only PDF files"
+        // rejection.
+        let dir = std::env::temp_dir().join(format!(
+            "crw-scrape-pdf-ext-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("document.pdf");
+        std::fs::write(&path, b"not actually pdf bytes").unwrap();
+        let args = base_scrape_args(path.display().to_string());
+        let result = run_local_file(&args).await;
+        assert!(
+            result.is_ok(),
+            "extension-routed PDF path must soft-fail, not error: {result:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_local_file_routes_by_pdf_magic_bytes_without_extension() {
+        // No `.pdf` extension, but the `%PDF-` magic header alone is enough
+        // to route into the PDF parser.
+        let path = temp_file("magic-noext", b"%PDF-1.4 not a real pdf body");
+        let args = base_scrape_args(path.display().to_string());
+        let result = run_local_file(&args).await;
+        assert!(
+            result.is_ok(),
+            "magic-byte-routed PDF path must soft-fail, not error: {result:?}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn run_local_file_routes_by_pdf_magic_bytes_behind_a_utf8_bom() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"%PDF-1.4 also fake");
+        let path = temp_file("magic-bom", &bytes);
+        let args = base_scrape_args(path.display().to_string());
+        let result = run_local_file(&args).await;
+        assert!(
+            result.is_ok(),
+            "BOM + magic-byte PDF path must soft-fail, not error: {result:?}"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn run_local_file_missing_file_is_a_read_error() {
+        let missing = std::env::temp_dir().join("crw-scrape-test-does-not-exist.pdf");
+        let args = base_scrape_args(missing.display().to_string());
+        let err = run_local_file(&args).await.unwrap_err();
+        assert_eq!(err.code, 1);
+    }
+
+    #[tokio::test]
+    async fn run_dispatches_existing_local_file_before_any_network_prep() {
+        // Proves `run()`'s own `is_file()` short-circuit is reached: a
+        // non-PDF local file must produce the same "only PDF" rejection as
+        // calling `run_local_file` directly, never a network attempt.
+        let path = temp_file("dispatch", b"plain text, not a pdf, not a url");
+        let args = base_scrape_args(path.display().to_string());
+        let err = run(args).await.unwrap_err();
+        assert_eq!(err.code, 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[tokio::test]
+    async fn run_local_file_writes_output_to_file_when_output_is_set() {
+        let path = temp_file("output-flag", b"not a pdf");
+        let out_dir = std::env::temp_dir().join(format!(
+            "crw-scrape-out-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let out_path = out_dir.join("result.md");
+
+        let mut args = base_scrape_args(path.display().to_string());
+        args.format = Format::Text;
+        args.output = Some(out_path.display().to_string());
+        // This is still rejected before any output is written (non-PDF).
+        let err = run_local_file(&args).await.unwrap_err();
+        assert_eq!(err.code, 1);
+        assert!(
+            !out_path.exists(),
+            "rejected input must not produce an output file"
+        );
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&out_dir).ok();
+    }
+}

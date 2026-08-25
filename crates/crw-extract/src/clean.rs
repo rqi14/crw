@@ -675,4 +675,503 @@ mod tests {
             "expected selector_no_match warning, got {warnings:?}"
         );
     }
+
+    // ── always-stripped tags (regardless of only_main_content) ──────────────
+
+    #[test]
+    fn strips_noscript_always() {
+        let html = r#"<body><noscript>Enable JS</noscript><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(!result.contains("Enable JS"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn strips_iframe_always() {
+        let html = r#"<body><iframe src="https://ads.example/x"></iframe><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(!result.contains("iframe"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn strips_svg_always() {
+        let html = r#"<body><svg><circle r="5"/></svg><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(!result.contains("circle"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn strips_canvas_always() {
+        let html = r#"<body><canvas id="chart"></canvas><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(!result.contains("canvas"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn strips_head_and_its_title_always() {
+        let html = r#"<html><head><title>Page Title</title><meta charset="utf-8"></head><body><p>Content</p></body></html>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(!result.contains("Page Title"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn removes_data_uri_images_but_keeps_normal_images() {
+        let html = r#"<body>
+            <img src="data:image/png;base64,iVBORw0KGgo=" alt="blob">
+            <img src="https://example.com/real.png" alt="real">
+            <p>Content</p>
+        </body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(!result.contains("base64"));
+        assert!(result.contains("real.png"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn img_without_src_attribute_is_kept() {
+        let html = r#"<body><img alt="no src"><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("no src"));
+    }
+
+    // ── only_main_content=false: chrome tags are preserved ──────────────────
+
+    #[test]
+    fn nav_is_kept_when_only_main_content_is_false() {
+        let html = r#"<body><nav>Menu</nav><article>Content</article></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("Menu"));
+    }
+
+    #[test]
+    fn top_level_header_footer_aside_are_kept_when_only_main_content_is_false() {
+        let html = r#"<body><header>Head</header><aside>Side</aside><p>Content</p><footer>Foot</footer></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("Head"));
+        assert!(result.contains("Side"));
+        assert!(result.contains("Foot"));
+    }
+
+    #[test]
+    fn sidebar_class_is_kept_when_only_main_content_is_false() {
+        // The noise-pattern handler is only registered in only_main_content mode.
+        let html = r#"<body><div class="sidebar">Side content</div><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("Side content"));
+    }
+
+    #[test]
+    fn select_and_menu_removed_only_in_main_content_mode() {
+        let html = r#"<body><select><option>A</option></select><menu><li>x</li></menu><p>Content</p></body>"#;
+        let kept = clean_html(html, false, &[], &[]).unwrap();
+        assert!(kept.contains("option"));
+        let stripped = clean_html(html, true, &[], &[]).unwrap();
+        assert!(!stripped.contains("option"));
+        assert!(!stripped.contains("<menu"));
+        assert!(stripped.contains("Content"));
+    }
+
+    // ── nested header/aside/footer inside <main>/<article> survive ─────────
+
+    #[test]
+    fn header_nested_in_main_survives_only_main_content() {
+        let html = r#"<body><main><header><h1>Title block</h1></header><p>Body</p></main></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("Title block"), "got: {result}");
+        assert!(result.contains("Body"));
+    }
+
+    #[test]
+    fn aside_nested_in_article_survives_as_a_pull_quote() {
+        let html = r#"<body><article><aside>Pull quote</aside><p>Body</p></article></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("Pull quote"), "got: {result}");
+    }
+
+    #[test]
+    fn footer_nested_in_article_survives_as_byline() {
+        let html =
+            r#"<body><article><p>Body</p><footer>By Jane Doe, 2026</footer></article></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("By Jane Doe"), "got: {result}");
+    }
+
+    #[test]
+    fn top_level_header_outside_main_is_still_removed() {
+        // Only header/aside/footer NESTED inside main/article are spared; a
+        // sibling header at the body level is still site chrome.
+        let html = r#"<body><header>Site chrome</header><main><header>Title block</header><p>Body</p></main></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(!result.contains("Site chrome"), "got: {result}");
+        assert!(result.contains("Title block"));
+    }
+
+    // ── aria roles ────────────────────────────────────────────────────────
+
+    #[test]
+    fn strips_role_complementary_in_main_content_mode() {
+        let html = r#"<body><div role="complementary">Related links</div><p>Content</p></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(!result.contains("Related links"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn aria_roles_are_kept_when_only_main_content_is_false() {
+        let html = r#"<body><div role="navigation">Nav role text</div><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("Nav role text"));
+    }
+
+    // ── noise pattern precision (layout-token prefix vs substring) ─────────
+
+    #[test]
+    fn sidebar_right_is_removed_but_has_sidebar_content_wrapper_is_kept() {
+        let html = r#"<body>
+            <div class="sidebar-right">Boilerplate</div>
+            <div class="has-sidebar"><p>Real article content</p></div>
+        </body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(!result.contains("Boilerplate"), "got: {result}");
+        assert!(result.contains("Real article content"), "got: {result}");
+    }
+
+    #[test]
+    fn pantheon_docs_content_sidebar_layout_wrapper_survives() {
+        let html =
+            r#"<body><div class="pds-sidebar-layout__content"><p>Docs body text</p></div></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("Docs body text"), "got: {result}");
+    }
+
+    #[test]
+    fn copyright_prefix_token_also_removes_the_zhihu_content_wrapper() {
+        // BUG: the comment above `NOISE_LAYOUT_TOKENS` ("copyright") claims this
+        // token was moved to the *prefix*-matched list specifically so that
+        // zhihu's `copyrightrichtext-richtext` article-body class would survive
+        // (as opposed to a plain substring match, which the comment says
+        // "deleted 98% of the page"). But `tok.starts_with("copyright")` is
+        // still true for `copyrightrichtext-richtext` (it is a single
+        // whitespace-delimited class token), so the wrapper is removed anyway
+        // and the stated fix does not actually protect this case. Asserting
+        // the current (unintended) behaviour here per the "don't fix
+        // production code" rule; the comment's rationale and the code's
+        // actual effect disagree.
+        let html = r#"<body>
+            <div class="copyrightrichtext-richtext"><p>Zhihu article body.</p></div>
+            <div class="copyright">Page copyright footer.</div>
+        </body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(!result.contains("Zhihu article body."), "got: {result}");
+        assert!(!result.contains("Page copyright footer."), "got: {result}");
+    }
+
+    #[test]
+    fn ad_prefixed_class_is_removed_but_unrelated_ad_word_is_kept() {
+        let html = r#"<body>
+            <div class="ad-banner">Sponsored</div>
+            <div class="adjacent-content">Real content next to the ad</div>
+        </body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(!result.contains("Sponsored"), "got: {result}");
+        assert!(
+            result.contains("Real content next to the ad"),
+            "got: {result}"
+        );
+    }
+
+    #[test]
+    fn exact_token_toc_share_social_related_recommended_comment_footer_are_removed() {
+        let html = r#"<body>
+            <div class="toc">Table of contents</div>
+            <div class="share">Share buttons</div>
+            <div class="social">Social buttons</div>
+            <div class="related">Related posts</div>
+            <div class="recommended">Recommended posts</div>
+            <div class="comment">Comment section</div>
+            <div class="footer">Div footer</div>
+            <p>Real content</p>
+        </body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        for gone in [
+            "Table of contents",
+            "Share buttons",
+            "Social buttons",
+            "Related posts",
+            "Recommended posts",
+            "Comment section",
+            "Div footer",
+        ] {
+            assert!(
+                !result.contains(gone),
+                "expected {gone} removed, got: {result}"
+            );
+        }
+        assert!(result.contains("Real content"));
+    }
+
+    #[test]
+    fn exact_token_does_not_match_a_class_that_merely_contains_it() {
+        // "toc" as an exact token must not fire on "vector-toc-available".
+        let html = r#"<body><div class="vector-toc-available">Content</div></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("Content"), "got: {result}");
+    }
+
+    #[test]
+    fn share_price_and_shareholder_classes_are_not_removed_by_exact_share_token() {
+        let html = r#"<body>
+            <div class="share-price">$19.99</div>
+            <div class="shareholder-info">Info</div>
+        </body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("$19.99"), "got: {result}");
+        assert!(result.contains("Info"), "got: {result}");
+    }
+
+    #[test]
+    fn uncommented_class_is_not_removed_by_exact_comment_token() {
+        let html = r#"<body><div class="uncommented">Text</div></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("Text"));
+    }
+
+    // ── structural safety ─────────────────────────────────────────────────
+
+    #[test]
+    fn structural_elements_html_head_body_main_are_never_removed_by_noise_matching() {
+        let html = r#"<html class="ad-theme"><head></head><body class="sidebar-layout"><main class="related-widget"><p>Content</p></main></body></html>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("Content"), "got: {result}");
+    }
+
+    // ── malformed / truncated / empty / deeply nested HTML ──────────────────
+
+    #[test]
+    fn empty_document_does_not_panic() {
+        let result = clean_html("", true, &[], &[]).unwrap();
+        assert!(result.trim().is_empty());
+    }
+
+    #[test]
+    fn whitespace_only_document_does_not_panic() {
+        let result = clean_html("   \n\t  ", true, &[], &[]).unwrap();
+        assert!(!result.contains('<'));
+    }
+
+    #[test]
+    fn unclosed_tags_do_not_panic_and_content_survives() {
+        let html = r#"<body><div><p>Unclosed paragraph<div>Nested unclosed"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("Unclosed paragraph"));
+        assert!(result.contains("Nested unclosed"));
+    }
+
+    #[test]
+    fn truncated_mid_attribute_does_not_panic() {
+        let html = r#"<body><div class="incomp"#;
+        let result = clean_html(html, false, &[], &[]);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn mismatched_closing_tags_do_not_panic() {
+        let html = r#"<body><p>Text</div></span></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("Text"));
+    }
+
+    #[test]
+    fn deeply_nested_divs_do_not_overflow_and_preserve_innermost_text() {
+        let depth = 300;
+        let mut html = String::from("<body>");
+        for _ in 0..depth {
+            html.push_str("<div>");
+        }
+        html.push_str("deep content");
+        for _ in 0..depth {
+            html.push_str("</div>");
+        }
+        html.push_str("</body>");
+        let result = clean_html(&html, false, &[], &[]).unwrap();
+        assert!(result.contains("deep content"));
+    }
+
+    #[test]
+    fn deeply_nested_divs_with_exclude_tags_selector_does_not_overflow() {
+        // Exercises the recursive `collect_excluding` path at depth.
+        let depth = 300;
+        let mut html = String::from(r#"<body><div id="keep">"#);
+        for _ in 0..depth {
+            html.push_str("<div>");
+        }
+        html.push_str("deep content");
+        for _ in 0..depth {
+            html.push_str("</div>");
+        }
+        html.push_str(r#"</div><div class="drop">gone</div></body>"#);
+        let result = clean_html(&html, false, &[], &["div.drop".into()]).unwrap();
+        assert!(result.contains("deep content"));
+        assert!(!result.contains("gone"));
+    }
+
+    // ── unicode / emoji content ──────────────────────────────────────────
+
+    #[test]
+    fn unicode_and_emoji_content_survives_cleaning() {
+        let html = r#"<body><nav>Menu</nav><article><p>日本語のコンテンツ 😀 très bien</p></article></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("日本語のコンテンツ"));
+        assert!(result.contains("😀"));
+        assert!(result.contains("très bien"));
+        assert!(!result.contains("Menu"));
+    }
+
+    #[test]
+    fn unicode_class_names_are_handled_without_panic() {
+        let html = r#"<body><div class="広告">Ad-like unicode class</div><p>Content</p></body>"#;
+        let result = clean_html(html, true, &[], &[]).unwrap();
+        assert!(result.contains("Content"));
+    }
+
+    // ── include_tags / exclude_tags combinations ─────────────────────────
+
+    #[test]
+    fn include_tags_joins_multiple_matches_with_a_newline() {
+        let html = r#"<body><p class="a">First</p><p class="b">Second</p></body>"#;
+        let result = clean_html(html, false, &[".a".into(), ".b".into()], &[]).unwrap();
+        assert!(result.contains("First"));
+        assert!(result.contains("Second"));
+        assert!(result.contains('\n'));
+    }
+
+    #[test]
+    fn include_tags_invalid_selector_mixed_with_valid_one_still_matches() {
+        let html = r#"<body><p class="a">Kept</p></body>"#;
+        let mut warnings = Vec::new();
+        let result = clean_html_with_warnings(
+            html,
+            false,
+            &["[[[invalid".into(), ".a".into()],
+            &[],
+            &mut warnings,
+        )
+        .unwrap();
+        assert!(result.contains("Kept"));
+        assert!(warnings.is_empty(), "a valid match must not warn");
+    }
+
+    #[test]
+    fn include_tags_all_invalid_selectors_returns_empty_and_warns() {
+        let html = r#"<body><p>Content</p></body>"#;
+        let mut warnings = Vec::new();
+        let result =
+            clean_html_with_warnings(html, false, &["[[[invalid".into()], &[], &mut warnings)
+                .unwrap();
+        assert!(result.trim().is_empty());
+        assert!(warnings.iter().any(|w| w == "selector_no_match"));
+    }
+
+    #[test]
+    fn exclude_tags_with_an_invalid_selector_is_a_no_op_for_that_selector() {
+        let html = r#"<body><div class="ad">Ad</div><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &["[[[invalid".into()]).unwrap();
+        assert!(result.contains("Ad"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn exclude_tags_empty_list_leaves_document_unchanged_by_phase3() {
+        let html = r#"<body><div class="ad">Ad</div></body>"#;
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("Ad"));
+    }
+
+    #[test]
+    fn include_then_exclude_applies_exclude_within_the_included_subset() {
+        let html = r#"<body>
+            <article><p class="ad">Ad inside article</p><p>Real text</p></article>
+            <nav>Nav</nav>
+        </body>"#;
+        let result = clean_html(html, false, &["article".into()], &["p.ad".into()]).unwrap();
+        assert!(!result.contains("Nav"));
+        assert!(!result.contains("Ad inside article"));
+        assert!(result.contains("Real text"));
+    }
+
+    #[test]
+    fn exclude_tags_removes_a_whole_subtree_not_just_the_matched_element() {
+        let html = r#"<body><div class="ad"><span>Nested</span><b>Also nested</b></div><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &["div.ad".into()]).unwrap();
+        assert!(!result.contains("Nested"));
+        assert!(!result.contains("Also nested"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn exclude_tags_by_id_selector() {
+        let html = r#"<body><div id="cookie-banner">Accept cookies</div><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &["#cookie-banner".into()]).unwrap();
+        assert!(!result.contains("Accept cookies"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn exclude_tags_preserves_self_closing_tags_without_a_closing_tag() {
+        let html = r#"<body><p>Line<br>break</p><hr><img src="x.png"><p>Content</p></body>"#;
+        let result = clean_html(html, false, &[], &["p.does-not-exist".into()]).unwrap();
+        assert!(!result.contains("</br>"));
+        assert!(!result.contains("</hr>"));
+        assert!(!result.contains("</img>"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn exclude_tags_escapes_double_quotes_in_attribute_values() {
+        let html = r#"<body><div title="say &quot;hi&quot;" class="keep">Content</div></body>"#;
+        let result = clean_html(html, false, &[], &["p.does-not-exist".into()]).unwrap();
+        assert!(result.contains("&quot;hi&quot;") || result.contains("say"));
+        assert!(result.contains("Content"));
+    }
+
+    #[test]
+    fn include_tags_selector_matching_nothing_among_several_still_returns_the_other_matches() {
+        let html = r#"<body><p class="a">Kept</p></body>"#;
+        let mut warnings = Vec::new();
+        let result = clean_html_with_warnings(
+            html,
+            false,
+            &[".does-not-exist".into(), ".a".into()],
+            &[],
+            &mut warnings,
+        )
+        .unwrap();
+        assert!(result.contains("Kept"));
+        assert!(
+            warnings.is_empty(),
+            "at least one selector matched, so no selector_no_match warning"
+        );
+    }
+
+    // ── whitespace ────────────────────────────────────────────────────────
+
+    #[test]
+    fn clean_html_does_not_collapse_internal_whitespace_itself() {
+        // clean_html operates on markup, not text normalization; it must not
+        // silently mangle whitespace inside a text node.
+        let html = "<body><p>a   b</p></body>";
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("a   b"), "got: {result}");
+    }
+
+    #[test]
+    fn leading_and_trailing_document_whitespace_is_preserved_around_content() {
+        let html = "\n\n<body><p>Content</p></body>\n\n";
+        let result = clean_html(html, false, &[], &[]).unwrap();
+        assert!(result.contains("Content"));
+    }
 }

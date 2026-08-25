@@ -787,4 +787,528 @@ mod tests {
         assert!(!out.is_empty());
         assert_eq!(out.len(), 2);
     }
+
+    // --- norm / fold_diacritic ---
+
+    #[test]
+    fn norm_lowercases_and_folds_common_latin_diacritics() {
+        assert_eq!(norm("Beograd São Zürich"), "beograd sao zurich");
+    }
+
+    #[test]
+    fn norm_leaves_unmapped_diacritics_unchanged() {
+        // Only the corpus's common Latin accents are folded (see the module
+        // comment); a character like "ø" has no mapping and passes through.
+        assert_eq!(norm("Malmø"), "malmø");
+    }
+
+    #[test]
+    fn norm_passes_non_latin_scripts_through() {
+        assert_eq!(norm("東京 Tokyo"), "東京 tokyo");
+    }
+
+    #[test]
+    fn norm_empty_string_is_empty() {
+        assert_eq!(norm(""), "");
+    }
+
+    // --- toks ---
+
+    #[test]
+    fn toks_splits_on_punctuation_and_drops_empty_segments() {
+        assert_eq!(toks("rust, async--tokio!!"), vec!["rust", "async", "tokio"]);
+    }
+
+    #[test]
+    fn toks_lowercases_input() {
+        assert_eq!(toks("RUST Async"), vec!["rust", "async"]);
+    }
+
+    // BUG: `toks` splits on `!c.is_ascii_alphanumeric()`, so any non-ASCII
+    // character (every CJK codepoint) is treated as a separator rather than
+    // as part of a token. A CJK-only string therefore tokenizes to nothing,
+    // silently dropping all content instead of producing CJK tokens.
+    #[test]
+    fn toks_cjk_only_content_yields_no_tokens() {
+        assert!(toks("日本語のタイトル").is_empty());
+    }
+
+    // BUG: same root cause as above — the CJK portion of a mixed string
+    // vanishes entirely rather than surviving as its own token(s).
+    #[test]
+    fn toks_mixed_ascii_and_cjk_drops_the_cjk_portion() {
+        assert_eq!(toks("hello 世界 world"), vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn toks_handles_a_very_long_string_without_panicking() {
+        let long = "word ".repeat(5_000);
+        let out = toks(&long);
+        assert_eq!(out.len(), 5_000);
+        assert!(out.iter().all(|t| t == "word"));
+    }
+
+    #[test]
+    fn toks_keeps_mixed_alphanumeric_tokens_together() {
+        assert_eq!(toks("a 3d model v2"), vec!["a", "3d", "model", "v2"]);
+    }
+
+    // --- domain ---
+
+    #[test]
+    fn domain_handles_userinfo_in_the_authority() {
+        assert_eq!(
+            domain("https://user:pass@Host.Example.com/x"),
+            "host.example.com"
+        );
+    }
+
+    #[test]
+    fn domain_empty_for_a_url_without_a_double_slash() {
+        assert_eq!(domain("not-a-url"), "");
+    }
+
+    #[test]
+    fn domain_works_on_a_scheme_relative_url() {
+        assert_eq!(domain("//Example.com/path"), "example.com");
+    }
+
+    #[test]
+    fn domain_empty_path_after_host_is_fine() {
+        assert_eq!(domain("https://example.com"), "example.com");
+    }
+
+    // --- registrable ---
+
+    #[test]
+    fn registrable_keeps_a_single_label_host_unchanged() {
+        assert_eq!(registrable("http://localhost:8080/x"), "localhost");
+    }
+
+    #[test]
+    fn registrable_uses_the_naive_last_two_labels_on_a_multi_label_suffix() {
+        // Documented limitation (see the function's doc comment): no public
+        // suffix list, so a `co.uk`-style host collapses to "co.uk", not the
+        // real registrable domain. Locking in the current, intentional rule.
+        assert_eq!(registrable("https://www.bbc.co.uk/news"), "co.uk");
+    }
+
+    // --- is_junk ---
+
+    #[test]
+    fn is_junk_matches_a_myshopify_suffix() {
+        let r = row("https://mystore.myshopify.com/", "My Store", "", vec![1]);
+        assert!(is_junk(&r));
+    }
+
+    #[test]
+    fn is_junk_ignores_a_domain_that_merely_ends_with_the_shopify_suffix() {
+        // `ends_with` is a raw string suffix check, not a subdomain boundary
+        // check, so any host literally ending in "myshopify.com" is caught
+        // even when it isn't on the Shopify platform. Documents the coarse
+        // match rather than a per-label comparison.
+        let r = row(
+            "https://totallynotmyshopify.com/",
+            "Totally Not Shopify",
+            "",
+            vec![1],
+        );
+        assert!(is_junk(&r));
+    }
+
+    #[test]
+    fn is_junk_asset_leak_paths_are_dropped() {
+        for path in [
+            "https://example.com/mapfiles/marker.png",
+            "https://example.com/apple-app-site-association/",
+            "https://example.com/.well-known/security.txt",
+        ] {
+            let r = row(path, "Some Title", "some content", vec![1]);
+            assert!(is_junk(&r), "{path} should be flagged as an asset leak");
+        }
+    }
+
+    #[test]
+    fn is_junk_dictionary_keyword_ignored_once_title_exceeds_six_tokens() {
+        // The dictionary-title heuristic only fires on short (<=6 token)
+        // titles; a longer title carrying "definition" as an incidental word
+        // must not be flagged.
+        let r = row(
+            "https://real-blog.com/post",
+            "A Complete Definition of Rust Ownership and Borrowing Rules",
+            "an in-depth guide",
+            vec![1],
+        );
+        assert!(!is_junk(&r));
+    }
+
+    #[test]
+    fn is_junk_bot_check_title_match_is_case_insensitive() {
+        let r = row("https://example.com/", "JUST A MOMENT...", "", vec![1]);
+        assert!(is_junk(&r));
+    }
+
+    #[test]
+    fn is_junk_false_for_a_url_missing_a_scheme() {
+        let r = row("not-a-url", "A Real Result", "real content here", vec![1]);
+        assert!(!is_junk(&r));
+    }
+
+    // --- covers / coverage_count ---
+
+    #[test]
+    fn covers_is_true_with_no_important_terms() {
+        let r = row("https://a.com/", "anything", "anything", vec![1]);
+        assert!(covers(&r, &HashSet::new()));
+    }
+
+    #[test]
+    fn covers_boundary_at_exactly_min_coverage() {
+        let important: HashSet<String> = ["pizza".to_string(), "belgrade".to_string()]
+            .into_iter()
+            .collect();
+        // 1 of 2 terms = 0.5, and MIN_COVERAGE is inclusive.
+        let r = row(
+            "https://a.com/",
+            "pizza reviews",
+            "only pizza, no city",
+            vec![1],
+        );
+        assert!(covers(&r, &important));
+    }
+
+    #[test]
+    fn covers_false_just_below_min_coverage() {
+        let important: HashSet<String> = ["a".to_string(), "b".to_string(), "c".to_string()]
+            .into_iter()
+            .collect();
+        // 1 of 3 = 0.333, below the 0.5 threshold.
+        let r = row("https://a.com/", "a only", "a only", vec![1]);
+        assert!(!covers(&r, &important));
+    }
+
+    #[test]
+    fn coverage_count_counts_distinct_terms_not_occurrences() {
+        let important: HashSet<String> = ["pizza".to_string(), "belgrade".to_string()]
+            .into_iter()
+            .collect();
+        let r = row(
+            "https://a.com/",
+            "pizza pizza pizza",
+            "pizza everywhere, no city mentioned",
+            vec![1],
+        );
+        assert_eq!(coverage_count(&r, &important), 1);
+    }
+
+    #[test]
+    fn coverage_count_zero_with_no_important_terms() {
+        let r = row("https://a.com/", "anything", "anything", vec![1]);
+        assert_eq!(coverage_count(&r, &HashSet::new()), 0);
+    }
+
+    // --- geo_for / geo_competing ---
+
+    #[test]
+    fn geo_for_returns_empty_for_an_unrelated_query() {
+        let (region, competing) = geo_for("best pizza recipe");
+        assert!(region.is_empty());
+        assert!(competing.is_empty());
+    }
+
+    // BUG: the GEO table's key for this entry is the literal token "belgrad"
+    // (German spelling), and `geo_for` matches only via exact token equality
+    // (`qn.contains(*key)`), with a hardcoded special case ONLY for "danang".
+    // A query using the ordinary English spelling "belgrade" never produces
+    // the token "belgrad", so the entry — whose whole stated purpose is
+    // guarding "belgrade" pizza queries against the Istanbul-forest homonym
+    // (see the module's `GEO` doc comment) — never actually fires for that
+    // spelling.
+    #[test]
+    fn geo_for_belgrade_spelling_does_not_trigger_the_belgrad_entry() {
+        let (region, competing) = geo_for("best pizza in belgrade");
+        assert!(region.is_empty());
+        assert!(competing.is_empty());
+    }
+
+    #[test]
+    fn geo_for_matches_the_literal_belgrad_spelling() {
+        let (region, competing) = geo_for("restaurants in belgrad");
+        assert_eq!(region, &["belgrade", "beograd", "serbia"]);
+        assert!(competing.contains(&"istanbul"));
+    }
+
+    #[test]
+    fn geo_for_danang_matches_via_the_two_word_nang_token() {
+        // "Da Nang" tokenizes to ["da", "nang"]; the explicit special case
+        // for this entry matches on the "nang" token even without the exact
+        // "danang" key present.
+        let (region, _competing) = geo_for("things to do in da nang");
+        assert_eq!(region, &["nang", "danang", "vietnam"]);
+    }
+
+    #[test]
+    fn geo_competing_false_when_the_competing_list_is_empty() {
+        let r = row("https://a.com/", "lisbon guide", "lisbon portugal", vec![1]);
+        assert!(!geo_competing(&r, &[]));
+    }
+
+    #[test]
+    fn geo_competing_detects_a_token_anywhere_in_title_content_or_url() {
+        let in_title = row("https://a.com/", "istanbul forest walk", "trees", vec![1]);
+        let in_content = row("https://a.com/", "a forest walk", "near istanbul", vec![1]);
+        let in_url = row("https://istanbul-guide.com/", "a walk", "trees", vec![1]);
+        for r in [in_title, in_content, in_url] {
+            assert!(geo_competing(&r, &["istanbul"]));
+        }
+    }
+
+    // --- rrf / minmax / doc_tokens / bm25_lite (disabled but retained) ---
+
+    #[test]
+    fn rrf_uses_the_single_vote_constant_with_no_positions() {
+        let r = row("https://a.com/", "t", "c", vec![]);
+        assert_eq!(rrf(&r), 1.0 / (K_RRF + 1.0));
+    }
+
+    #[test]
+    fn rrf_sums_reciprocal_rank_over_multiple_positions() {
+        let r = row("https://a.com/", "t", "c", vec![1, 2]);
+        let expected = 1.0 / (K_RRF + 1.0) + 1.0 / (K_RRF + 2.0);
+        assert!((rrf(&r) - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn minmax_collapsed_range_returns_constant_zero() {
+        let f = minmax(&[5.0, 5.0, 5.0]);
+        assert_eq!(f(5.0), 0.0);
+        assert_eq!(f(0.0), 0.0);
+    }
+
+    #[test]
+    fn minmax_normalizes_into_the_unit_range() {
+        let f = minmax(&[0.0, 10.0]);
+        assert_eq!(f(0.0), 0.0);
+        assert_eq!(f(10.0), 1.0);
+        assert_eq!(f(5.0), 0.5);
+    }
+
+    #[test]
+    fn doc_tokens_weights_the_title_twice() {
+        let r = row("https://a.com/", "rust guide", "async tokio", vec![1]);
+        let d = doc_tokens(&r);
+        assert_eq!(d.iter().filter(|t| t.as_str() == "rust").count(), 2);
+        assert_eq!(d.iter().filter(|t| t.as_str() == "guide").count(), 2);
+        assert_eq!(d.iter().filter(|t| t.as_str() == "async").count(), 1);
+    }
+
+    #[test]
+    fn bm25_lite_zero_relevance_with_no_important_terms() {
+        let a = row("https://a.com/", "rust async", "tokio runtime", vec![1]);
+        let b = row("https://b.com/", "cooking", "recipes", vec![2]);
+        let rows = [&a, &b];
+        let scores = bm25_lite(&rows, &HashSet::new());
+        assert_eq!(scores, vec![0.0, 0.0]);
+    }
+
+    // --- important_terms ---
+
+    #[test]
+    fn important_terms_strips_stopwords_case_insensitively() {
+        let terms = important_terms("How Do You Make The Best Pizza");
+        assert_eq!(
+            terms,
+            HashSet::from(["make".to_string(), "pizza".to_string()])
+        );
+    }
+
+    #[test]
+    fn important_terms_empty_when_the_whole_query_is_stopwords() {
+        assert!(important_terms("the of in and a").is_empty());
+    }
+
+    // --- rerank / rerank_relevance: determinism, ties, edge inputs ---
+
+    #[test]
+    fn rerank_is_deterministic_across_repeated_calls() {
+        let rows = vec![
+            row("https://a.com/1", "alpha beta", "alpha beta", vec![1]),
+            row("https://b.com/1", "alpha beta", "alpha beta", vec![2]),
+            row("https://c.com/1", "alpha beta", "alpha beta", vec![3]),
+        ];
+        let first = rerank(&rows, "alpha beta");
+        for _ in 0..5 {
+            let again = rerank(&rows, "alpha beta");
+            assert_eq!(
+                again.iter().map(|r| url_of(r)).collect::<Vec<_>>(),
+                first.iter().map(|r| url_of(r)).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn rerank_stable_sort_preserves_input_order_on_score_ties() {
+        // All three rows share the default score of 1.0 from `row()`, so the
+        // stable sort must keep them in their original input order.
+        let rows = vec![
+            row("https://a.com/1", "alpha beta", "alpha beta", vec![1]),
+            row("https://b.com/1", "alpha beta", "alpha beta", vec![2]),
+            row("https://c.com/1", "alpha beta", "alpha beta", vec![3]),
+        ];
+        let out = rerank(&rows, "alpha beta");
+        assert_eq!(
+            out.iter().map(|r| url_of(r)).collect::<Vec<_>>(),
+            vec!["https://a.com/1", "https://b.com/1", "https://c.com/1"]
+        );
+    }
+
+    #[test]
+    fn rerank_single_item_pool_is_returned_unchanged() {
+        let rows = vec![row("https://a.com/1", "alpha", "alpha content", vec![1])];
+        let out = rerank(&rows, "alpha");
+        assert_eq!(out.len(), 1);
+        assert_eq!(url_of(out[0]), "https://a.com/1");
+    }
+
+    #[test]
+    fn rerank_missing_score_ranks_below_a_positive_score() {
+        let mut with_score = row("https://a.com/1", "alpha beta", "alpha beta", vec![1]);
+        with_score.score = Some(0.9);
+        let mut no_score = row("https://b.com/1", "alpha beta", "alpha beta", vec![2]);
+        no_score.score = None;
+        let rows = [with_score, no_score];
+        let out = rerank(&rows, "alpha beta");
+        assert_eq!(url_of(out[0]), "https://a.com/1");
+        assert_eq!(url_of(out[1]), "https://b.com/1");
+    }
+
+    #[test]
+    fn rerank_nan_score_does_not_panic_and_the_row_survives() {
+        let mut nan_row = row("https://a.com/1", "alpha beta", "alpha beta", vec![1]);
+        nan_row.score = Some(f64::NAN);
+        let normal = row("https://b.com/1", "alpha beta", "alpha beta", vec![2]);
+        let rows = [nan_row, normal];
+        let out = rerank(&rows, "alpha beta");
+        // `partial_cmp` on NaN returns None, which the sort comparator falls
+        // back to `Equal` for — must not panic, and both distinct-domain rows
+        // must survive regardless of the order NaN happens to land in.
+        assert_eq!(out.len(), 2);
+        let doms: HashSet<String> = out.iter().map(|r| registrable(url_of(r))).collect();
+        assert_eq!(
+            doms,
+            HashSet::from(["a.com".to_string(), "b.com".to_string()])
+        );
+    }
+
+    #[test]
+    fn rerank_large_pool_sorts_descending_without_panicking() {
+        let rows: Vec<SearxngResult> = (0..500)
+            .map(|i| {
+                let mut r = row(
+                    &format!("https://site{i}.com/1"),
+                    "alpha beta",
+                    "alpha beta content",
+                    vec![1],
+                );
+                r.score = Some(i as f64);
+                r
+            })
+            .collect();
+        let out = rerank(&rows, "alpha beta");
+        assert_eq!(out.len(), 500);
+        // Descending by score: site499 (score 499.0) must come first.
+        assert_eq!(url_of(out[0]), "https://site499.com/1");
+        assert_eq!(url_of(out[out.len() - 1]), "https://site0.com/1");
+    }
+
+    #[test]
+    fn rerank_never_drops_a_distinct_domain_non_junk_covering_row() {
+        let rows: Vec<SearxngResult> = (0..20)
+            .map(|i| {
+                row(
+                    &format!("https://site{i}.com/1"),
+                    "alpha beta guide",
+                    "alpha beta content",
+                    vec![1],
+                )
+            })
+            .collect();
+        let out = rerank(&rows, "alpha beta");
+        assert_eq!(out.len(), 20);
+    }
+
+    #[test]
+    fn rerank_cjk_query_does_not_panic_though_tokens_are_dropped() {
+        // See the `toks` BUG notes above: a CJK query produces zero important
+        // terms, so the coverage/geo guards become no-ops and every non-junk
+        // row survives regardless of whether it actually matches the query.
+        let rows = vec![
+            row("https://a.com/1", "日本語のタイトル", "本文です", vec![1]),
+            row(
+                "https://b.com/1",
+                "unrelated english title",
+                "nothing to do with it",
+                vec![2],
+            ),
+        ];
+        let out = rerank(&rows, "日本語");
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn rerank_relevance_is_deterministic_across_repeated_calls() {
+        let rows = vec![
+            row(
+                "https://a.com/1",
+                "pizza belgrade",
+                "pizza belgrade serbia",
+                vec![1],
+            ),
+            row(
+                "https://b.com/1",
+                "pizza redmond",
+                "pizza redmond washington",
+                vec![2],
+            ),
+        ];
+        let first = rerank_relevance(&rows, "best pizza in belgrade");
+        for _ in 0..5 {
+            let again = rerank_relevance(&rows, "best pizza in belgrade");
+            assert_eq!(
+                again.iter().map(|r| url_of(r)).collect::<Vec<_>>(),
+                first.iter().map(|r| url_of(r)).collect::<Vec<_>>(),
+            );
+        }
+    }
+
+    #[test]
+    fn rerank_relevance_single_item_pool_is_returned_unchanged() {
+        let rows = vec![row(
+            "https://a.com/1",
+            "pizza belgrade",
+            "pizza belgrade",
+            vec![1],
+        )];
+        let out = rerank_relevance(&rows, "pizza belgrade");
+        assert_eq!(out.len(), 1);
+    }
+
+    // BUG: the doc comment on [`rerank_relevance`] promises a coverage gate
+    // with "one-term slack" — keep rows `>= max_cov - 1` once `max_cov >= 2`,
+    // specifically so a row missing exactly one query term is not evicted.
+    // The actual gate in `rerank_core` filters on `c == max_cov` (hard
+    // equality), so a row one term short of the maximum IS evicted. This
+    // locks in the current (stricter-than-documented) behavior.
+    #[test]
+    fn relevance_gate_hard_equality_contradicts_the_documented_one_term_slack() {
+        let full = row("https://full.com/1", "a b c", "a b c", vec![1]); // coverage 3/3
+        let one_short = row("https://short.com/1", "a b", "a b", vec![2]); // coverage 2/3
+        let rows = [full, one_short];
+        let out = rerank_relevance(&rows, "a b c");
+        let doms: HashSet<String> = out.iter().map(|r| registrable(url_of(r))).collect();
+        assert!(doms.contains("full.com"));
+        // Per the doc comment, a row at max_cov - 1 (with max_cov >= 2)
+        // should survive; the code evicts it instead.
+        assert!(!doms.contains("short.com"));
+    }
 }

@@ -5870,4 +5870,1440 @@ mod tests {
             "the CF-challenge thin ladder result must ship unchanged (byte-identical to today)"
         );
     }
+
+    // =====================================================================
+    // Pure-function coverage: host_of, pick_ua, renderer_kind_for,
+    // classify_renderer_error, tier_timeouts_from, credit_for,
+    // stamp_http_decision, has_recovery_tier, is_fingerprint_vendor_wall,
+    // is_origin_navigation_failure, is_soft_block_status,
+    // renderer_can_screenshot, screenshot task-locals, is_html_like_content_type.
+    // None of these need a browser, network, or sleep — every case below is
+    // deterministic given the source they exercise.
+    // =====================================================================
+
+    use crw_extract::antibot::AntibotSignal;
+
+    // -- host_of --------------------------------------------------------
+
+    #[test]
+    fn host_of_plain_https() {
+        assert_eq!(host_of("https://example.com/path"), "example.com");
+    }
+
+    #[test]
+    fn host_of_ignores_port() {
+        assert_eq!(host_of("http://example.com:8080/x"), "example.com");
+    }
+
+    #[test]
+    fn host_of_ignores_query_and_fragment() {
+        assert_eq!(
+            host_of("https://example.com/path?q=1&x=2#frag"),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn host_of_lowercases_the_host() {
+        // WHATWG URL parsing lowercases the host; this matters because host
+        // preferences / breakers key on this string and must not fork state
+        // for "Example.com" vs "example.com".
+        assert_eq!(host_of("https://Example.COM/x"), "example.com");
+    }
+
+    #[test]
+    fn host_of_strips_userinfo() {
+        assert_eq!(host_of("https://user:pass@example.com/x"), "example.com");
+    }
+
+    #[test]
+    fn host_of_works_for_non_http_schemes() {
+        assert_eq!(host_of("ftp://example.com/x"), "example.com");
+    }
+
+    #[test]
+    fn host_of_ipv4_literal() {
+        assert_eq!(host_of("https://192.168.1.1:3000/"), "192.168.1.1");
+    }
+
+    #[test]
+    fn host_of_ipv6_literal() {
+        assert_eq!(host_of("https://[::1]:9222/"), "[::1]");
+    }
+
+    #[test]
+    fn host_of_punycode_idn_host() {
+        // A non-ASCII host is normalized to its punycode (xn--) form by the
+        // URL parser; host_of must not panic or return the raw unicode.
+        let host = host_of("https://xn--nxasmq6b.example/");
+        assert_eq!(host, "xn--nxasmq6b.example");
+    }
+
+    #[test]
+    fn host_of_unicode_host_gets_punycode_encoded() {
+        let host = host_of("https://\u{4f8b}\u{3048}.test/");
+        assert!(
+            host.starts_with("xn--"),
+            "unicode host must come back punycode-encoded, got {host:?}"
+        );
+    }
+
+    #[test]
+    fn host_of_malformed_url_returns_empty_string() {
+        assert_eq!(host_of("not a url at all"), "");
+    }
+
+    #[test]
+    fn host_of_empty_string_returns_empty_string() {
+        assert_eq!(host_of(""), "");
+    }
+
+    #[test]
+    fn host_of_scheme_relative_string_returns_empty_string() {
+        // No scheme at all — `Url::parse` requires an absolute URL.
+        assert_eq!(host_of("example.com/path"), "");
+    }
+
+    // -- pick_ua ----------------------------------------------------------
+
+    #[test]
+    fn pick_ua_disabled_stealth_always_returns_default() {
+        let stealth = StealthConfig {
+            enabled: false,
+            ..StealthConfig::default()
+        };
+        for _ in 0..10 {
+            assert_eq!(pick_ua("my-default-ua/1.0", &stealth), "my-default-ua/1.0");
+        }
+    }
+
+    #[test]
+    fn pick_ua_enabled_with_custom_pool_stays_within_pool() {
+        let pool = vec!["ua-a".to_string(), "ua-b".to_string(), "ua-c".to_string()];
+        let stealth = StealthConfig {
+            enabled: true,
+            user_agents: pool.clone(),
+            ..StealthConfig::default()
+        };
+        for _ in 0..30 {
+            let picked = pick_ua("default", &stealth);
+            assert!(pool.contains(&picked), "{picked} not in configured pool");
+        }
+    }
+
+    #[test]
+    fn pick_ua_enabled_with_single_item_pool_is_deterministic() {
+        let stealth = StealthConfig {
+            enabled: true,
+            user_agents: vec!["only-one".to_string()],
+            ..StealthConfig::default()
+        };
+        assert_eq!(pick_ua("default", &stealth), "only-one");
+    }
+
+    #[test]
+    fn pick_ua_enabled_with_empty_pool_falls_back_to_builtin() {
+        let stealth = StealthConfig {
+            enabled: true,
+            user_agents: Vec::new(),
+            ..StealthConfig::default()
+        };
+        for _ in 0..30 {
+            let picked = pick_ua("default", &stealth);
+            assert!(
+                BUILTIN_UA_POOL.contains(&picked.as_str()),
+                "{picked} not in BUILTIN_UA_POOL"
+            );
+        }
+    }
+
+    // -- renderer_kind_for --------------------------------------------------
+
+    #[test]
+    fn renderer_kind_for_http() {
+        assert_eq!(renderer_kind_for("http"), Some(RendererKind::Http));
+    }
+
+    #[test]
+    fn renderer_kind_for_http_only_fallback_maps_to_http() {
+        assert_eq!(
+            renderer_kind_for("http_only_fallback"),
+            Some(RendererKind::Http)
+        );
+    }
+
+    #[test]
+    fn renderer_kind_for_lightpanda() {
+        assert_eq!(
+            renderer_kind_for("lightpanda"),
+            Some(RendererKind::Lightpanda)
+        );
+    }
+
+    #[test]
+    fn renderer_kind_for_chrome() {
+        assert_eq!(renderer_kind_for("chrome"), Some(RendererKind::Chrome));
+    }
+
+    #[test]
+    fn renderer_kind_for_chrome_proxy() {
+        assert_eq!(
+            renderer_kind_for("chrome_proxy"),
+            Some(RendererKind::ChromeProxy)
+        );
+    }
+
+    #[test]
+    fn renderer_kind_for_camoufox() {
+        assert_eq!(renderer_kind_for("camoufox"), Some(RendererKind::Camoufox));
+    }
+
+    #[test]
+    fn renderer_kind_for_cloak() {
+        assert_eq!(renderer_kind_for("cloak"), Some(RendererKind::Cloak));
+    }
+
+    #[test]
+    fn renderer_kind_for_playwright_is_untracked() {
+        // Doc comment: playwright is treated as a JS renderer but is not
+        // tracked in metrics/preferences.
+        assert_eq!(renderer_kind_for("playwright"), None);
+    }
+
+    #[test]
+    fn renderer_kind_for_unknown_name_is_none() {
+        assert_eq!(renderer_kind_for("some_future_renderer"), None);
+    }
+
+    #[test]
+    fn renderer_kind_for_empty_string_is_none() {
+        assert_eq!(renderer_kind_for(""), None);
+    }
+
+    #[test]
+    fn renderer_kind_for_is_case_sensitive() {
+        assert_eq!(renderer_kind_for("Chrome"), None);
+        assert_eq!(renderer_kind_for("CHROME"), None);
+    }
+
+    // -- classify_renderer_error --------------------------------------------
+
+    #[test]
+    fn classify_renderer_error_timeout() {
+        assert_eq!(
+            classify_renderer_error(&CrwError::Timeout(1000)),
+            FailoverErrorKind::LightpandaTimeout
+        );
+    }
+
+    #[test]
+    fn classify_renderer_error_target_unreachable() {
+        assert_eq!(
+            classify_renderer_error(&CrwError::TargetUnreachable("dead".into())),
+            FailoverErrorKind::NetworkError
+        );
+    }
+
+    #[test]
+    fn classify_renderer_error_http_error() {
+        assert_eq!(
+            classify_renderer_error(&CrwError::HttpError("connection reset".into())),
+            FailoverErrorKind::NetworkError
+        );
+    }
+
+    #[test]
+    fn classify_renderer_error_renderer_error_is_lightpanda_crash() {
+        assert_eq!(
+            classify_renderer_error(&CrwError::RendererError("ws disconnected".into())),
+            FailoverErrorKind::LightpandaCrash
+        );
+    }
+
+    #[test]
+    fn classify_renderer_error_invalid_request_is_other() {
+        // `Other` does NOT count for promotion — an invalid request is our
+        // caller's mistake, not a LightPanda-attributable failure.
+        assert_eq!(
+            classify_renderer_error(&CrwError::InvalidRequest("bad url".into())),
+            FailoverErrorKind::Other
+        );
+    }
+
+    #[test]
+    fn classify_renderer_error_rate_limited_is_other() {
+        assert_eq!(
+            classify_renderer_error(&CrwError::RateLimited),
+            FailoverErrorKind::Other
+        );
+    }
+
+    #[test]
+    fn classify_renderer_error_not_found_is_other() {
+        assert_eq!(
+            classify_renderer_error(&CrwError::NotFound("x".into())),
+            FailoverErrorKind::Other
+        );
+    }
+
+    // -- tier_timeouts_from ---------------------------------------------
+
+    #[test]
+    fn tier_timeouts_from_reflects_explicit_overrides() {
+        let cfg = RendererConfig {
+            http_timeout_ms: Some(1_111),
+            lightpanda_timeout_ms: Some(2_222),
+            chrome_timeout_ms: Some(3_333),
+            chrome_proxy_timeout_ms: Some(4_444),
+            camoufox_timeout_ms: Some(5_555),
+            cloak_timeout_ms: Some(6_666),
+            ..Default::default()
+        };
+        let m = tier_timeouts_from(&cfg);
+        assert_eq!(m.len(), 6, "one entry per renderer tier");
+        assert_eq!(m[&RendererKind::Http], Duration::from_millis(1_111));
+        assert_eq!(m[&RendererKind::Lightpanda], Duration::from_millis(2_222));
+        assert_eq!(m[&RendererKind::Chrome], Duration::from_millis(3_333));
+        assert_eq!(m[&RendererKind::ChromeProxy], Duration::from_millis(4_444));
+        assert_eq!(m[&RendererKind::Camoufox], Duration::from_millis(5_555));
+        assert_eq!(m[&RendererKind::Cloak], Duration::from_millis(6_666));
+    }
+
+    #[test]
+    fn tier_timeouts_from_default_config_matches_getters() {
+        // Self-consistency check that doesn't hardcode the actual default
+        // millisecond values (which live in crw-core and can change).
+        let cfg = RendererConfig::default();
+        let m = tier_timeouts_from(&cfg);
+        assert_eq!(
+            m[&RendererKind::Http],
+            Duration::from_millis(cfg.http_timeout())
+        );
+        assert_eq!(
+            m[&RendererKind::Lightpanda],
+            Duration::from_millis(cfg.lightpanda_timeout())
+        );
+        assert_eq!(
+            m[&RendererKind::Chrome],
+            Duration::from_millis(cfg.chrome_timeout())
+        );
+        assert_eq!(
+            m[&RendererKind::ChromeProxy],
+            Duration::from_millis(cfg.chrome_proxy_timeout())
+        );
+        assert_eq!(
+            m[&RendererKind::Camoufox],
+            Duration::from_millis(cfg.camoufox_timeout())
+        );
+        assert_eq!(
+            m[&RendererKind::Cloak],
+            Duration::from_millis(cfg.cloak_timeout())
+        );
+    }
+
+    #[test]
+    fn tier_timeouts_from_contains_every_kind_exactly_once() {
+        let cfg = RendererConfig::default();
+        let m = tier_timeouts_from(&cfg);
+        for kind in [
+            RendererKind::Http,
+            RendererKind::Lightpanda,
+            RendererKind::Chrome,
+            RendererKind::ChromeProxy,
+            RendererKind::Camoufox,
+            RendererKind::Cloak,
+        ] {
+            assert!(m.contains_key(&kind), "missing entry for {kind:?}");
+        }
+    }
+
+    // -- credit_for -----------------------------------------------------
+
+    #[test]
+    fn credit_for_is_flat_one_for_every_kind() {
+        // Flat 1-credit-per-page invariant: the SaaS bills exactly 1 credit
+        // per scrape regardless of which tier served it.
+        for kind in [
+            RendererKind::Http,
+            RendererKind::Lightpanda,
+            RendererKind::Chrome,
+            RendererKind::ChromeProxy,
+            RendererKind::Camoufox,
+            RendererKind::Cloak,
+        ] {
+            assert_eq!(credit_for(kind), 1, "{kind:?} must cost exactly 1 credit");
+        }
+    }
+
+    // -- stamp_http_decision ---------------------------------------------
+
+    fn fr(status: u16, html: &str) -> FetchResult {
+        FetchResult {
+            url: "https://example.com".to_string(),
+            final_url: None,
+            status_code: status,
+            html: html.to_string(),
+            content_type: Some("text/html".to_string()),
+            raw_bytes: None,
+            rendered_with: None,
+            elapsed_ms: 0,
+            warning: None,
+            render_decision: None,
+            credit_cost: 0,
+            warnings: Vec::new(),
+            truncated: false,
+            deadline_exceeded: false,
+            captured_responses: Vec::new(),
+            screenshot: None,
+        }
+    }
+
+    #[test]
+    fn stamp_http_decision_pinned_http_is_user_pinned() {
+        let mut result = fr(200, "<html></html>");
+        stamp_http_decision(&mut result, Some("http"));
+        assert_eq!(result.credit_cost, 1);
+        assert_eq!(
+            result.render_decision,
+            Some(RenderDecision::UserPinned {
+                renderer: RendererKind::Http
+            })
+        );
+    }
+
+    #[test]
+    fn stamp_http_decision_no_requested_renderer_is_auto_default() {
+        let mut result = fr(200, "<html></html>");
+        stamp_http_decision(&mut result, None);
+        assert_eq!(
+            result.render_decision,
+            Some(RenderDecision::AutoDefault {
+                chosen: RendererKind::Http
+            })
+        );
+    }
+
+    #[test]
+    fn stamp_http_decision_pinned_to_a_different_renderer_is_still_auto_default() {
+        // Only an explicit `"http"` pin counts as UserPinned here — the HTTP
+        // tier serving a request that pinned "chrome" (e.g. chrome unavailable)
+        // is not the user's choice, so it must not be mislabeled as one.
+        let mut result = fr(200, "<html></html>");
+        stamp_http_decision(&mut result, Some("chrome"));
+        assert_eq!(
+            result.render_decision,
+            Some(RenderDecision::AutoDefault {
+                chosen: RendererKind::Http
+            })
+        );
+    }
+
+    #[test]
+    fn stamp_http_decision_is_idempotent_when_already_set() {
+        let mut result = fr(200, "<html></html>");
+        result.render_decision = Some(RenderDecision::UserPinned {
+            renderer: RendererKind::Chrome,
+        });
+        result.credit_cost = 42;
+        stamp_http_decision(&mut result, Some("http"));
+        assert_eq!(
+            result.render_decision,
+            Some(RenderDecision::UserPinned {
+                renderer: RendererKind::Chrome
+            }),
+            "must not overwrite a decision a caller already stamped"
+        );
+        assert_eq!(result.credit_cost, 42, "must not touch credit_cost either");
+    }
+
+    // -- has_recovery_tier ------------------------------------------------
+
+    fn named_mock(name: &'static str) -> Arc<dyn PageFetcher> {
+        Arc::new(MockFetcher {
+            name,
+            behavior: MockBehavior::Ok(String::new()),
+        })
+    }
+
+    #[test]
+    fn has_recovery_tier_true_when_chrome_proxy_constructed() {
+        let cfg = RendererConfig::default();
+        assert!(has_recovery_tier(
+            &cfg,
+            &[named_mock("chrome_proxy")],
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn has_recovery_tier_true_when_camoufox_included_in_auto() {
+        let cfg = RendererConfig {
+            camoufox: Some(crw_core::config::CamoufoxEndpoint {
+                base_url: "http://127.0.0.1:9377".into(),
+                api_key: String::new(),
+                include_in_auto: true,
+            }),
+            ..Default::default()
+        };
+        assert!(has_recovery_tier(
+            &cfg,
+            &[named_mock("camoufox")],
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn has_recovery_tier_false_when_camoufox_excluded_from_auto() {
+        // A camoufox tier configured for pinned-only use (include_in_auto =
+        // false) must NOT count as a recovery tier for the auto ladder.
+        let cfg = RendererConfig {
+            camoufox: Some(crw_core::config::CamoufoxEndpoint {
+                base_url: "http://127.0.0.1:9377".into(),
+                api_key: String::new(),
+                include_in_auto: false,
+            }),
+            ..Default::default()
+        };
+        assert!(!has_recovery_tier(
+            &cfg,
+            &[named_mock("camoufox")],
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn has_recovery_tier_true_via_cloak_arm_alone() {
+        let cfg = RendererConfig::default();
+        assert!(has_recovery_tier(&cfg, &[], true, false));
+    }
+
+    #[test]
+    fn has_recovery_tier_true_via_http_fallback_proxy_alone() {
+        let cfg = RendererConfig::default();
+        assert!(has_recovery_tier(&cfg, &[], false, true));
+    }
+
+    #[test]
+    fn has_recovery_tier_false_when_nothing_available() {
+        let cfg = RendererConfig::default();
+        assert!(!has_recovery_tier(&cfg, &[], false, false));
+    }
+
+    #[test]
+    fn has_recovery_tier_chrome_alone_does_not_count() {
+        // Plain "chrome" is the primary ladder tier, not a recovery arm — it
+        // egresses direct and cannot clear an IP-reputation block on its own.
+        let cfg = RendererConfig::default();
+        assert!(!has_recovery_tier(
+            &cfg,
+            &[named_mock("chrome")],
+            false,
+            false
+        ));
+    }
+
+    // -- is_fingerprint_vendor_wall -----------------------------------------
+
+    #[test]
+    fn vendor_wall_cf_challenge_flag_alone_is_true() {
+        assert!(is_fingerprint_vendor_wall(true, None, AntibotSignal::None));
+    }
+
+    #[test]
+    fn vendor_wall_datadome_vendor_block_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            Some("datadome"),
+            AntibotSignal::None
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_perimeterx_vendor_block_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            Some("perimeterx"),
+            AntibotSignal::None
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_kasada_vendor_block_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            Some("kasada"),
+            AntibotSignal::None
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_akamai_vendor_block_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            Some("akamai"),
+            AntibotSignal::None
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_imperva_vendor_block_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            Some("imperva"),
+            AntibotSignal::None
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_cloudflare_vendor_block_string_is_deliberately_excluded() {
+        // Cloudflare is matched via the `cf_challenge` flag, not the
+        // `vendor_block` string — otherwise a CF error-1020 IP block (which a
+        // residential egress CAN recover) would be wrongly suppressed.
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            Some("cloudflare"),
+            AntibotSignal::None
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_sucuri_vendor_block_is_not_a_wall() {
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            Some("sucuri"),
+            AntibotSignal::None
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_cloudflare_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::Cloudflare
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_datadome_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::Datadome
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_perimeterx_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::PerimeterX
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_akamai_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::Akamai
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_imperva_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::Imperva
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_kasada_is_true() {
+        assert!(is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::Kasada
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_sucuri_is_not_a_wall() {
+        // Sucuri / NetworkSecurity / GenericBlock / RateLimited /
+        // StructuralFailure are IP-reputation-style blocks a residential
+        // egress DOES recover, so they must stay out.
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::Sucuri
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_network_security_is_not_a_wall() {
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::NetworkSecurity
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_rate_limited_is_not_a_wall() {
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::RateLimited
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_generic_block_is_not_a_wall() {
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::GenericBlock
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_structural_failure_is_not_a_wall() {
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::StructuralFailure
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_antibot_signal_vercel_is_not_a_wall() {
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::Vercel
+        ));
+    }
+
+    #[test]
+    fn vendor_wall_all_clear_is_false() {
+        assert!(!is_fingerprint_vendor_wall(
+            false,
+            None,
+            AntibotSignal::None
+        ));
+    }
+
+    // -- is_origin_navigation_failure ---------------------------------------
+
+    #[test]
+    fn origin_nav_failure_target_unreachable_is_true() {
+        assert!(is_origin_navigation_failure(&CrwError::TargetUnreachable(
+            "dead".into()
+        )));
+    }
+
+    #[test]
+    fn origin_nav_failure_renderer_error_navigation_failed_is_true() {
+        assert!(is_origin_navigation_failure(&CrwError::RendererError(
+            "Navigation failed: net::ERR_CONNECTION_RESET".into()
+        )));
+    }
+
+    #[test]
+    fn origin_nav_failure_renderer_error_net_err_is_case_insensitive() {
+        assert!(is_origin_navigation_failure(&CrwError::RendererError(
+            "NET::ERR_NAME_NOT_RESOLVED".into()
+        )));
+    }
+
+    #[test]
+    fn origin_nav_failure_renderer_error_outbound_check_unavailable_is_true() {
+        assert!(is_origin_navigation_failure(&CrwError::RendererError(
+            "Outbound destination check unavailable: DNS timeout".into()
+        )));
+    }
+
+    #[test]
+    fn origin_nav_failure_renderer_error_unrelated_message_is_false() {
+        // An internal fault (pool exhausted) must NOT be attributed to the
+        // origin — doing so would blame the caller for our own outage.
+        assert!(!is_origin_navigation_failure(&CrwError::RendererError(
+            "CDP pool exhausted, no browser slots available".into()
+        )));
+    }
+
+    #[test]
+    fn origin_nav_failure_timeout_is_true() {
+        // A JS-tier timeout is "absence of evidence, not evidence against" the
+        // HTTP tier's already-verified TargetUnreachable finding.
+        assert!(is_origin_navigation_failure(&CrwError::Timeout(5_000)));
+    }
+
+    #[test]
+    fn origin_nav_failure_http_error_is_false() {
+        assert!(!is_origin_navigation_failure(&CrwError::HttpError(
+            "connection reset".into()
+        )));
+    }
+
+    #[test]
+    fn origin_nav_failure_unrelated_variant_is_false() {
+        assert!(!is_origin_navigation_failure(&CrwError::RateLimited));
+    }
+
+    // -- is_soft_block_status -----------------------------------------------
+
+    #[test]
+    fn soft_block_status_covers_every_documented_code() {
+        for code in [401, 403, 404, 405, 406, 410, 412, 429, 451, 500, 503] {
+            assert!(is_soft_block_status(code), "{code} should be soft-block");
+        }
+    }
+
+    #[test]
+    fn soft_block_status_excludes_success_redirect_and_neighboring_codes() {
+        for code in [
+            200, 201, 204, 301, 302, 304, 400, 402, 407, 408, 409, 411, 413, 420, 428, 430, 450,
+            452, 499, 501, 502, 504, 520, 599,
+        ] {
+            assert!(
+                !is_soft_block_status(code),
+                "{code} must not be treated as soft-block"
+            );
+        }
+    }
+
+    // -- renderer_can_screenshot ---------------------------------------------
+
+    #[test]
+    fn can_screenshot_allowlist_true() {
+        for name in ["chrome", "chrome_proxy", "playwright"] {
+            assert!(renderer_can_screenshot(name), "{name} should capture");
+        }
+    }
+
+    #[test]
+    fn can_screenshot_allowlist_false() {
+        for name in ["lightpanda", "camoufox", "cloak", "http", "unknown", ""] {
+            assert!(!renderer_can_screenshot(name), "{name} should not capture");
+        }
+    }
+
+    #[test]
+    fn can_screenshot_is_case_sensitive() {
+        assert!(!renderer_can_screenshot("Chrome"));
+    }
+
+    // -- screenshot task-locals ------------------------------------------
+
+    #[test]
+    fn screenshot_state_defaults_to_absent_outside_any_scope() {
+        assert!(!screenshot_requested());
+        assert!(current_screenshot_req().is_none());
+    }
+
+    #[tokio::test]
+    async fn screenshot_state_true_inside_a_some_scope() {
+        REQUEST_SCREENSHOT
+            .scope(Some(ScreenshotReq { full_page: true }), async {
+                assert!(screenshot_requested());
+                let req = current_screenshot_req().expect("expected Some");
+                assert!(req.full_page);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn screenshot_state_full_page_false_is_preserved() {
+        REQUEST_SCREENSHOT
+            .scope(Some(ScreenshotReq { full_page: false }), async {
+                let req = current_screenshot_req().expect("expected Some");
+                assert!(!req.full_page);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn screenshot_state_false_inside_an_explicit_none_scope() {
+        REQUEST_SCREENSHOT
+            .scope(None, async {
+                assert!(!screenshot_requested());
+                assert!(current_screenshot_req().is_none());
+            })
+            .await;
+    }
+
+    // -- is_html_like_content_type: additional edge cases --------------------
+
+    #[test]
+    fn html_like_uppercase_is_normalized() {
+        assert!(is_html_like_content_type(Some("TEXT/HTML")));
+    }
+
+    #[test]
+    fn html_like_surrounding_whitespace_is_trimmed() {
+        assert!(is_html_like_content_type(Some("  text/html  ")));
+    }
+
+    #[test]
+    fn html_like_xml_variants_are_eligible() {
+        assert!(is_html_like_content_type(Some("application/xml")));
+        assert!(is_html_like_content_type(Some("text/xml")));
+    }
+
+    #[test]
+    fn html_like_rss_and_json_ld_are_not_eligible() {
+        assert!(!is_html_like_content_type(Some("application/rss+xml")));
+        assert!(!is_html_like_content_type(Some("application/ld+json")));
+    }
+
+    #[test]
+    fn html_like_content_type_with_charset_param_is_rejected() {
+        // BUG: a real server almost always appends `; charset=...` to
+        // `text/html`, and this function only matches the type EXACTLY —
+        // so a legitimate HTML response with a charset parameter is
+        // classified as "cannot be improved by a browser" and never gets a
+        // chance to escalate on an empty-2xx anti-bot shell. Asserting
+        // current behavior per the task rules (production code left
+        // untouched); reported in the summary.
+        assert!(!is_html_like_content_type(Some("text/html; charset=utf-8")));
+        assert!(!is_html_like_content_type(Some("text/html;charset=UTF-8")));
+    }
+
+    // =====================================================================
+    // classify_js_attempt: deterministic single-attempt classification.
+    // Every expected field below was traced through `crw_extract::antibot::
+    // classify` by hand (see PR discussion / RULES.md) rather than guessed,
+    // since that classifier also feeds `hard_block`/`acceptable` here.
+    // =====================================================================
+
+    #[test]
+    fn classify_js_attempt_accepts_rich_200_html() {
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(200, &rich_html("PAGE-")));
+        assert!(class.acceptable);
+        assert!(!class.hard_block);
+        assert!(!class.is_status_blocked);
+        assert!(!class.unrecoverable_wall);
+        assert_eq!(class.antibot.signal, AntibotSignal::None);
+    }
+
+    #[test]
+    fn classify_js_attempt_403_is_hard_block_via_generic_antibot_signal() {
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(403, &rich_html("PAGE-")));
+        assert!(class.is_status_blocked);
+        assert!(class.hard_block);
+        assert!(!class.acceptable);
+        assert!(class.antibot_blocked);
+        assert_eq!(class.antibot.signal, AntibotSignal::GenericBlock);
+        assert!(
+            !class.unrecoverable_wall,
+            "a generic 403 block is IP-reputation-shaped, not a fingerprint wall"
+        );
+    }
+
+    #[test]
+    fn classify_js_attempt_404_is_status_blocked_but_not_hard_block() {
+        // 404 sits in the soft-block/`is_status_blocked` set but NOT in the
+        // narrower `hard_block` status subset (401|403|429|503) — the two
+        // sets deliberately diverge, and plain content with a 404 doesn't
+        // trip the antibot classifier either.
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(404, &rich_html("PAGE-")));
+        assert!(class.is_status_blocked);
+        assert!(!class.hard_block);
+        assert!(!class.acceptable);
+        assert_eq!(class.antibot.signal, AntibotSignal::None);
+    }
+
+    #[test]
+    fn classify_js_attempt_429_is_deterministically_rate_limited() {
+        // `crw_extract::antibot::classify` special-cases HTTP 429 with an
+        // unconditional early return, independent of body content.
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(429, &rich_html("PAGE-")));
+        assert!(class.is_status_blocked);
+        assert!(class.hard_block);
+        assert!(!class.acceptable);
+        assert_eq!(class.antibot.signal, AntibotSignal::RateLimited);
+        assert!(!class.unrecoverable_wall);
+    }
+
+    #[test]
+    fn classify_js_attempt_521_is_hard_block_and_unrecoverable_wall() {
+        // `classify` special-cases HTTP 521 as Cloudflare unconditionally.
+        // 521 is in the hard_block 520..=530 range but NOT in the
+        // `is_status_blocked` set, and a Cloudflare antibot signal makes it
+        // an unrecoverable fingerprint wall regardless of body content.
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(521, &rich_html("PAGE-")));
+        assert!(!class.is_status_blocked);
+        assert!(class.hard_block);
+        assert!(!class.acceptable);
+        assert_eq!(class.antibot.signal, AntibotSignal::Cloudflare);
+        assert!(class.unrecoverable_wall);
+    }
+
+    #[test]
+    fn classify_js_attempt_generic_bot_wall_phrase_is_hard_block_not_unrecoverable() {
+        let html = format!(
+            "<html><body><p>Access Denied. You don't have permission to access \
+             this resource on this server.{}</p></body></html>",
+            "x".repeat(50)
+        );
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(200, &html));
+        assert!(class.is_bot_wall);
+        assert!(class.hard_block);
+        assert!(!class.acceptable);
+        assert!(!class.is_status_blocked);
+        assert!(
+            !class.unrecoverable_wall,
+            "a generic bot-wall phrase is exactly the class a residential egress recovers"
+        );
+    }
+
+    #[test]
+    fn classify_js_attempt_nextjs_error_boundary_is_hard_block_via_structural_signal() {
+        // Non-obvious: `failed_render` alone does not drive `hard_block` — it
+        // is the antibot structural-integrity check (no <p>/<article>/... tag
+        // in a small page) that flags this shell and makes it a hard block.
+        let bad_html = format!(
+            "<html><body><div id=\"__next-error-0\">{}</div></body></html>",
+            "x".repeat(200)
+        );
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(200, &bad_html));
+        assert_eq!(
+            class.failed_render,
+            Some(detector::FailedRenderReason::NextJsClientError)
+        );
+        assert!(!class.acceptable);
+        assert!(class.hard_block);
+        assert_eq!(class.antibot.signal, AntibotSignal::StructuralFailure);
+        assert!(!class.unrecoverable_wall);
+    }
+
+    // =====================================================================
+    // FallbackRenderer misc surface: js_capable, supports_screenshot,
+    // check_health, proxy plumbing, shutdown, Debug.
+    // =====================================================================
+
+    #[test]
+    fn js_capable_false_with_no_renderers_and_no_auto_egress() {
+        let cfg = base_cfg(RendererMode::None);
+        let r = FallbackRenderer::new(&cfg, "crw-test", None, &StealthConfig::default()).unwrap();
+        assert!(!r.js_capable());
+    }
+
+    #[test]
+    fn js_capable_true_with_a_js_renderer() {
+        let r = make_renderer_with_mocks(vec![named_mock("chrome")]);
+        assert!(r.js_capable());
+    }
+
+    #[test]
+    fn js_capable_true_via_auto_egress_escalation_alone() {
+        let mut r = make_renderer_with_mocks(vec![]);
+        r.auto_egress_escalation = true;
+        assert!(r.js_capable());
+    }
+
+    #[test]
+    fn supports_screenshot_true_for_chrome() {
+        let r = make_renderer_with_mocks(vec![named_mock("chrome")]);
+        assert!(r.supports_screenshot());
+    }
+
+    #[test]
+    fn supports_screenshot_true_for_chrome_proxy() {
+        let r = make_renderer_with_mocks(vec![named_mock("chrome_proxy")]);
+        assert!(r.supports_screenshot());
+    }
+
+    #[test]
+    fn supports_screenshot_false_for_lightpanda_only() {
+        let r = make_renderer_with_mocks(vec![named_mock("lightpanda")]);
+        assert!(!r.supports_screenshot());
+    }
+
+    #[tokio::test]
+    async fn check_health_reports_http_and_every_js_renderer() {
+        let r = make_renderer_with_mocks(vec![named_mock("chrome"), named_mock("lightpanda")]);
+        let health = r.check_health().await;
+        assert_eq!(health.len(), 3);
+        assert_eq!(health.get("http"), Some(&true));
+        assert_eq!(health.get("chrome"), Some(&true));
+        assert_eq!(health.get("lightpanda"), Some(&true));
+    }
+
+    #[test]
+    fn pick_proxy_none_without_a_rotator() {
+        let cfg = base_cfg(RendererMode::None);
+        let r = FallbackRenderer::new(&cfg, "crw-test", None, &StealthConfig::default()).unwrap();
+        assert!(r.pick_proxy(Some("example.com")).is_none());
+        assert!(r.pick_proxy_for_url("https://example.com/x").is_none());
+    }
+
+    #[test]
+    fn pick_proxy_some_with_a_configured_rotator() {
+        let cfg = base_cfg(RendererMode::None);
+        let rotator = crw_core::ProxyRotator::build(
+            &[],
+            Some("http://proxy.example:8080"),
+            crw_core::ProxyRotation::StickyPerHost,
+        )
+        .unwrap()
+        .unwrap();
+        let r = FallbackRenderer::new(&cfg, "crw-test", None, &StealthConfig::default())
+            .unwrap()
+            .with_proxy_rotator(Some(Arc::new(rotator)))
+            .unwrap();
+        assert!(r.pick_proxy(Some("example.com")).is_some());
+        assert!(r.pick_proxy_for_url("https://example.com/x").is_some());
+    }
+
+    #[tokio::test]
+    async fn shutdown_chrome_pool_is_a_safe_noop_without_pools() {
+        let r = make_renderer_with_mocks(vec![named_mock("chrome")]);
+        // Must return promptly and not panic even though no real pool exists.
+        r.shutdown_chrome_pool(Duration::from_millis(10)).await;
+    }
+
+    #[test]
+    fn with_host_limits_builder_chains_without_panicking() {
+        let cfg = base_cfg(RendererMode::None);
+        let r = FallbackRenderer::new(&cfg, "crw-test", None, &StealthConfig::default())
+            .unwrap()
+            .with_host_limits(2.5, 3, 1);
+        assert!(!r.js_capable());
+    }
+
+    #[test]
+    fn debug_fmt_lists_configured_renderer_names() {
+        let r = make_renderer_with_mocks(vec![named_mock("chrome"), named_mock("lightpanda")]);
+        let debug = format!("{r:?}");
+        assert!(debug.contains("chrome"));
+        assert!(debug.contains("lightpanda"));
+        assert!(debug.contains("http"));
+    }
+
+    // =====================================================================
+    // 429 status: must fall through the ladder rather than hard-failing.
+    // =====================================================================
+
+    #[tokio::test]
+    async fn js_tier_429_with_no_next_tier_falls_through_instead_of_erroring() {
+        let chrome = Arc::new(MockFetcher {
+            name: "chrome",
+            behavior: MockBehavior::OkStatus(429, rich_html("RATE-LIMITED-")),
+        }) as Arc<dyn PageFetcher>;
+        let r = make_renderer_with_mocks(vec![chrome]);
+
+        let result = r
+            .fetch(
+                "https://example.com",
+                &HashMap::new(),
+                Some(true),
+                None,
+                None,
+                tdl(),
+            )
+            .await
+            .expect("a 429 with content must fall through, not error");
+        let warning = result
+            .warning
+            .expect("expected a warning explaining the 429");
+        assert!(
+            warning.contains("chrome") && warning.contains("429"),
+            "warning should name renderer + status: {warning}"
+        );
+    }
+
+    #[tokio::test]
+    async fn js_tier_escalates_on_429_status() {
+        let lp = Arc::new(MockFetcher {
+            name: "lightpanda",
+            behavior: MockBehavior::OkStatus(429, rich_html("RATE-LIMITED-")),
+        }) as Arc<dyn PageFetcher>;
+        let chrome = Arc::new(MockFetcher {
+            name: "chrome",
+            behavior: MockBehavior::Ok(rich_html("CHROME-")),
+        }) as Arc<dyn PageFetcher>;
+        let r = make_renderer_with_mocks(vec![lp, chrome]);
+
+        let result = r
+            .fetch(
+                "https://example.com",
+                &HashMap::new(),
+                Some(true),
+                None,
+                Some("auto"),
+                tdl(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.html.contains("CHROME-"),
+            "expected chrome output after lightpanda 429"
+        );
+        assert_eq!(result.status_code, 200);
+    }
+
+    // =====================================================================
+    // html_body_text_len: additional boundary / malformed-input coverage.
+    // =====================================================================
+
+    #[test]
+    fn body_text_len_counts_unicode_chars_and_collapses_whitespace() {
+        let html = "<html><body><p>h\u{e9}llo w\u{f6}rld \u{1f389}\u{1f389}</p></body></html>";
+        assert_eq!(html_body_text_len(html), 14);
+    }
+
+    #[test]
+    fn body_text_len_handles_very_long_input_without_panicking() {
+        let html = format!("<html><body>{}</body></html>", "a".repeat(100_000));
+        assert_eq!(html_body_text_len(&html), 100_000);
+    }
+
+    #[test]
+    fn body_text_len_ignores_nesting_depth() {
+        let html = format!(
+            "<html><body>{}text{}</body></html>",
+            "<div>".repeat(500),
+            "</div>".repeat(500)
+        );
+        assert_eq!(html_body_text_len(&html), 4);
+    }
+
+    #[test]
+    fn body_text_len_stops_at_an_unterminated_tag() {
+        // A tag opened but never closed (truncated response) must not panic;
+        // everything from the stray `<` onward is silently dropped as "in tag".
+        let html = "<html><body>hello world<sp";
+        assert_eq!(html_body_text_len(html), 11);
+    }
+
+    // =====================================================================
+    // Second pass: remaining status-code enumeration, real vendor-block
+    // fixtures reused from the escalation tests above, and a few more
+    // pure-function boundaries.
+    // =====================================================================
+
+    #[test]
+    fn classify_js_attempt_401_is_hard_block_like_403() {
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(401, &rich_html("PAGE-")));
+        assert!(class.is_status_blocked);
+        assert!(class.hard_block);
+        assert!(!class.acceptable);
+    }
+
+    #[test]
+    fn classify_js_attempt_soft_block_codes_outside_hard_block_subset() {
+        // 404/405/406/410/412/451/500 are soft-block (`is_status_blocked`) but
+        // NOT in the narrower hard_block subset (401|403|429|503|520-530), and
+        // plain content at these codes doesn't trip the antibot classifier
+        // either — the two escalation signals genuinely diverge here.
+        let r = make_renderer_with_mocks(vec![]);
+        for code in [404u16, 405, 406, 410, 412, 451, 500] {
+            let class = r.classify_js_attempt(&fr(code, &rich_html("PAGE-")));
+            assert!(class.is_status_blocked, "{code} should be status-blocked");
+            assert!(!class.hard_block, "{code} should not be hard_block");
+            assert!(!class.acceptable, "{code} should not be acceptable");
+            assert_eq!(
+                class.antibot.signal,
+                AntibotSignal::None,
+                "{code} with plain content should not trip antibot"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_js_attempt_empty_body_is_placeholder_and_hard_block() {
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(200, "<html><body></body></html>"));
+        assert!(class.is_placeholder);
+        assert!(!class.acceptable);
+        assert!(
+            class.hard_block,
+            "near-empty 200 content trips antibot's StructuralFailure near-empty rule"
+        );
+        assert_eq!(class.antibot.signal, AntibotSignal::StructuralFailure);
+    }
+
+    #[test]
+    fn classify_js_attempt_loading_marker_is_placeholder() {
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(200, "<html><body>Loading...</body></html>"));
+        assert!(class.is_placeholder);
+        assert!(!class.acceptable);
+    }
+
+    #[test]
+    fn classify_js_attempt_text_len_matches_html_body_text_len() {
+        let html = rich_html("PAGE-");
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(200, &html));
+        assert_eq!(class.text_len, html_body_text_len(&html));
+        assert_eq!(class.text_len, "PAGE-".len() + 200);
+    }
+
+    #[test]
+    fn classify_js_attempt_perimeterx_text_only_wall_is_unrecoverable() {
+        // Reuses the exact fixture proven in
+        // `chrome_proxy_suppressed_on_antibot_only_vendor_wall`: no
+        // `window._pxAppId` SDK marker, so the lighter `looks_like_vendor_block`
+        // detector misses it entirely — only `antibot::classify`'s text-based
+        // TIER2 pattern catches it, and it must be treated as an unrecoverable
+        // fingerprint wall (needs the stealth tier, not residential egress).
+        let px = format!(
+            "<html><body><h1>Access to This Page Has Been Blocked</h1>{}</body></html>",
+            "x".repeat(200)
+        );
+        let r = make_renderer_with_mocks(vec![]);
+        let class = r.classify_js_attempt(&fr(403, &px));
+        assert!(class.vendor_block.is_none());
+        assert_eq!(class.antibot.signal, AntibotSignal::PerimeterX);
+        assert!(class.antibot_blocked);
+        assert!(class.hard_block);
+        assert!(class.unrecoverable_wall);
+    }
+
+    // -- host_of: a few more boundary shapes ---------------------------------
+
+    #[test]
+    fn host_of_double_slash_path_does_not_confuse_host() {
+        assert_eq!(host_of("https://example.com//a//b"), "example.com");
+    }
+
+    #[test]
+    fn host_of_whitespace_only_string_returns_empty() {
+        assert_eq!(host_of("   "), "");
+    }
+
+    #[test]
+    fn host_of_unaffected_by_a_very_long_path() {
+        let url = format!("https://example.com/{}", "a".repeat(5_000));
+        assert_eq!(host_of(&url), "example.com");
+    }
+
+    // -- is_origin_navigation_failure: casing ---------------------------------
+
+    #[test]
+    fn origin_nav_failure_navigation_failed_is_case_insensitive() {
+        assert!(is_origin_navigation_failure(&CrwError::RendererError(
+            "NAVIGATION FAILED: could not reach host".into()
+        )));
+    }
+
+    #[test]
+    fn origin_nav_failure_net_err_substring_mid_sentence_matches() {
+        assert!(is_origin_navigation_failure(&CrwError::RendererError(
+            "chrome reported net::ERR_NAME_NOT_RESOLVED while loading".into()
+        )));
+    }
+
+    // -- is_html_like_content_type: casing ------------------------------------
+
+    #[test]
+    fn html_like_uppercase_xml_variants() {
+        assert!(is_html_like_content_type(Some("TEXT/XML")));
+        assert!(is_html_like_content_type(Some("Application/XHTML+XML")));
+    }
+
+    #[test]
+    fn html_like_multipart_form_data_is_not_eligible() {
+        assert!(!is_html_like_content_type(Some("multipart/form-data")));
+    }
+
+    // -- tier_timeouts_from: partial override --------------------------------
+
+    #[test]
+    fn tier_timeouts_from_partial_override_leaves_rest_on_page_timeout() {
+        let cfg = RendererConfig {
+            chrome_timeout_ms: Some(9_999),
+            ..Default::default()
+        };
+        let m = tier_timeouts_from(&cfg);
+        assert_eq!(m[&RendererKind::Chrome], Duration::from_millis(9_999));
+        // Unset timeouts fall back to page_timeout_ms (http/lightpanda) or
+        // their own documented default (chrome_proxy = chrome + 15s).
+        assert_eq!(
+            m[&RendererKind::Http],
+            Duration::from_millis(cfg.page_timeout_ms)
+        );
+        assert_eq!(
+            m[&RendererKind::Lightpanda],
+            Duration::from_millis(cfg.page_timeout_ms)
+        );
+        assert_eq!(
+            m[&RendererKind::ChromeProxy],
+            Duration::from_millis(cfg.chrome_proxy_timeout())
+        );
+    }
+
+    // -- stamp_http_decision: case sensitivity --------------------------------
+
+    #[test]
+    fn stamp_http_decision_pin_match_is_case_sensitive() {
+        let mut result = fr(200, "<html></html>");
+        stamp_http_decision(&mut result, Some("HTTP"));
+        assert_eq!(
+            result.render_decision,
+            Some(RenderDecision::AutoDefault {
+                chosen: RendererKind::Http
+            }),
+            "\"HTTP\" must not match the lowercase \"http\" pin"
+        );
+    }
+
+    // -- has_recovery_tier: order independence --------------------------------
+
+    #[test]
+    fn has_recovery_tier_finds_chrome_proxy_regardless_of_position() {
+        let cfg = RendererConfig::default();
+        let renderers = [
+            named_mock("lightpanda"),
+            named_mock("chrome"),
+            named_mock("chrome_proxy"),
+        ];
+        assert!(has_recovery_tier(&cfg, &renderers, false, false));
+    }
+
+    // -- FallbackRenderer misc: a few more ------------------------------------
+
+    #[test]
+    fn supports_screenshot_false_with_no_js_renderers() {
+        let cfg = base_cfg(RendererMode::None);
+        let r = FallbackRenderer::new(&cfg, "crw-test", None, &StealthConfig::default()).unwrap();
+        assert!(!r.supports_screenshot());
+    }
+
+    #[test]
+    fn js_renderer_names_preserves_construction_order() {
+        let r = make_renderer_with_mocks(vec![
+            named_mock("lightpanda"),
+            named_mock("chrome"),
+            named_mock("chrome_proxy"),
+        ]);
+        assert_eq!(
+            r.js_renderer_names(),
+            vec!["lightpanda", "chrome", "chrome_proxy"]
+        );
+    }
+
+    #[tokio::test]
+    async fn check_health_with_zero_js_renderers_still_reports_http() {
+        let r = make_renderer_with_mocks(vec![]);
+        let health = r.check_health().await;
+        assert_eq!(health.len(), 1);
+        assert_eq!(health.get("http"), Some(&true));
+    }
 }

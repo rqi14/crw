@@ -1233,4 +1233,704 @@ mod tests {
     fn crawl_default_pages() {
         assert_eq!(clamp_pages(None), 100);
     }
+
+    // ─────────────────────────── normalize_url (additional) ───────────────────────────
+
+    #[test]
+    fn normalize_url_empty_string() {
+        assert_eq!(normalize_url(""), "");
+    }
+
+    #[test]
+    fn normalize_url_only_fragment_is_empty() {
+        assert_eq!(normalize_url("#section"), "");
+    }
+
+    #[test]
+    fn normalize_url_takes_text_before_first_hash_only() {
+        // split('#').next() stops at the FIRST '#', so anything after a
+        // second '#' is discarded along with the first fragment.
+        assert_eq!(normalize_url("https://e.test/a#b#c"), "https://e.test/a");
+    }
+
+    #[test]
+    fn normalize_url_root_path_trailing_slash_stripped() {
+        assert_eq!(normalize_url("https://example.com/"), "https://example.com");
+    }
+
+    #[test]
+    fn normalize_url_multiple_trailing_slashes_all_stripped() {
+        assert_eq!(
+            normalize_url("https://example.com/path///"),
+            "https://example.com/path"
+        );
+    }
+
+    #[test]
+    fn normalize_url_query_string_preserved_but_lowercased() {
+        assert_eq!(
+            normalize_url("https://example.com/page?Q=Hello"),
+            "https://example.com/page?q=hello"
+        );
+    }
+
+    #[test]
+    fn normalize_url_query_and_fragment_both_handled() {
+        assert_eq!(
+            normalize_url("https://example.com/page?q=1#frag"),
+            "https://example.com/page?q=1"
+        );
+    }
+
+    #[test]
+    fn normalize_url_relative_path_no_scheme() {
+        assert_eq!(normalize_url("/just/a/path/"), "/just/a/path");
+    }
+
+    #[test]
+    fn normalize_url_unicode_path_lowercased() {
+        assert_eq!(
+            normalize_url("https://example.com/CAFÉ"),
+            "https://example.com/café"
+        );
+    }
+
+    #[test]
+    fn normalize_url_very_long_string_no_panic() {
+        let long = format!("https://example.com/{}", "a".repeat(5000));
+        let out = normalize_url(&long);
+        assert!(out.starts_with("https://example.com/"));
+    }
+
+    #[test]
+    fn normalize_url_whitespace_only() {
+        assert_eq!(normalize_url("   "), "   ");
+    }
+
+    #[test]
+    fn normalize_url_is_idempotent() {
+        let once = normalize_url("HTTPS://Example.COM/Path/#frag");
+        let twice = normalize_url(&once);
+        assert_eq!(once, twice);
+    }
+
+    // ─────────────────────────── is_safe_url (additional) ───────────────────────────
+
+    #[test]
+    fn is_safe_url_ipv6_loopback_blocked() {
+        assert!(!is_safe_url(&url::Url::parse("http://[::1]/").unwrap()));
+    }
+
+    #[test]
+    fn is_safe_url_ipv6_ipv4_mapped_loopback_blocked() {
+        assert!(!is_safe_url(
+            &url::Url::parse("http://[::ffff:127.0.0.1]/").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_ipv6_link_local_blocked() {
+        assert!(!is_safe_url(&url::Url::parse("http://[fe80::1]/").unwrap()));
+    }
+
+    #[test]
+    fn is_safe_url_ipv6_public_allowed() {
+        assert!(is_safe_url(
+            &url::Url::parse("http://[2001:4860:4860::8888]/").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_unspecified_ip_blocked() {
+        assert!(!is_safe_url(&url::Url::parse("http://0.0.0.0").unwrap()));
+    }
+
+    #[test]
+    fn is_safe_url_172_range_boundary_low_allowed() {
+        // 172.15.0.0/16 is public; the private range starts at 172.16.
+        assert!(is_safe_url(
+            &url::Url::parse("http://172.15.255.255").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_172_range_lower_bound_blocked() {
+        assert!(!is_safe_url(&url::Url::parse("http://172.16.0.0").unwrap()));
+    }
+
+    #[test]
+    fn is_safe_url_172_range_upper_bound_blocked() {
+        assert!(!is_safe_url(
+            &url::Url::parse("http://172.31.255.255").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_172_range_above_boundary_allowed() {
+        assert!(is_safe_url(&url::Url::parse("http://172.32.0.0").unwrap()));
+    }
+
+    #[test]
+    fn is_safe_url_public_ip_allowed() {
+        assert!(is_safe_url(&url::Url::parse("http://8.8.8.8").unwrap()));
+    }
+
+    #[test]
+    fn is_safe_url_null_byte_encoded_blocked() {
+        assert!(!is_safe_url(
+            &url::Url::parse("http://example.com/%00").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_exceeds_max_length_blocked() {
+        let long_path = "a".repeat(2100);
+        let url = format!("http://example.com/{long_path}");
+        assert!(!is_safe_url(&url::Url::parse(&url).unwrap()));
+    }
+
+    #[test]
+    fn is_safe_url_punycode_domain_allowed() {
+        assert!(is_safe_url(
+            &url::Url::parse("http://xn--e1aybc.xn--p1ai").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_non_default_port_public_host_allowed() {
+        assert!(is_safe_url(
+            &url::Url::parse("http://example.com:8443").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_uppercase_scheme_still_evaluated() {
+        assert!(is_safe_url(&url::Url::parse("HTTP://EXAMPLE.COM").unwrap()));
+    }
+
+    #[test]
+    fn is_safe_url_metadata_google_internal_blocked() {
+        assert!(!is_safe_url(
+            &url::Url::parse("http://metadata.google.internal").unwrap()
+        ));
+    }
+
+    #[test]
+    fn is_safe_url_wildcard_dns_nip_io_blocked() {
+        assert!(!is_safe_url(
+            &url::Url::parse("http://169.254.169.254.nip.io").unwrap()
+        ));
+    }
+
+    // ─────────────────────────── clamp_depth / clamp_pages (additional) ───────────────────────────
+
+    #[test]
+    fn crawl_max_depth_exact_boundary_allowed() {
+        assert_eq!(clamp_depth(Some(10)), 10);
+    }
+
+    #[test]
+    fn crawl_max_depth_just_below_boundary() {
+        assert_eq!(clamp_depth(Some(9)), 9);
+    }
+
+    #[test]
+    fn crawl_max_depth_zero() {
+        assert_eq!(clamp_depth(Some(0)), 0);
+    }
+
+    #[test]
+    fn crawl_max_depth_u32_max_clamped() {
+        assert_eq!(clamp_depth(Some(u32::MAX)), 10);
+    }
+
+    #[test]
+    fn crawl_max_pages_exact_boundary_allowed() {
+        assert_eq!(clamp_pages(Some(1000)), 1000);
+    }
+
+    #[test]
+    fn crawl_max_pages_just_below_boundary() {
+        assert_eq!(clamp_pages(Some(999)), 999);
+    }
+
+    #[test]
+    fn crawl_max_pages_zero() {
+        assert_eq!(clamp_pages(Some(0)), 0);
+    }
+
+    #[test]
+    fn crawl_max_pages_u32_max_clamped() {
+        assert_eq!(clamp_pages(Some(u32::MAX)), 1000);
+    }
+
+    // ─────────────────────────── remaining_budget / discovery_deadline ───────────────────────────
+
+    #[test]
+    fn remaining_budget_future_deadline_returns_some() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let budget = remaining_budget(deadline);
+        assert!(budget.is_some());
+        assert!(budget.unwrap() <= std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn remaining_budget_past_deadline_returns_none() {
+        let deadline = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        assert!(remaining_budget(deadline).is_none());
+    }
+
+    #[test]
+    fn remaining_budget_deadline_right_now_returns_none() {
+        // checked_duration_since(now) for a deadline that is "now" (or a
+        // hair in the past by the time it's evaluated) is zero-or-none,
+        // and the `.filter(|d| !d.is_zero())` rejects both.
+        let deadline = std::time::Instant::now();
+        assert!(remaining_budget(deadline).is_none());
+    }
+
+    #[test]
+    fn discovery_deadline_subtracts_backstop_margin() {
+        let before = std::time::Instant::now();
+        let deadline = discovery_deadline(std::time::Duration::from_secs(10));
+        let budget = deadline.duration_since(before);
+        // Expect ~8s (10s request timeout minus the 2s margin), allow
+        // generous slack for test-runner scheduling jitter.
+        assert!(
+            budget >= std::time::Duration::from_millis(7500)
+                && budget <= std::time::Duration::from_millis(8500),
+            "budget was {budget:?}"
+        );
+    }
+
+    #[test]
+    fn discovery_deadline_floors_at_500ms_when_timeout_smaller_than_margin() {
+        let before = std::time::Instant::now();
+        let deadline = discovery_deadline(std::time::Duration::from_secs(1));
+        let budget = deadline.duration_since(before);
+        assert!(
+            budget >= std::time::Duration::from_millis(400)
+                && budget <= std::time::Duration::from_millis(700),
+            "budget was {budget:?}"
+        );
+    }
+
+    #[test]
+    fn discovery_deadline_zero_timeout_floors_at_500ms() {
+        let before = std::time::Instant::now();
+        let deadline = discovery_deadline(std::time::Duration::ZERO);
+        let budget = deadline.duration_since(before);
+        assert!(
+            budget >= std::time::Duration::from_millis(400)
+                && budget <= std::time::Duration::from_millis(700),
+            "budget was {budget:?}"
+        );
+    }
+
+    #[test]
+    fn discovery_deadline_large_timeout_still_subtracts_margin() {
+        let before = std::time::Instant::now();
+        let deadline = discovery_deadline(std::time::Duration::from_secs(3600));
+        let budget = deadline.duration_since(before);
+        assert!(
+            budget >= std::time::Duration::from_secs(3597)
+                && budget <= std::time::Duration::from_secs(3599),
+            "budget was {budget:?}"
+        );
+    }
+
+    // ─────────────────────────── enqueue_discovered_links ───────────────────────────
+
+    fn links_html(hrefs: &[&str]) -> String {
+        let anchors: String = hrefs
+            .iter()
+            .map(|h| format!(r#"<a href="{h}">link</a>"#))
+            .collect();
+        format!("<html><body>{anchors}</body></html>")
+    }
+
+    #[test]
+    fn enqueue_basic_same_origin_links() {
+        let html = links_html(&["/a", "/b"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        visited.insert(normalize_url("https://example.com/"));
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 2);
+        assert!(visited.contains("https://example.com/a"));
+        assert!(visited.contains("https://example.com/b"));
+    }
+
+    #[test]
+    fn enqueue_preserves_document_order() {
+        let html = links_html(&["/first", "/second", "/third"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        let order: Vec<String> = queue.iter().map(|(u, _)| u.clone()).collect();
+        assert_eq!(
+            order,
+            vec![
+                "https://example.com/first".to_string(),
+                "https://example.com/second".to_string(),
+                "https://example.com/third".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn enqueue_cross_origin_links_filtered_out() {
+        let html = links_html(&["https://other.com/page", "/same-origin"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].0, "https://example.com/same-origin");
+    }
+
+    #[test]
+    fn enqueue_duplicate_links_on_same_page_deduped() {
+        let html = links_html(&["/dup", "/dup", "/dup"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn enqueue_already_visited_url_not_requeued() {
+        let html = links_html(&["/seen"]);
+        let mut visited = HashSet::new();
+        visited.insert(normalize_url("https://example.com/seen"));
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn enqueue_cycle_back_to_start_page_not_requeued() {
+        // Simulates a page whose links include the crawl's own start URL —
+        // a classic cycle. `visited` already holds the start URL (seeded by
+        // `run_crawl_inner` before the loop begins), so it must not re-enter
+        // the queue.
+        let html = links_html(&["/", "/other"]);
+        let mut visited = HashSet::new();
+        visited.insert(normalize_url("https://example.com/"));
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/page",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            1,
+        );
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].0, "https://example.com/other");
+    }
+
+    #[test]
+    fn enqueue_max_pages_boundary_stops_enqueueing() {
+        let html = links_html(&["/a", "/b", "/c"]);
+        let mut visited: HashSet<String> =
+            ["https://example.com".to_string()].into_iter().collect();
+        let mut queue = VecDeque::new();
+        // visited already has 2 entries; cap is 2, so nothing new fits.
+        visited.insert("https://example.com/existing".to_string());
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            2,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn enqueue_max_pages_exact_boundary_allows_last_slot() {
+        let html = links_html(&["/a", "/b"]);
+        let mut visited: HashSet<String> =
+            ["https://example.com".to_string()].into_iter().collect();
+        let mut queue = VecDeque::new();
+        // max_pages=2, visited already has 1 entry, so exactly one more fits.
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            2,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn enqueue_relative_links_resolved_against_page_url() {
+        let html = links_html(&["about"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/blog/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].0, "https://example.com/blog/about");
+    }
+
+    #[test]
+    fn enqueue_fragment_stripped_from_queued_url() {
+        let html = links_html(&["/page#section"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue[0].0, "https://example.com/page");
+    }
+
+    #[test]
+    fn enqueue_javascript_mailto_tel_links_ignored() {
+        let html = links_html(&[
+            "javascript:void(0)",
+            "mailto:a@example.com",
+            "tel:+1234567890",
+            "/real-page",
+        ]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].0, "https://example.com/real-page");
+    }
+
+    #[test]
+    fn enqueue_same_host_different_port_treated_as_same_origin() {
+        // BUG: `enqueue_discovered_links` (and the `origin` it's called
+        // with, built in `run_crawl_inner` as `scheme://host` with no port)
+        // ignores the port entirely when deciding same-origin. A link to a
+        // different port on the same host is followed as if it were the
+        // same site — unlike `discover_urls`'s BFS phase, which explicitly
+        // uses the full `Url::origin()` (scheme+host+port) and documents
+        // why dropping the port would be wrong. Documenting current
+        // behavior; production code left untouched per the test rules.
+        let html = links_html(&["https://example.com:9999/admin"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com", // port-less origin, as run_crawl_inner builds it
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(
+            queue.len(),
+            1,
+            "a different port on the same host is currently treated as same-origin"
+        );
+    }
+
+    #[test]
+    fn enqueue_non_ascii_href_no_panic() {
+        let html = links_html(&["/café/naïve"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn enqueue_empty_html_no_links() {
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            "",
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn enqueue_malformed_html_no_panic() {
+        let html = "<html><body><a href=/broken<a href='/other'>text</a>";
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        // Must not panic regardless of what scraper's lenient parser recovers.
+        enqueue_discovered_links(
+            html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+    }
+
+    #[test]
+    fn enqueue_anchor_without_href_ignored() {
+        let html = r#"<html><body><a name="top">no href</a><a href="/ok">ok</a></body></html>"#;
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].0, "https://example.com/ok");
+    }
+
+    #[test]
+    fn enqueue_case_variation_links_deduped_via_normalize() {
+        let html = links_html(&["https://EXAMPLE.com/Page", "https://example.com/page"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 1, "both hrefs normalize to the same URL");
+    }
+
+    #[test]
+    fn enqueue_stops_mid_page_once_cap_reached() {
+        let html = links_html(&["/a", "/b", "/c", "/d", "/e"]);
+        let mut visited: HashSet<String> =
+            ["https://example.com".to_string()].into_iter().collect();
+        let mut queue = VecDeque::new();
+        // Cap allows 3 more beyond the seed.
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            4,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue.len(), 3);
+    }
+
+    #[test]
+    fn enqueue_depth_is_incremented_by_one() {
+        let html = links_html(&["/a"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            3,
+        );
+        assert_eq!(queue[0].1, 4);
+    }
+
+    #[test]
+    fn enqueue_depth_zero_becomes_one() {
+        let html = links_html(&["/a"]);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        enqueue_discovered_links(
+            &html,
+            "https://example.com/",
+            "https://example.com",
+            100,
+            &mut visited,
+            &mut queue,
+            0,
+        );
+        assert_eq!(queue[0].1, 1);
+    }
 }

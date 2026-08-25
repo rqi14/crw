@@ -1796,6 +1796,2403 @@ mod tests {
             assert_eq!(b.message(), format!("Blocked by anti-bot ({vendor}): r"));
         }
     }
+
+    // ── shared fixtures for the expanded suite below ──
+
+    fn min_metadata(source_url: &str) -> PageMetadata {
+        PageMetadata {
+            title: None,
+            description: None,
+            og_title: None,
+            og_description: None,
+            og_image: None,
+            canonical_url: None,
+            source_url: source_url.into(),
+            language: None,
+            status_code: 200,
+            rendered_with: None,
+            elapsed_ms: 0,
+            page_count: None,
+            source_filename: None,
+            extra: Default::default(),
+        }
+    }
+
+    fn min_scrape_data() -> ScrapeData {
+        ScrapeData {
+            markdown: None,
+            source_hash: None,
+            html: None,
+            raw_html: None,
+            plain_text: None,
+            links: None,
+            images: None,
+            json: None,
+            basis: None,
+            basis_warnings: Vec::new(),
+            llm_input_hash: None,
+            summary: None,
+            llm_usage: None,
+            chunks: None,
+            warning: None,
+            warnings: Vec::new(),
+            render_decision: None,
+            credit_cost: 0,
+            metadata: min_metadata("https://example.com"),
+            debug_extraction: None,
+            content_type: None,
+            change_tracking: None,
+            screenshot: None,
+            block: None,
+            truncated: false,
+        }
+    }
+
+    // ── OutputFormat ──
+
+    #[test]
+    fn output_format_parse_loose_all_canonical_names() {
+        for (s, expected) in [
+            ("markdown", OutputFormat::Markdown),
+            ("html", OutputFormat::Html),
+            ("rawHtml", OutputFormat::RawHtml),
+            ("plainText", OutputFormat::PlainText),
+            ("links", OutputFormat::Links),
+            ("images", OutputFormat::Images),
+            ("json", OutputFormat::Json),
+            ("summary", OutputFormat::Summary),
+            ("changeTracking", OutputFormat::ChangeTracking),
+            ("screenshot", OutputFormat::Screenshot),
+        ] {
+            assert_eq!(OutputFormat::parse_loose(s).unwrap(), expected, "input {s}");
+        }
+    }
+
+    #[test]
+    fn output_format_parse_loose_aliases() {
+        assert_eq!(
+            OutputFormat::parse_loose("extract").unwrap(),
+            OutputFormat::Json
+        );
+        assert_eq!(
+            OutputFormat::parse_loose("llm-extract").unwrap(),
+            OutputFormat::Json
+        );
+        assert_eq!(
+            OutputFormat::parse_loose("change-tracking").unwrap(),
+            OutputFormat::ChangeTracking
+        );
+        assert_eq!(
+            OutputFormat::parse_loose("screenshot@fullPage").unwrap(),
+            OutputFormat::Screenshot
+        );
+    }
+
+    #[test]
+    fn output_format_parse_loose_unknown_error_message() {
+        let err = OutputFormat::parse_loose("pdf").unwrap_err();
+        assert!(err.contains("Unknown format 'pdf'"), "{err}");
+        assert!(err.contains("jsonSchema"), "{err}");
+    }
+
+    #[test]
+    fn output_format_parse_loose_empty_string_errors() {
+        assert!(OutputFormat::parse_loose("").is_err());
+    }
+
+    #[test]
+    fn output_format_parse_loose_is_case_sensitive() {
+        assert!(OutputFormat::parse_loose("Markdown").is_err());
+        assert!(OutputFormat::parse_loose("JSON").is_err());
+    }
+
+    #[test]
+    fn output_format_serializes_camel_case() {
+        for (v, expected) in [
+            (OutputFormat::Markdown, "\"markdown\""),
+            (OutputFormat::RawHtml, "\"rawHtml\""),
+            (OutputFormat::PlainText, "\"plainText\""),
+            (OutputFormat::ChangeTracking, "\"changeTracking\""),
+            (OutputFormat::Screenshot, "\"screenshot\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn output_format_deserialize_rejects_non_string() {
+        let result: Result<OutputFormat, _> = serde_json::from_value(serde_json::json!(1));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn output_format_round_trip_vec_in_scrape_request() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "formats": ["markdown", "rawHtml", "extract", "screenshot@fullPage"]
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            req.formats,
+            vec![
+                OutputFormat::Markdown,
+                OutputFormat::RawHtml,
+                OutputFormat::Json,
+                OutputFormat::Screenshot,
+            ]
+        );
+    }
+
+    // ── ChunkStrategy / FilterMode ──
+
+    #[test]
+    fn chunk_strategy_sentence_accepts_camel_case_on_deserialize() {
+        let json = serde_json::json!({
+            "type": "sentence",
+            "maxChars": 500,
+            "overlapChars": 50,
+            "dedupe": true
+        });
+        let parsed: ChunkStrategy = serde_json::from_value(json).unwrap();
+        match &parsed {
+            ChunkStrategy::Sentence {
+                max_chars,
+                overlap_chars,
+                dedupe,
+            } => {
+                assert_eq!(*max_chars, Some(500));
+                assert_eq!(*overlap_chars, Some(50));
+                assert_eq!(*dedupe, Some(true));
+            }
+            other => panic!("expected Sentence, got {other:?}"),
+        }
+        // BUG: the enum's `#[serde(rename_all = "camelCase")]` only renames the
+        // `type` tag values (overridden per-variant anyway by explicit
+        // `#[serde(rename = "sentence"|"regex"|"topic")]`); it does NOT cascade
+        // into the struct-variant fields the way it would for a plain struct.
+        // So `max_chars`/`overlap_chars` serialize snake_case even though the
+        // aliases accept camelCase on the way in — a one-way asymmetry against
+        // this API's "camelCase everywhere" contract. Harmless today because
+        // `ScrapeRequest.chunk_strategy` is inbound-only and never echoed back
+        // on `ScrapeData`, but would surface the moment something serializes a
+        // `ChunkStrategy` into a response body.
+        let out = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(out["type"], "sentence");
+        assert_eq!(
+            out["max_chars"], 500,
+            "actual wire key is snake_case, not camelCase"
+        );
+        assert!(out.get("maxChars").is_none());
+    }
+
+    #[test]
+    fn chunk_strategy_regex_requires_pattern_field() {
+        let json = serde_json::json!({ "type": "regex" });
+        let result: Result<ChunkStrategy, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "regex without pattern should fail");
+    }
+
+    #[test]
+    fn chunk_strategy_regex_round_trip() {
+        let json = serde_json::json!({ "type": "regex", "pattern": "\\n\\n+" });
+        let parsed: ChunkStrategy = serde_json::from_value(json).unwrap();
+        match parsed {
+            ChunkStrategy::Regex {
+                pattern,
+                max_chars,
+                overlap_chars,
+                dedupe,
+            } => {
+                assert_eq!(pattern, "\\n\\n+");
+                assert_eq!(max_chars, None);
+                assert_eq!(overlap_chars, None);
+                assert_eq!(dedupe, None);
+            }
+            other => panic!("expected Regex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chunk_strategy_topic_accepts_snake_case_aliases() {
+        let json = serde_json::json!({
+            "type": "topic",
+            "max_chars": 300,
+            "overlap_chars": 20
+        });
+        let parsed: ChunkStrategy = serde_json::from_value(json).unwrap();
+        match parsed {
+            ChunkStrategy::Topic {
+                max_chars,
+                overlap_chars,
+                ..
+            } => {
+                assert_eq!(max_chars, Some(300));
+                assert_eq!(overlap_chars, Some(20));
+            }
+            other => panic!("expected Topic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chunk_strategy_defaults_when_only_type_given() {
+        for tag in ["sentence", "topic"] {
+            let json = serde_json::json!({ "type": tag });
+            let parsed: ChunkStrategy = serde_json::from_value(json).unwrap();
+            let (max_chars, overlap_chars, dedupe) = match parsed {
+                ChunkStrategy::Sentence {
+                    max_chars,
+                    overlap_chars,
+                    dedupe,
+                } => (max_chars, overlap_chars, dedupe),
+                ChunkStrategy::Topic {
+                    max_chars,
+                    overlap_chars,
+                    dedupe,
+                } => (max_chars, overlap_chars, dedupe),
+                other => panic!("unexpected {other:?}"),
+            };
+            assert_eq!(max_chars, None, "tag {tag}");
+            assert_eq!(overlap_chars, None, "tag {tag}");
+            assert_eq!(dedupe, None, "tag {tag}");
+        }
+    }
+
+    #[test]
+    fn chunk_strategy_unknown_tag_errors() {
+        let json = serde_json::json!({ "type": "paragraph" });
+        let result: Result<ChunkStrategy, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn filter_mode_serializes_camel_case() {
+        assert_eq!(
+            serde_json::to_string(&FilterMode::Bm25).unwrap(),
+            "\"bm25\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FilterMode::Cosine).unwrap(),
+            "\"cosine\""
+        );
+    }
+
+    #[test]
+    fn filter_mode_round_trip() {
+        for s in ["\"bm25\"", "\"cosine\""] {
+            let parsed: FilterMode = serde_json::from_str(s).unwrap();
+            assert_eq!(serde_json::to_string(&parsed).unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn filter_mode_rejects_unknown() {
+        let result: Result<FilterMode, _> = serde_json::from_str("\"tfidf\"");
+        assert!(result.is_err());
+    }
+
+    // ── RequestedRenderer (additional) ──
+
+    #[test]
+    fn requested_renderer_auto_round_trip() {
+        let json = serde_json::to_string(&RequestedRenderer::Auto).unwrap();
+        assert_eq!(json, "\"auto\"");
+        let parsed: RequestedRenderer = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, RequestedRenderer::Auto);
+    }
+
+    #[test]
+    fn requested_renderer_pinned_name_table() {
+        for (v, expected) in [
+            (RequestedRenderer::Auto, None),
+            (RequestedRenderer::Lightpanda, Some("lightpanda")),
+            (RequestedRenderer::Chrome, Some("chrome")),
+            (RequestedRenderer::ChromeProxy, Some("chrome_proxy")),
+            (RequestedRenderer::Playwright, Some("playwright")),
+            (RequestedRenderer::Camoufox, Some("camoufox")),
+        ] {
+            assert_eq!(v.pinned_name(), expected, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn requested_renderer_deserialize_rejects_non_string() {
+        let result: Result<RequestedRenderer, _> = serde_json::from_value(serde_json::json!(1));
+        assert!(result.is_err());
+    }
+
+    // ── ExtractOptions ──
+
+    #[test]
+    fn extract_options_round_trip_with_schema_and_prompt() {
+        let opts = ExtractOptions {
+            schema: Some(serde_json::json!({"type": "object"})),
+            prompt: Some("extract the price".into()),
+        };
+        let json = serde_json::to_value(&opts).unwrap();
+        assert_eq!(json["schema"]["type"], "object");
+        assert_eq!(json["prompt"], "extract the price");
+        let back: ExtractOptions = serde_json::from_value(json).unwrap();
+        assert_eq!(back.prompt, opts.prompt);
+    }
+
+    #[test]
+    fn extract_options_defaults_from_empty_object() {
+        let opts: ExtractOptions = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(opts.schema.is_none());
+        assert!(opts.prompt.is_none());
+    }
+
+    #[test]
+    fn extract_options_prompt_omitted_when_none() {
+        let opts = ExtractOptions {
+            schema: None,
+            prompt: None,
+        };
+        let json = serde_json::to_value(&opts).unwrap();
+        assert!(json.get("prompt").is_none());
+        // `schema` has no skip_serializing_if, so it stays present as null.
+        assert!(json.get("schema").unwrap().is_null());
+    }
+
+    // ── ScrapeRequest ──
+
+    #[test]
+    fn scrape_request_default_matches_field_by_field() {
+        let d = ScrapeRequest::default();
+        assert_eq!(d.url, "");
+        assert_eq!(d.formats, vec![OutputFormat::Markdown]);
+        assert!(d.only_main_content);
+        assert_eq!(d.render_js, None);
+        assert_eq!(d.wait_for, None);
+        assert!(d.include_tags.is_empty());
+        assert!(d.exclude_tags.is_empty());
+        assert_eq!(d.json_schema, None);
+        assert!(!d.basis);
+        assert!(d.headers.is_empty());
+        assert_eq!(d.css_selector, None);
+        assert_eq!(d.xpath, None);
+        assert!(d.chunk_strategy.is_none());
+        assert_eq!(d.query, None);
+        assert!(d.filter_mode.is_none());
+        assert_eq!(d.top_k, None);
+        assert_eq!(d.proxy, None);
+        assert!(d.proxy_list.is_empty());
+        assert!(d.proxy_rotation.is_none());
+        assert_eq!(d.country, None);
+        assert_eq!(d.stealth, None);
+        assert!(d.actions.is_none());
+        assert!(d.extract.is_none());
+        assert_eq!(d.llm_api_key, None);
+        assert_eq!(d.llm_provider, None);
+        assert_eq!(d.llm_model, None);
+        assert_eq!(d.base_url, None);
+        assert_eq!(d.summary_prompt, None);
+        assert_eq!(d.max_content_chars, None);
+        assert!(d.renderer.is_none());
+        assert!(d.force_cloak.is_none());
+        assert_eq!(d.deadline_ms, None);
+        assert_eq!(d.debug, None);
+        assert!(d.change_tracking.is_none());
+        assert_eq!(d.goal, None);
+        assert_eq!(d.judge_enabled, None);
+        assert!(d.parsers.is_none());
+        assert!(!d.screenshot_full_page);
+    }
+
+    #[test]
+    fn scrape_request_default_matches_serde_defaults() {
+        // The hand-written `Default` impl exists specifically to match what
+        // deserializing `{"url": ""}` would produce; keep the two in sync.
+        let from_json: ScrapeRequest =
+            serde_json::from_value(serde_json::json!({ "url": "" })).unwrap();
+        let hand_written = ScrapeRequest::default();
+        assert_eq!(from_json.formats, hand_written.formats);
+        assert_eq!(from_json.only_main_content, hand_written.only_main_content);
+        assert_eq!(
+            from_json.screenshot_full_page,
+            hand_written.screenshot_full_page
+        );
+    }
+
+    #[test]
+    fn scrape_request_camel_case_field_names() {
+        let mut req = ScrapeRequest {
+            url: "https://example.com".into(),
+            ..Default::default()
+        };
+        req.only_main_content = false;
+        req.css_selector = Some(".main".into());
+        req.chunk_strategy = Some(ChunkStrategy::Topic {
+            max_chars: None,
+            overlap_chars: None,
+            dedupe: None,
+        });
+        req.filter_mode = Some(FilterMode::Bm25);
+        req.top_k = Some(3);
+        req.proxy_list = vec!["http://p:1".into()];
+        req.proxy_rotation = Some(crate::proxy::ProxyRotation::Random);
+        req.llm_api_key = Some("k".into());
+        req.llm_provider = Some("openai".into());
+        req.llm_model = Some("gpt".into());
+        req.base_url = Some("https://api.example.com".into());
+        req.summary_prompt = Some("be terse".into());
+        req.max_content_chars = Some(1000);
+        req.deadline_ms = Some(5000);
+        req.change_tracking = Some(ChangeTrackingOptions::default());
+        req.judge_enabled = Some(true);
+        req.screenshot_full_page = true;
+
+        let json = serde_json::to_value(&req).unwrap();
+        for key in [
+            "onlyMainContent",
+            "cssSelector",
+            "chunkStrategy",
+            "filterMode",
+            "topK",
+            "proxyList",
+            "proxyRotation",
+            "llmApiKey",
+            "llmProvider",
+            "llmModel",
+            "baseUrl",
+            "summaryPrompt",
+            "maxContentChars",
+            "deadlineMs",
+            "changeTracking",
+            "judgeEnabled",
+            "screenshotFullPage",
+        ] {
+            assert!(json.get(key).is_some(), "missing camelCase key {key}");
+        }
+        for key in [
+            "only_main_content",
+            "css_selector",
+            "chunk_strategy",
+            "filter_mode",
+            "top_k",
+            "proxy_list",
+            "proxy_rotation",
+            "llm_api_key",
+            "base_url",
+            "max_content_chars",
+        ] {
+            assert!(json.get(key).is_none(), "unexpected snake_case key {key}");
+        }
+    }
+
+    #[test]
+    fn scrape_request_snake_case_aliases_deserialize() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "only_main_content": false,
+            "render_js": true,
+            "wait_for": 1500,
+            "include_tags": ["main"],
+            "exclude_tags": ["nav"],
+            "json_schema": {"type": "object"},
+            "css_selector": "#a",
+            "chunk_strategy": {"type": "topic"},
+            "filter_mode": "cosine",
+            "proxy_list": ["http://p:1"],
+            "proxy_rotation": "round_robin",
+            "llm_api_key": "k",
+            "llm_provider": "anthropic",
+            "llm_model": "claude",
+            "base_url": "https://x.example.com",
+            "summary_prompt": "hi",
+            "max_content_chars": 200,
+            "deadline_ms": 9000,
+            "change_tracking": {},
+            "judge_enabled": false,
+            "screenshot_full_page": true
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert!(!req.only_main_content);
+        assert_eq!(req.render_js, Some(true));
+        assert_eq!(req.wait_for, Some(1500));
+        assert_eq!(req.include_tags, vec!["main".to_string()]);
+        assert_eq!(req.exclude_tags, vec!["nav".to_string()]);
+        assert!(req.json_schema.is_some());
+        assert_eq!(req.css_selector, Some("#a".into()));
+        assert!(req.chunk_strategy.is_some());
+        assert!(matches!(req.filter_mode, Some(FilterMode::Cosine)));
+        assert_eq!(req.proxy_list, vec!["http://p:1".to_string()]);
+        assert!(matches!(
+            req.proxy_rotation,
+            Some(crate::proxy::ProxyRotation::RoundRobin)
+        ));
+        assert_eq!(req.llm_api_key, Some("k".into()));
+        assert_eq!(req.llm_provider, Some("anthropic".into()));
+        assert_eq!(req.llm_model, Some("claude".into()));
+        assert_eq!(req.base_url, Some("https://x.example.com".into()));
+        assert_eq!(req.summary_prompt, Some("hi".into()));
+        assert_eq!(req.max_content_chars, Some(200));
+        assert_eq!(req.deadline_ms, Some(9000));
+        assert!(req.change_tracking.is_some());
+        assert_eq!(req.judge_enabled, Some(false));
+        assert!(req.screenshot_full_page);
+    }
+
+    #[test]
+    fn scrape_request_unknown_field_is_ignored_not_rejected() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "someFutureField": "whatever"
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.url, "https://example.com");
+    }
+
+    #[test]
+    fn scrape_request_requires_url_field() {
+        let result: Result<ScrapeRequest, _> = serde_json::from_value(serde_json::json!({}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn scrape_request_only_main_content_defaults_true_when_omitted() {
+        let req: ScrapeRequest =
+            serde_json::from_value(serde_json::json!({ "url": "https://example.com" })).unwrap();
+        assert!(req.only_main_content);
+    }
+
+    #[test]
+    fn scrape_request_force_cloak_cannot_be_set_from_a_request_body() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "forceCloak": true
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            req.force_cloak, None,
+            "forceCloak must never be settable from a caller-supplied body"
+        );
+    }
+
+    #[test]
+    fn scrape_request_force_cloak_omitted_when_none() {
+        let req = ScrapeRequest {
+            url: "https://example.com".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("forceCloak").is_none());
+    }
+
+    #[test]
+    fn scrape_request_basis_omitted_when_false() {
+        let req = ScrapeRequest {
+            url: "https://example.com".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("basis").is_none());
+    }
+
+    #[test]
+    fn scrape_request_basis_present_when_true() {
+        let mut req = ScrapeRequest {
+            url: "https://example.com".into(),
+            ..Default::default()
+        };
+        req.basis = true;
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["basis"], true);
+    }
+
+    #[test]
+    fn scrape_request_proxy_rotation_accepts_all_wire_variants() {
+        for (s, expected) in [
+            ("round_robin", crate::proxy::ProxyRotation::RoundRobin),
+            ("random", crate::proxy::ProxyRotation::Random),
+            (
+                "sticky_per_host",
+                crate::proxy::ProxyRotation::StickyPerHost,
+            ),
+        ] {
+            let json = serde_json::json!({
+                "url": "https://example.com",
+                "proxyRotation": s
+            });
+            let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+            assert_eq!(req.proxy_rotation, Some(expected), "variant {s}");
+        }
+    }
+
+    #[test]
+    fn scrape_request_huge_deadline_ms_does_not_panic() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "deadlineMs": u64::MAX
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.deadline_ms, Some(u64::MAX));
+    }
+
+    #[test]
+    fn scrape_request_negative_number_for_unsigned_field_errors() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "waitFor": -1
+        });
+        let result: Result<ScrapeRequest, _> = serde_json::from_value(json);
+        assert!(result.is_err(), "u64 field must reject a negative number");
+    }
+
+    #[test]
+    fn scrape_request_deeply_nested_json_schema_does_not_panic() {
+        let mut nested = serde_json::json!("leaf");
+        for _ in 0..200 {
+            nested = serde_json::json!({ "properties": { "child": nested } });
+        }
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "jsonSchema": nested
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert!(req.json_schema.is_some());
+    }
+
+    #[test]
+    fn scrape_request_truncated_json_str_errors_without_panic() {
+        let truncated = r#"{"url": "https://example.com", "formats": ["markdown"#;
+        let result: Result<ScrapeRequest, _> = serde_json::from_str(truncated);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn scrape_request_unicode_and_emoji_url_round_trips() {
+        let url = "https://例え.jp/ページ?q=🚀emoji";
+        let json = serde_json::json!({ "url": url });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.url, url);
+        let back = serde_json::to_value(&req).unwrap();
+        assert_eq!(back["url"], url);
+    }
+
+    #[test]
+    fn scrape_request_very_long_xpath_does_not_panic() {
+        let long = "/".repeat(50_000);
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "xpath": long
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.xpath.unwrap().len(), 50_000);
+    }
+
+    #[test]
+    fn scrape_request_top_k_boundary_values() {
+        for v in [0usize, 1, usize::MAX] {
+            let json = serde_json::json!({ "url": "https://example.com", "topK": v });
+            let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+            assert_eq!(req.top_k, Some(v));
+        }
+    }
+
+    #[test]
+    fn scrape_request_headers_map_round_trips() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "headers": { "X-Custom": "1", "Accept-Language": "tr" }
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.headers.get("X-Custom"), Some(&"1".to_string()));
+        assert_eq!(req.headers.len(), 2);
+    }
+
+    #[test]
+    fn scrape_request_extract_options_round_trip() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "extract": { "schema": { "type": "object" }, "prompt": "get price" }
+        });
+        let req: ScrapeRequest = serde_json::from_value(json).unwrap();
+        let extract = req.extract.unwrap();
+        assert_eq!(extract.prompt, Some("get price".into()));
+        assert!(extract.schema.is_some());
+    }
+
+    // ── ParserSpec ──
+
+    #[test]
+    fn parser_spec_string_form_deserializes_bare_type() {
+        let spec: ParserSpec = serde_json::from_value(serde_json::json!("pdf")).unwrap();
+        assert_eq!(spec.parser_type, "pdf");
+        assert_eq!(spec.mode, None);
+        assert_eq!(spec.max_pages, None);
+    }
+
+    #[test]
+    fn parser_spec_object_form_deserializes() {
+        let json = serde_json::json!({ "type": "pdf", "mode": "ocr", "maxPages": 10 });
+        let spec: ParserSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(spec.parser_type, "pdf");
+        assert_eq!(spec.mode, Some("ocr".into()));
+        assert_eq!(spec.max_pages, Some(10));
+    }
+
+    #[test]
+    fn parser_spec_max_pages_accepts_snake_case_alias() {
+        let json = serde_json::json!({ "type": "pdf", "max_pages": 4 });
+        let spec: ParserSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(spec.max_pages, Some(4));
+    }
+
+    #[test]
+    fn parser_spec_pdf_constructor() {
+        let spec = ParserSpec::pdf();
+        assert_eq!(spec.parser_type, "pdf");
+        assert_eq!(spec.mode, None);
+        assert_eq!(spec.max_pages, None);
+    }
+
+    #[test]
+    fn parser_spec_always_serializes_object_form() {
+        let spec: ParserSpec = serde_json::from_value(serde_json::json!("pdf")).unwrap();
+        let json = serde_json::to_value(&spec).unwrap();
+        assert_eq!(json["type"], "pdf");
+        assert!(json.get("mode").is_none());
+        assert!(json.get("maxPages").is_none());
+    }
+
+    #[test]
+    fn parser_spec_missing_type_in_object_form_errors() {
+        let json = serde_json::json!({ "mode": "auto" });
+        let result: Result<ParserSpec, _> = serde_json::from_value(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parser_spec_equality() {
+        assert_eq!(ParserSpec::pdf(), ParserSpec::pdf());
+        let mut other = ParserSpec::pdf();
+        other.max_pages = Some(1);
+        assert_ne!(ParserSpec::pdf(), other);
+    }
+
+    // ── small helper functions ──
+
+    #[test]
+    fn default_formats_helper_is_markdown_only() {
+        assert_eq!(default_formats(), vec![OutputFormat::Markdown]);
+    }
+
+    #[test]
+    fn default_true_helper_returns_true() {
+        assert!(default_true());
+    }
+
+    #[test]
+    fn is_zero_u32_helper() {
+        assert!(is_zero_u32(&0));
+        assert!(!is_zero_u32(&1));
+    }
+
+    #[test]
+    fn one_u32_and_is_one_u32_helpers() {
+        assert_eq!(one_u32(), 1);
+        assert!(is_one_u32(&1));
+        assert!(!is_one_u32(&0));
+        assert!(!is_one_u32(&2));
+    }
+
+    #[test]
+    fn sum_opt_all_combinations() {
+        assert_eq!(sum_opt(Some(2), Some(3)), Some(5));
+        assert_eq!(sum_opt(Some(2), None), Some(2));
+        assert_eq!(sum_opt(None, Some(3)), Some(3));
+        assert_eq!(sum_opt(None, None), None);
+    }
+
+    #[test]
+    fn sum_opt_saturates_at_u32_max() {
+        assert_eq!(sum_opt(Some(u32::MAX), Some(1)), Some(u32::MAX));
+    }
+
+    // ── PageMetadata ──
+
+    #[test]
+    fn page_metadata_round_trip_minimal() {
+        let meta = min_metadata("https://example.com/a");
+        let json = serde_json::to_value(&meta).unwrap();
+        let back: PageMetadata = serde_json::from_value(json).unwrap();
+        assert_eq!(back.source_url, "https://example.com/a");
+        assert_eq!(back.status_code, 200);
+    }
+
+    #[test]
+    fn page_metadata_camel_case_field_names() {
+        let mut meta = min_metadata("https://example.com/a");
+        meta.og_title = Some("t".into());
+        meta.og_description = Some("d".into());
+        meta.og_image = Some("i".into());
+        meta.canonical_url = Some("c".into());
+        meta.rendered_with = Some("chrome".into());
+        meta.page_count = Some(3);
+        meta.source_filename = Some("f.pdf".into());
+        let json = serde_json::to_value(&meta).unwrap();
+        assert!(json.get("ogTitle").is_some());
+        assert!(json.get("ogDescription").is_some());
+        assert!(json.get("ogImage").is_some());
+        assert!(json.get("canonicalUrl").is_some());
+        assert!(json.get("renderedWith").is_some());
+        assert!(
+            json.get("numPages").is_some(),
+            "page_count renames to numPages"
+        );
+        assert!(json.get("sourceFilename").is_some());
+        // `source_url` is `#[serde(rename = "sourceURL")]`, not camelCase.
+        assert!(json.get("sourceURL").is_some());
+        assert!(json.get("source_url").is_none());
+        assert!(json.get("pageCount").is_none());
+    }
+
+    #[test]
+    fn page_metadata_skip_serializing_if_none_fields_omitted() {
+        let meta = min_metadata("https://example.com/a");
+        let json = serde_json::to_value(&meta).unwrap();
+        for key in [
+            "ogTitle",
+            "ogDescription",
+            "ogImage",
+            "canonicalUrl",
+            "language",
+            "renderedWith",
+            "numPages",
+            "sourceFilename",
+        ] {
+            assert!(json.get(key).is_none(), "expected {key} to be omitted");
+        }
+        // title/description have no skip_serializing_if — always present as null.
+        assert!(json.get("title").unwrap().is_null());
+        assert!(json.get("description").unwrap().is_null());
+    }
+
+    #[test]
+    fn page_metadata_extra_flatten_round_trips() {
+        let json = serde_json::json!({
+            "title": null,
+            "description": null,
+            "sourceURL": "https://example.com",
+            "statusCode": 200,
+            "elapsedMs": 5,
+            "author": "us",
+            "keywords": ["a", "b"]
+        });
+        let meta: PageMetadata = serde_json::from_value(json).unwrap();
+        assert_eq!(meta.extra.get("author").unwrap(), "us");
+        assert_eq!(
+            meta.extra.get("keywords").unwrap(),
+            &serde_json::json!(["a", "b"])
+        );
+        let back = serde_json::to_value(&meta).unwrap();
+        assert_eq!(back["author"], "us");
+    }
+
+    #[test]
+    fn page_metadata_deserialize_missing_extra_defaults_empty() {
+        let json = serde_json::json!({
+            "title": null,
+            "description": null,
+            "sourceURL": "https://example.com",
+            "statusCode": 200,
+            "elapsedMs": 0
+        });
+        let meta: PageMetadata = serde_json::from_value(json).unwrap();
+        assert!(meta.extra.is_empty());
+    }
+
+    #[test]
+    fn page_metadata_unicode_title_round_trips() {
+        let mut meta = min_metadata("https://example.com");
+        meta.title = Some("İstanbul'da hava çok güzel 🌤️".into());
+        let json = serde_json::to_value(&meta).unwrap();
+        let back: PageMetadata = serde_json::from_value(json).unwrap();
+        assert_eq!(back.title, meta.title);
+    }
+
+    // ── LlmUsage ──
+
+    #[test]
+    fn llm_usage_round_trip_full() {
+        let mut u = usage(100, 20);
+        u.cache_hit_input_tokens = Some(10);
+        u.cache_miss_input_tokens = Some(90);
+        u.truncated = true;
+        u.calls = 2;
+        u.executed_summaries = 1;
+        u.answer_executed = true;
+        u.estimated_cost_usd = Some(0.0012);
+        let json = serde_json::to_value(&u).unwrap();
+        let back: LlmUsage = serde_json::from_value(json).unwrap();
+        assert_eq!(back.input_tokens, 100);
+        assert_eq!(back.cache_hit_input_tokens, Some(10));
+        assert!(back.truncated);
+        assert_eq!(back.calls, 2);
+        assert_eq!(back.executed_summaries, 1);
+        assert!(back.answer_executed);
+    }
+
+    #[test]
+    fn llm_usage_calls_one_is_omitted_from_wire() {
+        let u = usage(1, 1);
+        let json = serde_json::to_value(&u).unwrap();
+        assert!(
+            json.get("calls").is_none(),
+            "calls:1 is the default, should be skipped"
+        );
+    }
+
+    #[test]
+    fn llm_usage_calls_non_one_is_present_on_wire() {
+        let mut u = usage(1, 1);
+        u.calls = 3;
+        let json = serde_json::to_value(&u).unwrap();
+        assert_eq!(json["calls"], 3);
+    }
+
+    #[test]
+    fn llm_usage_missing_calls_defaults_to_one_on_deserialize() {
+        let json = serde_json::json!({
+            "inputTokens": 5,
+            "outputTokens": 5,
+            "totalTokens": 10,
+            "model": "m",
+            "provider": "p"
+        });
+        let u: LlmUsage = serde_json::from_value(json).unwrap();
+        assert_eq!(u.calls, 1);
+        assert_eq!(u.executed_summaries, 0);
+        assert!(!u.answer_executed);
+    }
+
+    #[test]
+    fn llm_usage_wave2_optional_fields_omitted_when_none() {
+        let u = usage(1, 1);
+        let json = serde_json::to_value(&u).unwrap();
+        assert!(json.get("cacheHitInputTokens").is_none());
+        assert!(json.get("cacheMissInputTokens").is_none());
+        assert!(
+            json.get("truncated").is_none(),
+            "truncated:false is skipped"
+        );
+    }
+
+    #[test]
+    fn llm_usage_executed_summaries_and_answer_executed_always_serialize() {
+        let u = usage(1, 1);
+        let json = serde_json::to_value(&u).unwrap();
+        assert_eq!(json["executedSummaries"], 0);
+        assert_eq!(json["answerExecuted"], false);
+    }
+
+    #[test]
+    fn llm_usage_merge_sums_cache_tokens() {
+        let mut a = usage(100, 10);
+        a.cache_hit_input_tokens = Some(5);
+        let mut b = usage(50, 5);
+        b.cache_hit_input_tokens = Some(3);
+        b.cache_miss_input_tokens = Some(47);
+        a.merge(b);
+        assert_eq!(a.cache_hit_input_tokens, Some(8));
+        assert_eq!(a.cache_miss_input_tokens, Some(47));
+        assert_eq!(a.input_tokens, 150);
+    }
+
+    #[test]
+    fn llm_usage_merge_cost_both_present_sums() {
+        let mut a = usage(1, 1);
+        a.estimated_cost_usd = Some(0.5);
+        let mut b = usage(1, 1);
+        b.estimated_cost_usd = Some(0.25);
+        a.merge(b);
+        assert_eq!(a.estimated_cost_usd, Some(0.75));
+    }
+
+    #[test]
+    fn llm_usage_merge_cost_one_side_none_keeps_the_other() {
+        let mut a = usage(1, 1);
+        a.estimated_cost_usd = Some(0.5);
+        let b = usage(1, 1); // cost None
+        a.merge(b);
+        assert_eq!(a.estimated_cost_usd, Some(0.5));
+
+        let mut a2 = usage(1, 1); // cost None
+        let mut b2 = usage(1, 1);
+        b2.estimated_cost_usd = Some(0.25);
+        a2.merge(b2);
+        assert_eq!(a2.estimated_cost_usd, Some(0.25));
+    }
+
+    #[test]
+    fn llm_usage_merge_ors_truncated_flag() {
+        let mut a = usage(1, 1);
+        let mut b = usage(1, 1);
+        b.truncated = true;
+        a.merge(b);
+        assert!(a.truncated);
+    }
+
+    #[test]
+    fn llm_usage_merge_treats_a_leg_with_calls_zero_as_one_leg() {
+        let mut a = usage(1, 1);
+        let mut b = usage(1, 1);
+        b.calls = 0;
+        a.merge(b);
+        // `other.calls.max(1)` — a leg always counts for at least 1 call even if
+        // it reported 0.
+        assert_eq!(a.calls, 2);
+    }
+
+    // ── ChunkResult / ScrapedImage ──
+
+    #[test]
+    fn chunk_result_round_trip_with_score() {
+        let c = ChunkResult {
+            content: "hello".into(),
+            score: Some(0.87),
+            index: 0,
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["score"], 0.87);
+        let back: ChunkResult = serde_json::from_value(json).unwrap();
+        assert_eq!(back.content, "hello");
+    }
+
+    #[test]
+    fn chunk_result_score_omitted_when_none() {
+        let c = ChunkResult {
+            content: "hi".into(),
+            score: None,
+            index: 1,
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        assert!(json.get("score").is_none());
+    }
+
+    #[test]
+    fn scraped_image_equality_and_round_trip() {
+        let a = ScrapedImage {
+            url: "https://example.com/x.png".into(),
+            alt: Some("logo".into()),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+        let json = serde_json::to_value(&a).unwrap();
+        assert_eq!(json["url"], "https://example.com/x.png");
+        assert_eq!(json["alt"], "logo");
+    }
+
+    #[test]
+    fn scraped_image_alt_omitted_when_none() {
+        let img = ScrapedImage {
+            url: "https://example.com/x.png".into(),
+            alt: None,
+        };
+        let json = serde_json::to_value(&img).unwrap();
+        assert!(json.get("alt").is_none());
+    }
+
+    // ── ScrapeData (additional) ──
+
+    #[test]
+    fn scrape_data_camel_case_field_names() {
+        let mut d = min_scrape_data();
+        d.source_hash = Some("sha256:x".into());
+        d.llm_input_hash = Some("sha256:y".into());
+        d.basis_warnings = vec![];
+        d.render_decision = None;
+        d.credit_cost = 1;
+        d.debug_extraction = None;
+        d.content_type = Some("text/html".into());
+        d.plain_text = Some("text".into());
+        d.raw_html = Some("<html></html>".into());
+        let json = serde_json::to_value(&d).unwrap();
+        for key in [
+            "sourceHash",
+            "llmInputHash",
+            "creditCost",
+            "contentType",
+            "plainText",
+            "rawHtml",
+        ] {
+            assert!(json.get(key).is_some(), "missing {key}");
+        }
+        for key in [
+            "source_hash",
+            "llm_input_hash",
+            "credit_cost",
+            "content_type",
+        ] {
+            assert!(json.get(key).is_none(), "unexpected snake_case {key}");
+        }
+    }
+
+    #[test]
+    fn scrape_data_source_hash_omitted_when_none() {
+        let d = min_scrape_data();
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.get("sourceHash").is_none());
+    }
+
+    #[test]
+    fn scrape_data_credit_cost_omitted_when_zero() {
+        let d = min_scrape_data();
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.get("creditCost").is_none());
+    }
+
+    #[test]
+    fn scrape_data_credit_cost_present_when_nonzero() {
+        let mut d = min_scrape_data();
+        d.credit_cost = 2;
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["creditCost"], 2);
+    }
+
+    #[test]
+    fn scrape_data_truncated_omitted_when_false() {
+        let d = min_scrape_data();
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.get("truncated").is_none());
+    }
+
+    #[test]
+    fn scrape_data_truncated_present_when_true() {
+        let mut d = min_scrape_data();
+        d.truncated = true;
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["truncated"], true);
+    }
+
+    #[test]
+    fn scrape_data_warnings_omitted_when_empty() {
+        let d = min_scrape_data();
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.get("warnings").is_none());
+    }
+
+    #[test]
+    fn scrape_data_basis_round_trip_supported_field() {
+        let mut d = min_scrape_data();
+        d.basis = Some(vec![crate::evidence::Basis {
+            basis_version: 1,
+            field: "price".into(),
+            value: Some(serde_json::json!(9.99)),
+            status: crate::evidence::FieldStatus::Supported,
+            confidence: None,
+            reasoning: None,
+            citations: Vec::new(),
+        }]);
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["basis"][0]["field"], "price");
+        assert_eq!(json["basis"][0]["status"], "supported");
+        let back: ScrapeData = serde_json::from_value(json).unwrap();
+        assert_eq!(back.basis.unwrap()[0].value, Some(serde_json::json!(9.99)));
+    }
+
+    #[test]
+    fn scrape_data_basis_warnings_round_trip() {
+        let mut d = min_scrape_data();
+        d.basis_warnings = vec![crate::evidence::BasisWarning {
+            field: "price".into(),
+            code: "unverified_citation".into(),
+        }];
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["basisWarnings"][0]["code"], "unverified_citation");
+    }
+
+    #[test]
+    fn scrape_data_block_omitted_when_none() {
+        let d = min_scrape_data();
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.get("block").is_none());
+    }
+
+    #[test]
+    fn scrape_data_http_error_uses_custom_warning_text_when_present() {
+        let mut d = min_scrape_data();
+        d.metadata.status_code = 403;
+        d.warning = Some("proxy blocked".into());
+        assert_eq!(d.http_error(), None, "no body means nothing to judge");
+        d.markdown = Some("x".into());
+        assert_eq!(d.http_error(), Some("proxy blocked".into()));
+    }
+
+    #[test]
+    fn scrape_data_http_error_default_message_when_no_warning() {
+        let mut d = min_scrape_data();
+        d.metadata.status_code = 500;
+        d.markdown = Some("x".into());
+        assert_eq!(d.http_error(), Some("Target returned HTTP 500".into()));
+    }
+
+    #[test]
+    fn scrape_data_http_error_boundary_exactly_at_threshold_is_real_page() {
+        let mut d = min_scrape_data();
+        d.metadata.status_code = 404;
+        d.markdown = Some("x".repeat(2_500));
+        assert_eq!(
+            d.http_error(),
+            None,
+            "exactly at ERROR_PAGE_MAX_TEXT counts as real"
+        );
+    }
+
+    #[test]
+    fn scrape_data_http_error_one_byte_under_threshold_fires() {
+        let mut d = min_scrape_data();
+        d.metadata.status_code = 404;
+        d.markdown = Some("x".repeat(2_499));
+        assert!(d.http_error().is_some());
+    }
+
+    #[test]
+    fn scrape_data_http_error_status_399_never_fires() {
+        let mut d = min_scrape_data();
+        d.metadata.status_code = 399;
+        d.markdown = Some("x".into());
+        assert_eq!(d.http_error(), None);
+    }
+
+    #[test]
+    fn scrape_data_http_error_status_exactly_400_can_fire() {
+        let mut d = min_scrape_data();
+        d.metadata.status_code = 400;
+        d.markdown = Some("x".into());
+        assert!(d.http_error().is_some());
+    }
+
+    #[test]
+    fn scrape_data_deserialize_missing_optional_fields_defaults_cleanly() {
+        let json = serde_json::json!({
+            "metadata": {
+                "title": null,
+                "description": null,
+                "sourceURL": "https://example.com",
+                "statusCode": 200,
+                "elapsedMs": 0
+            }
+        });
+        let d: ScrapeData = serde_json::from_value(json).unwrap();
+        assert!(d.markdown.is_none());
+        assert!(d.warnings.is_empty());
+        assert_eq!(d.credit_cost, 0);
+        assert!(!d.truncated);
+        assert!(d.block.is_none());
+    }
+
+    // ── BlockOutcome / vendor constants ──
+
+    #[test]
+    fn block_outcome_camel_case_round_trip() {
+        let b = BlockOutcome {
+            vendor: "datadome".into(),
+            reason: "js challenge".into(),
+        };
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["vendor"], "datadome");
+        assert_eq!(json["reason"], "js challenge");
+        let back: BlockOutcome = serde_json::from_value(json).unwrap();
+        assert_eq!(back.vendor, "datadome");
+    }
+
+    #[test]
+    fn vendor_constants_have_expected_values() {
+        assert_eq!(STRUCTURAL_FAILURE_VENDOR, "structural_failure");
+        assert_eq!(HTTP_ERROR_VENDOR, "http_error");
+        assert_eq!(PARKED_DOMAIN_VENDOR, "parked_domain");
+    }
+
+    #[test]
+    fn block_message_parked_domain_uses_soft_wording() {
+        let b = BlockOutcome {
+            vendor: PARKED_DOMAIN_VENDOR.into(),
+            reason: "GoDaddy parking page".into(),
+        };
+        let m = b.message();
+        assert!(m.starts_with("No usable content could be extracted"));
+        assert!(!m.contains("Blocked by anti-bot"));
+    }
+
+    #[test]
+    fn block_message_http_error_vendor_uses_anti_bot_wording() {
+        // http_error is deliberately NOT special-cased in `message()` — only
+        // structural_failure and parked_domain get the softer phrasing.
+        let b = BlockOutcome {
+            vendor: HTTP_ERROR_VENDOR.into(),
+            reason: "origin returned 500".into(),
+        };
+        assert_eq!(
+            b.message(),
+            "Blocked by anti-bot (http_error): origin returned 500"
+        );
+    }
+
+    // ── DebugExtraction / DebugAttempt / DebugCandidate ──
+
+    #[test]
+    fn debug_extraction_default_is_empty_attempts() {
+        let d = DebugExtraction::default();
+        assert!(d.attempts.is_empty());
+    }
+
+    #[test]
+    fn debug_candidate_optional_fields_omitted_when_none() {
+        let c = DebugCandidate {
+            kind: "readability".into(),
+            text: None,
+            text_excerpt: None,
+            cap_chars: None,
+            score: 0.5,
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        assert!(json.get("text").is_none());
+        assert!(json.get("textExcerpt").is_none());
+        assert!(json.get("capChars").is_none());
+        assert_eq!(json["score"], 0.5);
+    }
+
+    #[test]
+    fn debug_extraction_full_nested_round_trip() {
+        let d = DebugExtraction {
+            attempts: vec![DebugAttempt {
+                renderer: "chrome".into(),
+                extracted_via: "readability".into(),
+                candidate_features: Some(serde_json::json!({"len": 100})),
+                candidates: vec![DebugCandidate {
+                    kind: "readability".into(),
+                    text: Some("body text".into()),
+                    text_excerpt: Some("body...".into()),
+                    cap_chars: Some(500),
+                    score: 0.9,
+                }],
+            }],
+        };
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["attempts"][0]["renderer"], "chrome");
+        assert_eq!(json["attempts"][0]["extractedVia"], "readability");
+        assert_eq!(json["attempts"][0]["candidates"][0]["capChars"], 500);
+        let back: DebugExtraction = serde_json::from_value(json).unwrap();
+        assert_eq!(back.attempts.len(), 1);
+    }
+
+    // ── ApiResponse ──
+
+    #[test]
+    fn api_response_ok_round_trip() {
+        let r = ApiResponse::ok(serde_json::json!({"a": 1}));
+        assert!(r.success);
+        assert!(r.error.is_none());
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["data"]["a"], 1);
+        assert!(json.get("error").is_none());
+        assert!(json.get("errorCode").is_none());
+        assert!(json.get("warning").is_none());
+    }
+
+    #[test]
+    fn api_response_err_round_trip() {
+        let r: ApiResponse<serde_json::Value> = ApiResponse::err("bad url");
+        assert!(!r.success);
+        assert!(r.data.is_none());
+        assert_eq!(r.error, Some("bad url".into()));
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(json.get("data").is_none());
+        assert_eq!(json["error"], "bad url");
+    }
+
+    #[test]
+    fn api_response_err_with_code_round_trip() {
+        let r: ApiResponse<serde_json::Value> =
+            ApiResponse::err_with_code("bad url", "invalid_request");
+        assert_eq!(r.error_code, Some("invalid_request".into()));
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["errorCode"], "invalid_request");
+    }
+
+    #[test]
+    fn api_response_deserialize_accepts_snake_case_error_code_alias() {
+        let json = serde_json::json!({
+            "success": false,
+            "error": "bad",
+            "error_code": "invalid_request"
+        });
+        let r: ApiResponse<serde_json::Value> = serde_json::from_value(json).unwrap();
+        assert_eq!(r.error_code, Some("invalid_request".into()));
+    }
+
+    #[test]
+    fn api_response_warning_omitted_when_none() {
+        let r = ApiResponse::ok(1u32);
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(json.get("warning").is_none());
+    }
+
+    // ── CrawlRequest (additional) ──
+
+    #[test]
+    fn crawl_request_max_pages_accepts_limit_alias() {
+        let json = serde_json::json!({ "url": "https://example.com", "limit": 25 });
+        let req: CrawlRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.max_pages, Some(25));
+    }
+
+    #[test]
+    fn crawl_request_max_pages_accepts_snake_case_alias() {
+        let json = serde_json::json!({ "url": "https://example.com", "max_pages": 30 });
+        let req: CrawlRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.max_pages, Some(30));
+    }
+
+    #[test]
+    fn crawl_request_camel_case_max_pages_primary_name() {
+        let json = serde_json::json!({ "url": "https://example.com", "maxPages": 40 });
+        let req: CrawlRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.max_pages, Some(40));
+    }
+
+    #[test]
+    fn crawl_request_proxy_rotation_and_country_round_trip() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "country": "de",
+            "proxyList": ["http://p:1"],
+            "proxyRotation": "sticky_per_host"
+        });
+        let req: CrawlRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.country, Some("de".into()));
+        assert_eq!(req.proxy_list, vec!["http://p:1".to_string()]);
+        assert!(matches!(
+            req.proxy_rotation,
+            Some(crate::proxy::ProxyRotation::StickyPerHost)
+        ));
+    }
+
+    #[test]
+    fn crawl_request_formats_and_only_main_content_defaults() {
+        let json = serde_json::json!({ "url": "https://example.com" });
+        let req: CrawlRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.formats, vec![OutputFormat::Markdown]);
+        assert!(req.only_main_content);
+        assert!(req.max_depth.is_none());
+        assert!(req.max_pages.is_none());
+    }
+
+    #[test]
+    fn crawl_request_requires_url_field() {
+        let result: Result<CrawlRequest, _> = serde_json::from_value(serde_json::json!({}));
+        assert!(result.is_err());
+    }
+
+    // ── CrawlStatus / CrawlState / CrawlStartResponse ──
+
+    #[test]
+    fn crawl_status_serde_rename_each_variant() {
+        for (v, expected) in [
+            (CrawlStatus::InProgress, "\"scraping\""),
+            (CrawlStatus::Completed, "\"completed\""),
+            (CrawlStatus::Failed, "\"failed\""),
+            (CrawlStatus::Cancelled, "\"cancelled\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), expected);
+            let back: CrawlStatus = serde_json::from_str(expected).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn crawl_status_terminal_states() {
+        assert!(matches!(
+            CrawlStatus::Completed,
+            CrawlStatus::Completed | CrawlStatus::Failed | CrawlStatus::Cancelled
+        ));
+        assert!(matches!(
+            CrawlStatus::Cancelled,
+            CrawlStatus::Completed | CrawlStatus::Failed | CrawlStatus::Cancelled
+        ));
+        assert!(!matches!(
+            CrawlStatus::InProgress,
+            CrawlStatus::Completed | CrawlStatus::Failed | CrawlStatus::Cancelled
+        ));
+    }
+
+    #[test]
+    fn crawl_state_id_is_never_serialized() {
+        let state = CrawlState {
+            id: Uuid::nil(),
+            success: true,
+            status: CrawlStatus::Completed,
+            total: 1,
+            completed: 1,
+            blocked: 0,
+            data: Vec::new(),
+            error: None,
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert!(json.get("id").is_none());
+        assert!(json.get("error").is_none());
+        assert_eq!(json["status"], "completed");
+    }
+
+    #[test]
+    fn crawl_state_blocked_defaults_to_zero_for_older_payloads() {
+        let json = serde_json::json!({
+            "id": Uuid::nil(),
+            "success": true,
+            "status": "completed",
+            "total": 1,
+            "completed": 1,
+            "data": []
+        });
+        let state: CrawlState = serde_json::from_value(json).unwrap();
+        assert_eq!(state.blocked, 0);
+    }
+
+    #[test]
+    fn crawl_start_response_round_trip() {
+        let r = CrawlStartResponse {
+            success: true,
+            id: "job-123".into(),
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["id"], "job-123");
+        let back: CrawlStartResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(back.id, "job-123");
+    }
+
+    // ── MapRequest / MapData / MapResponse ──
+
+    #[test]
+    fn map_request_defaults_use_sitemap_and_crawl_fallback_true() {
+        let req: MapRequest =
+            serde_json::from_value(serde_json::json!({ "url": "https://example.com" })).unwrap();
+        assert!(req.use_sitemap);
+        assert!(req.crawl_fallback);
+        assert!(req.max_depth.is_none());
+        assert!(req.timeout.is_none());
+        assert!(req.limit.is_none());
+    }
+
+    #[test]
+    fn map_request_camel_case_field_names() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "maxDepth": 2,
+            "useSitemap": false,
+            "crawlFallback": false,
+            "stripTrackingParams": true,
+            "dropActionUrls": true,
+            "ignoreQueryParameters": true,
+            "extraTrackingParams": ["ref"],
+            "extraActionParams": ["logout"],
+            "preserveParams": ["page"],
+            "limit": 5000
+        });
+        let req: MapRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.max_depth, Some(2));
+        assert!(!req.use_sitemap);
+        assert!(!req.crawl_fallback);
+        assert_eq!(req.strip_tracking_params, Some(true));
+        assert_eq!(req.drop_action_urls, Some(true));
+        assert_eq!(req.ignore_query_parameters, Some(true));
+        assert_eq!(req.extra_tracking_params, Some(vec!["ref".to_string()]));
+        assert_eq!(req.extra_action_params, Some(vec!["logout".to_string()]));
+        assert_eq!(req.preserve_params, Some(vec!["page".to_string()]));
+        assert_eq!(req.limit, Some(5000));
+    }
+
+    #[test]
+    fn map_data_defaults_zero_counts_and_empty_sitemaps() {
+        let data: MapData = serde_json::from_value(serde_json::json!({ "links": [] })).unwrap();
+        assert_eq!(data.dropped_action_count, 0);
+        assert_eq!(data.stripped_tracking_count, 0);
+        assert!(data.sitemaps.is_empty());
+    }
+
+    #[test]
+    fn map_data_camel_case_field_names() {
+        let data = MapData {
+            links: vec!["https://example.com/a".into()],
+            dropped_action_count: 2,
+            stripped_tracking_count: 3,
+            sitemaps: vec!["https://example.com/sitemap.xml".into()],
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert_eq!(json["droppedActionCount"], 2);
+        assert_eq!(json["strippedTrackingCount"], 3);
+        assert_eq!(json["sitemaps"][0], "https://example.com/sitemap.xml");
+    }
+
+    #[test]
+    fn map_response_type_alias_ok_and_err() {
+        let ok: MapResponse = ApiResponse::ok(MapData {
+            links: vec!["https://example.com".into()],
+            dropped_action_count: 0,
+            stripped_tracking_count: 0,
+            sitemaps: Vec::new(),
+        });
+        assert!(ok.success);
+        let err: MapResponse = ApiResponse::err("bad url");
+        assert!(!err.success);
+        assert!(err.data.is_none());
+    }
+
+    // ── Search types ──
+
+    #[test]
+    fn search_source_searxng_category_mapping() {
+        assert_eq!(SearchSource::Web.searxng_category(), "general");
+        assert_eq!(SearchSource::News.searxng_category(), "news");
+        assert_eq!(SearchSource::Images.searxng_category(), "images");
+    }
+
+    #[test]
+    fn search_source_serde_lowercase() {
+        for (v, s) in [
+            (SearchSource::Web, "\"web\""),
+            (SearchSource::News, "\"news\""),
+            (SearchSource::Images, "\"images\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), s);
+            let back: SearchSource = serde_json::from_str(s).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn search_category_from_string_curated_variants() {
+        assert_eq!(
+            SearchCategory::from("github".to_string()),
+            SearchCategory::Github
+        );
+        assert_eq!(
+            SearchCategory::from("research".to_string()),
+            SearchCategory::Research
+        );
+        assert_eq!(SearchCategory::from("pdf".to_string()), SearchCategory::Pdf);
+    }
+
+    #[test]
+    fn search_category_from_string_other_passthrough() {
+        let cat = SearchCategory::from("science".to_string());
+        assert_eq!(cat, SearchCategory::Other("science".into()));
+        assert_eq!(cat.as_str(), "science");
+    }
+
+    #[test]
+    fn search_category_serialize_deserialize_round_trip() {
+        for s in ["\"github\"", "\"research\"", "\"pdf\"", "\"news\""] {
+            let parsed: SearchCategory = serde_json::from_str(s).unwrap();
+            assert_eq!(serde_json::to_string(&parsed).unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn search_time_filter_serde_rename_each_variant() {
+        for (v, s) in [
+            (SearchTimeFilter::Hour, "\"qdr:h\""),
+            (SearchTimeFilter::Day, "\"qdr:d\""),
+            (SearchTimeFilter::Week, "\"qdr:w\""),
+            (SearchTimeFilter::Month, "\"qdr:m\""),
+            (SearchTimeFilter::Year, "\"qdr:y\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), s);
+            let back: SearchTimeFilter = serde_json::from_str(s).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn search_time_filter_searxng_time_range_mapping() {
+        assert_eq!(SearchTimeFilter::Hour.searxng_time_range(), "day");
+        assert_eq!(SearchTimeFilter::Day.searxng_time_range(), "day");
+        assert_eq!(SearchTimeFilter::Week.searxng_time_range(), "week");
+        assert_eq!(SearchTimeFilter::Month.searxng_time_range(), "month");
+        assert_eq!(SearchTimeFilter::Year.searxng_time_range(), "year");
+    }
+
+    #[test]
+    fn search_scrape_options_defaults_from_empty_object() {
+        let opts: SearchScrapeOptions = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(opts.formats, vec![OutputFormat::Markdown]);
+        assert!(opts.only_main_content);
+        assert!(opts.country.is_none());
+        assert!(opts.timeout.is_none());
+    }
+
+    #[test]
+    fn search_scrape_options_camel_case_field_names() {
+        let opts = SearchScrapeOptions {
+            formats: vec![OutputFormat::Markdown],
+            only_main_content: false,
+            country: Some("gb".into()),
+            timeout: Some(5000),
+        };
+        let json = serde_json::to_value(&opts).unwrap();
+        assert!(json.get("onlyMainContent").is_some());
+        assert_eq!(json["country"], "gb");
+        assert_eq!(json["timeout"], 5000);
+    }
+
+    #[test]
+    fn search_request_paid_rescue_cannot_be_set_from_a_request_body() {
+        let json = serde_json::json!({
+            "query": "rust async runtimes",
+            "paidRescue": true
+        });
+        let req: SearchRequest = serde_json::from_value(json).unwrap();
+        assert!(
+            !req.paid_rescue,
+            "paidRescue must never be settable by an untrusted caller"
+        );
+    }
+
+    #[test]
+    fn search_request_paid_rescue_never_serialized() {
+        let mut req: SearchRequest =
+            serde_json::from_value(serde_json::json!({ "query": "q" })).unwrap();
+        req.paid_rescue = true;
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("paidRescue").is_none());
+        assert!(json.get("paid_rescue").is_none());
+    }
+
+    #[test]
+    fn search_request_accepts_snake_case_aliases() {
+        let json = serde_json::json!({
+            "query": "q",
+            "summarize_results": true,
+            "answer_top_n": 3,
+            "max_chars_per_source": 4096,
+            "llm_api_key": "k",
+            "llm_provider": "openai",
+            "llm_model": "gpt",
+            "base_url": "https://x.example.com",
+            "summary_prompt": "be terse",
+            "answer_prompt": "be terse",
+            "answer_temperature": 0.0,
+            "query_expand_variants": 2,
+            "query_expand": true,
+            "multi_round": false,
+            "snippet_first": true,
+            "answer_list_format": true,
+            "max_content_chars": 1000
+        });
+        let req: SearchRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(req.summarize_results, Some(true));
+        assert_eq!(req.answer_top_n, Some(3));
+        assert_eq!(req.max_chars_per_source, Some(4096));
+        assert_eq!(req.llm_api_key, Some("k".into()));
+        assert_eq!(req.llm_provider, Some("openai".into()));
+        assert_eq!(req.llm_model, Some("gpt".into()));
+        assert_eq!(req.base_url, Some("https://x.example.com".into()));
+        assert_eq!(req.summary_prompt, Some("be terse".into()));
+        assert_eq!(req.answer_prompt, Some("be terse".into()));
+        assert_eq!(req.answer_temperature, Some(0.0));
+        assert_eq!(req.query_expand_variants, Some(2));
+        assert_eq!(req.query_expand, Some(true));
+        assert_eq!(req.multi_round, Some(false));
+        assert_eq!(req.snippet_first, Some(true));
+        assert_eq!(req.answer_list_format, Some(true));
+        assert_eq!(req.max_content_chars, Some(1000));
+    }
+
+    #[test]
+    fn search_request_requires_query_field() {
+        let result: Result<SearchRequest, _> = serde_json::from_value(serde_json::json!({}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn search_request_categories_round_trip_mixed_curated_and_other() {
+        let json = serde_json::json!({
+            "query": "q",
+            "categories": ["github", "science", "pdf"]
+        });
+        let req: SearchRequest = serde_json::from_value(json).unwrap();
+        let cats = req.categories.unwrap();
+        assert_eq!(cats[0], SearchCategory::Github);
+        assert_eq!(cats[1], SearchCategory::Other("science".into()));
+        assert_eq!(cats[2], SearchCategory::Pdf);
+    }
+
+    #[test]
+    fn search_result_snippet_defaults_to_empty_string_when_absent() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "title": "t",
+            "description": "d",
+            "position": 1
+        });
+        let r: SearchResult = serde_json::from_value(json).unwrap();
+        assert_eq!(r.snippet, "");
+    }
+
+    #[test]
+    fn search_result_optional_fields_omitted_when_none() {
+        let r = SearchResult {
+            url: "https://example.com".into(),
+            title: "t".into(),
+            description: "d".into(),
+            snippet: "d".into(),
+            position: 0,
+            score: None,
+            published_date: None,
+            category: None,
+            markdown: None,
+            html: None,
+            raw_html: None,
+            links: None,
+            metadata: None,
+            summary: None,
+            error: None,
+            truncated: None,
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        for key in [
+            "score",
+            "publishedDate",
+            "category",
+            "markdown",
+            "html",
+            "rawHtml",
+            "links",
+            "metadata",
+            "summary",
+            "error",
+            "truncated",
+        ] {
+            assert!(json.get(key).is_none(), "expected {key} omitted");
+        }
+    }
+
+    #[test]
+    fn search_result_truncated_defaults_to_none_for_backward_compat() {
+        let json = serde_json::json!({
+            "url": "https://example.com",
+            "title": "t",
+            "description": "d",
+            "position": 0
+        });
+        let r: SearchResult = serde_json::from_value(json).unwrap();
+        assert_eq!(r.truncated, None);
+    }
+
+    #[test]
+    fn image_result_round_trip() {
+        let img = ImageResult {
+            url: "https://example.com/page".into(),
+            title: "t".into(),
+            description: "d".into(),
+            image_url: "https://example.com/x.png".into(),
+            position: 2,
+            thumbnail_url: Some("https://example.com/x_thumb.png".into()),
+            image_format: Some("png".into()),
+            resolution: Some("800x600".into()),
+        };
+        let json = serde_json::to_value(&img).unwrap();
+        assert_eq!(json["imageUrl"], "https://example.com/x.png");
+        assert_eq!(json["thumbnailUrl"], "https://example.com/x_thumb.png");
+        assert_eq!(json["imageFormat"], "png");
+        let back: ImageResult = serde_json::from_value(json).unwrap();
+        assert_eq!(back.resolution, Some("800x600".into()));
+    }
+
+    #[test]
+    fn grouped_search_data_default_is_all_none() {
+        let g = GroupedSearchData::default();
+        assert!(g.web.is_none());
+        assert!(g.news.is_none());
+        assert!(g.images.is_none());
+    }
+
+    #[test]
+    fn grouped_search_data_omits_none_fields() {
+        let g = GroupedSearchData {
+            web: Some(Vec::new()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&g).unwrap();
+        assert!(json.get("web").is_some());
+        assert!(json.get("news").is_none());
+        assert!(json.get("images").is_none());
+    }
+
+    #[test]
+    fn search_data_untagged_flat_array() {
+        let json = serde_json::json!([]);
+        let data: SearchData = serde_json::from_value(json).unwrap();
+        assert!(matches!(data, SearchData::Flat(v) if v.is_empty()));
+    }
+
+    #[test]
+    fn search_data_untagged_grouped_object() {
+        let json = serde_json::json!({ "web": [] });
+        let data: SearchData = serde_json::from_value(json).unwrap();
+        assert!(matches!(data, SearchData::Grouped(_)));
+    }
+
+    #[test]
+    fn citation_round_trip() {
+        let c = Citation {
+            url: "https://example.com".into(),
+            title: "t".into(),
+            position: 0,
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        let back: Citation = serde_json::from_value(json).unwrap();
+        assert_eq!(back.position, 0);
+    }
+
+    #[test]
+    fn search_response_data_citations_and_warnings_omitted_when_empty() {
+        let data = SearchResponseData {
+            results: SearchData::Flat(Vec::new()),
+            answer: None,
+            citations: Vec::new(),
+            llm_usage: None,
+            warnings: Vec::new(),
+        };
+        let json = serde_json::to_value(&data).unwrap();
+        assert!(json.get("citations").is_none());
+        assert!(json.get("warnings").is_none());
+        assert!(json.get("answer").is_none());
+        assert!(json.get("llmUsage").is_none());
+    }
+
+    #[test]
+    fn search_response_type_alias_round_trip() {
+        let r: SearchResponse = ApiResponse::ok(SearchResponseData {
+            results: SearchData::Flat(Vec::new()),
+            answer: Some("42".into()),
+            citations: Vec::new(),
+            llm_usage: None,
+            warnings: Vec::new(),
+        });
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["data"]["answer"], "42");
+    }
+
+    // ── RendererKind ──
+
+    #[test]
+    fn renderer_kind_serde_lowercase_each_variant() {
+        for (v, s) in [
+            (RendererKind::Http, "\"http\""),
+            (RendererKind::Lightpanda, "\"lightpanda\""),
+            (RendererKind::Chrome, "\"chrome\""),
+            (RendererKind::Camoufox, "\"camoufox\""),
+            (RendererKind::Cloak, "\"cloak\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), s);
+            let back: RendererKind = serde_json::from_str(s).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn renderer_kind_as_str_matches_serialized_form() {
+        for v in [
+            RendererKind::Http,
+            RendererKind::Lightpanda,
+            RendererKind::Chrome,
+            RendererKind::ChromeProxy,
+            RendererKind::Camoufox,
+            RendererKind::Cloak,
+        ] {
+            let serialized = serde_json::to_string(&v).unwrap();
+            let unquoted = serialized.trim_matches('"');
+            assert_eq!(v.as_str(), unquoted, "{v:?}");
+        }
+    }
+
+    // ── RenderDecision ──
+
+    #[test]
+    fn render_decision_user_pinned_round_trip() {
+        let d = RenderDecision::UserPinned {
+            renderer: RendererKind::Chrome,
+        };
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["kind"], "userPinned");
+        assert_eq!(json["renderer"], "chrome");
+        let back: RenderDecision = serde_json::from_value(json).unwrap();
+        assert_eq!(back, d);
+    }
+
+    #[test]
+    fn render_decision_auto_default_round_trip() {
+        let d = RenderDecision::AutoDefault {
+            chosen: RendererKind::Http,
+        };
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["kind"], "autoDefault");
+        assert_eq!(json["chosen"], "http");
+    }
+
+    #[test]
+    fn render_decision_auto_promoted_round_trip() {
+        let d = RenderDecision::AutoPromoted {
+            chosen: RendererKind::Chrome,
+            from: RendererKind::Lightpanda,
+            reason: "next.js hydration failed".into(),
+        };
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["kind"], "autoPromoted");
+        assert_eq!(json["from"], "lightpanda");
+        let back: RenderDecision = serde_json::from_value(json).unwrap();
+        assert_eq!(back, d);
+    }
+
+    #[test]
+    fn render_decision_breaker_skipped_round_trip() {
+        let d = RenderDecision::BreakerSkipped {
+            skipped: RendererKind::Lightpanda,
+            chosen: RendererKind::Chrome,
+        };
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["kind"], "breakerSkipped");
+        assert_eq!(json["skipped"], "lightpanda");
+    }
+
+    #[test]
+    fn render_decision_failover_round_trip_with_chain() {
+        let d = RenderDecision::Failover {
+            chain: vec![RendererKind::Lightpanda, RendererKind::Chrome],
+            reason: FailoverErrorKind::CloudflareChallenge,
+        };
+        let json = serde_json::to_value(&d).unwrap();
+        assert_eq!(json["kind"], "failover");
+        assert_eq!(json["chain"][0], "lightpanda");
+        assert_eq!(json["reason"], "cloudflareChallenge");
+        let back: RenderDecision = serde_json::from_value(json).unwrap();
+        assert_eq!(back, d);
+    }
+
+    // ── FailoverErrorKind ──
+
+    #[test]
+    fn failover_error_kind_counts_for_promotion_table() {
+        for (v, expected) in [
+            (FailoverErrorKind::NextJsClientError, true),
+            (FailoverErrorKind::EmptyNextRoot, true),
+            (FailoverErrorKind::LightpandaTimeout, true),
+            (FailoverErrorKind::LightpandaCrash, true),
+            (FailoverErrorKind::PlaceholderContent, true),
+            (FailoverErrorKind::AntibotBlock, true),
+            (FailoverErrorKind::CloudflareChallenge, false),
+            (FailoverErrorKind::VendorBlock, false),
+            (FailoverErrorKind::StatusBlocked, false),
+            (FailoverErrorKind::NetworkError, false),
+            (FailoverErrorKind::Other, false),
+        ] {
+            assert_eq!(v.counts_for_promotion(), expected, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn failover_error_kind_as_str_matches_serde_camel_case() {
+        for v in [
+            FailoverErrorKind::NextJsClientError,
+            FailoverErrorKind::EmptyNextRoot,
+            FailoverErrorKind::LightpandaTimeout,
+            FailoverErrorKind::LightpandaCrash,
+            FailoverErrorKind::CloudflareChallenge,
+            FailoverErrorKind::PlaceholderContent,
+            FailoverErrorKind::VendorBlock,
+            FailoverErrorKind::StatusBlocked,
+            FailoverErrorKind::AntibotBlock,
+            FailoverErrorKind::NetworkError,
+            FailoverErrorKind::Other,
+        ] {
+            let serialized = serde_json::to_string(&v).unwrap();
+            let unquoted = serialized.trim_matches('"');
+            assert_eq!(v.as_str(), unquoted, "{v:?}");
+        }
+    }
+
+    // ── Change tracking types ──
+
+    #[test]
+    fn change_tracking_mode_deserializes_git_dash_diff_alias() {
+        let parsed: ChangeTrackingMode = serde_json::from_str("\"git-diff\"").unwrap();
+        assert_eq!(parsed, ChangeTrackingMode::GitDiff);
+        let canonical: ChangeTrackingMode = serde_json::from_str("\"gitDiff\"").unwrap();
+        assert_eq!(canonical, ChangeTrackingMode::GitDiff);
+    }
+
+    #[test]
+    fn change_tracking_mode_serializes_canonical_camel_case() {
+        assert_eq!(
+            serde_json::to_string(&ChangeTrackingMode::GitDiff).unwrap(),
+            "\"gitDiff\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ChangeTrackingMode::Json).unwrap(),
+            "\"json\""
+        );
+    }
+
+    #[test]
+    fn change_tracking_mode_unknown_value_errors() {
+        let result: Result<ChangeTrackingMode, _> = serde_json::from_str("\"xmlDiff\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn change_tracking_snapshot_default_is_empty() {
+        let s = ChangeTrackingSnapshot::default();
+        assert!(s.markdown.is_none());
+        assert!(s.json.is_none());
+        assert_eq!(s.content_hash, "");
+        assert!(s.captured_at.is_none());
+    }
+
+    #[test]
+    fn change_tracking_snapshot_round_trip() {
+        let s = ChangeTrackingSnapshot {
+            markdown: Some("# hi".into()),
+            json: Some(serde_json::json!({"a": 1})),
+            content_hash: "sha256:abc".into(),
+            captured_at: Some("2026-08-25T00:00:00Z".into()),
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["contentHash"], "sha256:abc");
+        let back: ChangeTrackingSnapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(back.markdown, s.markdown);
+    }
+
+    #[test]
+    fn change_tracking_options_default_is_empty_modes() {
+        let o = ChangeTrackingOptions::default();
+        assert!(o.modes.is_empty());
+        assert!(o.schema.is_none());
+        assert!(o.previous.is_none());
+    }
+
+    #[test]
+    fn change_tracking_options_content_type_accepts_snake_case_alias() {
+        let json = serde_json::json!({ "content_type": "application/pdf" });
+        let o: ChangeTrackingOptions = serde_json::from_value(json).unwrap();
+        assert_eq!(o.content_type, Some("application/pdf".into()));
+    }
+
+    #[test]
+    fn change_tracking_options_previous_snapshot_round_trip() {
+        let o = ChangeTrackingOptions {
+            modes: vec![ChangeTrackingMode::GitDiff],
+            previous: Some(ChangeTrackingSnapshot {
+                content_hash: "sha256:old".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&o).unwrap();
+        assert_eq!(json["previous"]["contentHash"], "sha256:old");
+    }
+
+    #[test]
+    fn change_status_serde_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&ChangeStatus::Same).unwrap(),
+            "\"same\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ChangeStatus::Changed).unwrap(),
+            "\"changed\""
+        );
+    }
+
+    #[test]
+    fn change_confidence_serde_lowercase_each_variant() {
+        for (v, s) in [
+            (ChangeConfidence::Low, "\"low\""),
+            (ChangeConfidence::Medium, "\"medium\""),
+            (ChangeConfidence::High, "\"high\""),
+        ] {
+            assert_eq!(serde_json::to_string(&v).unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn meaningful_change_type_field_renamed_to_type() {
+        let m = MeaningfulChange {
+            change_type: "added".into(),
+            before: None,
+            after: Some("new text".into()),
+            reason: "new paragraph".into(),
+        };
+        let json = serde_json::to_value(&m).unwrap();
+        assert_eq!(json["type"], "added");
+        assert!(json.get("changeType").is_none());
+        assert!(json.get("before").is_none());
+        assert_eq!(json["after"], "new text");
+    }
+
+    #[test]
+    fn change_judgment_llm_usage_is_never_serialized() {
+        let j = ChangeJudgment {
+            meaningful: true,
+            confidence: ChangeConfidence::High,
+            reason: "price changed".into(),
+            meaningful_changes: vec![],
+            llm_usage: Some(usage(10, 5)),
+        };
+        let json = serde_json::to_value(&j).unwrap();
+        assert!(json.get("llmUsage").is_none());
+        assert!(json.get("llm_usage").is_none());
+        assert_eq!(json["meaningful"], true);
+        assert_eq!(json["confidence"], "high");
+    }
+
+    #[test]
+    fn change_judgment_meaningful_changes_defaults_empty_on_deserialize() {
+        let json = serde_json::json!({
+            "meaningful": false,
+            "confidence": "low",
+            "reason": "no material change"
+        });
+        let j: ChangeJudgment = serde_json::from_value(json).unwrap();
+        assert!(j.meaningful_changes.is_empty());
+        assert!(j.llm_usage.is_none());
+    }
+
+    #[test]
+    fn diff_change_type_field_renamed_and_line_numbers_omitted_when_none() {
+        let c = DiffChange {
+            change_type: "add".into(),
+            content: "+new line".into(),
+            ln: Some(5),
+            ln1: None,
+            ln2: None,
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["type"], "add");
+        assert_eq!(json["ln"], 5);
+        assert!(json.get("ln1").is_none());
+        assert!(json.get("ln2").is_none());
+    }
+
+    #[test]
+    fn diff_chunk_and_diff_file_round_trip() {
+        let file = DiffFile {
+            from: "previous".into(),
+            to: "current".into(),
+            additions: 1,
+            deletions: 0,
+            chunks: vec![DiffChunk {
+                content: "@@ -1,1 +1,2 @@".into(),
+                changes: vec![DiffChange {
+                    change_type: "add".into(),
+                    content: "+new".into(),
+                    ln: Some(2),
+                    ln1: None,
+                    ln2: None,
+                }],
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 2,
+            }],
+        };
+        let json = serde_json::to_value(&file).unwrap();
+        assert_eq!(json["chunks"][0]["oldStart"], 1);
+        assert_eq!(json["chunks"][0]["changes"][0]["type"], "add");
+        let back: DiffFile = serde_json::from_value(json).unwrap();
+        assert_eq!(back.additions, 1);
+    }
+
+    #[test]
+    fn diff_ast_truncated_omitted_when_false() {
+        let ast = DiffAst::default();
+        assert!(!ast.truncated);
+        assert!(ast.files.is_empty());
+        let json = serde_json::to_value(&ast).unwrap();
+        assert!(json.get("truncated").is_none());
+    }
+
+    #[test]
+    fn diff_ast_truncated_present_when_true() {
+        let ast = DiffAst {
+            truncated: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&ast).unwrap();
+        assert_eq!(json["truncated"], true);
+    }
+
+    #[test]
+    fn change_diff_both_fields_omitted_when_none() {
+        let d = ChangeDiff::default();
+        let json = serde_json::to_value(&d).unwrap();
+        assert!(json.get("text").is_none());
+        assert!(json.get("json").is_none());
+    }
+
+    #[test]
+    fn change_diff_json_accepts_either_array_or_object_shape() {
+        let array_shape = ChangeDiff {
+            text: None,
+            json: Some(serde_json::json!([{"a": 1}])),
+        };
+        let object_shape = ChangeDiff {
+            text: None,
+            json: Some(serde_json::json!({"path.to.field": {"previous": 1, "current": 2}})),
+        };
+        assert!(serde_json::to_value(&array_shape).unwrap()["json"].is_array());
+        assert!(serde_json::to_value(&object_shape).unwrap()["json"].is_object());
+    }
+
+    #[test]
+    fn change_tracking_result_full_round_trip() {
+        let r = ChangeTrackingResult {
+            status: ChangeStatus::Changed,
+            first_observation: false,
+            content_hash: "sha256:new".into(),
+            snapshot: Some(ChangeTrackingSnapshot {
+                content_hash: "sha256:new".into(),
+                ..Default::default()
+            }),
+            diff: Some(ChangeDiff {
+                text: Some("+added line".into()),
+                json: None,
+            }),
+            judgment: Some(ChangeJudgment {
+                meaningful: true,
+                confidence: ChangeConfidence::Medium,
+                reason: "content changed".into(),
+                meaningful_changes: Vec::new(),
+                llm_usage: None,
+            }),
+            tag: Some("target-1".into()),
+            truncated: false,
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["status"], "changed");
+        assert_eq!(json["contentHash"], "sha256:new");
+        assert_eq!(json["judgment"]["confidence"], "medium");
+        assert!(json.get("truncated").is_none());
+        let back: ChangeTrackingResult = serde_json::from_value(json).unwrap();
+        assert_eq!(back.tag, Some("target-1".into()));
+    }
+
+    #[test]
+    fn change_tracking_result_first_observation_defaults_false() {
+        let json = serde_json::json!({
+            "status": "same",
+            "contentHash": "sha256:x"
+        });
+        let r: ChangeTrackingResult = serde_json::from_value(json).unwrap();
+        assert!(!r.first_observation);
+        assert!(r.snapshot.is_none());
+        assert!(r.diff.is_none());
+        assert!(r.judgment.is_none());
+        assert!(r.tag.is_none());
+        assert!(!r.truncated);
+    }
 }
 
 /// Status of an async crawl job.

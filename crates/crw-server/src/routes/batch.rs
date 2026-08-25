@@ -174,7 +174,11 @@ pub async fn cancel_batch(state: State<AppState>, id: Path<Uuid>) -> Result<Json
 
 #[cfg(test)]
 mod tests {
-    use super::BatchStartResponse;
+    use super::*;
+    use axum::extract::{Path, State};
+    use crw_core::config::AppConfig;
+    use crw_core::types::CrawlStatus;
+    use serde_json::json;
 
     #[test]
     fn batch_start_response_is_camel_case() {
@@ -195,5 +199,174 @@ mod tests {
             v.get("invalidURLs").is_none(),
             "v2 capital-URL key leaked into v1"
         );
+    }
+
+    fn default_state() -> AppState {
+        let config: AppConfig = toml::from_str("").unwrap();
+        AppState::new(config).unwrap()
+    }
+
+    async fn call(state: &AppState, body: Value) -> Result<BatchStartResponse, AppError> {
+        start_batch(State(state.clone()), Ok(Json(body)))
+            .await
+            .map(|Json(r)| r)
+    }
+
+    fn invalid_request_message(err: &AppError) -> String {
+        match &err.0 {
+            CrwError::InvalidRequest(msg) => msg.clone(),
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn start_batch_requires_urls_field() {
+        let state = default_state();
+        let err = call(&state, json!({})).await.unwrap_err();
+        assert_eq!(invalid_request_message(&err), "`urls` is required");
+    }
+
+    #[tokio::test]
+    async fn start_batch_rejects_a_non_object_body() {
+        let state = default_state();
+        let err = call(&state, json!([1, 2, 3])).await.unwrap_err();
+        assert_eq!(
+            invalid_request_message(&err),
+            "request body must be a JSON object"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_batch_rejects_an_empty_urls_list() {
+        let state = default_state();
+        let err = call(&state, json!({"urls": []})).await.unwrap_err();
+        assert_eq!(
+            invalid_request_message(&err),
+            "`urls` must contain at least one URL"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_batch_rejects_urls_of_the_wrong_type() {
+        let state = default_state();
+        let err = call(&state, json!({"urls": "https://example.com"}))
+            .await
+            .unwrap_err();
+        assert!(invalid_request_message(&err).starts_with("invalid `urls`"));
+    }
+
+    #[tokio::test]
+    async fn start_batch_rejects_a_list_over_the_max_batch_urls_cap_before_any_url_work() {
+        let config: AppConfig = toml::from_str("[crawler]\nmax_batch_urls = 2\n").unwrap();
+        let state = AppState::new(config).unwrap();
+        let urls: Vec<String> = (0..3).map(|i| format!("https://example.com/{i}")).collect();
+        let err = call(&state, json!({"urls": urls})).await.unwrap_err();
+        let msg = invalid_request_message(&err);
+        assert!(
+            msg.contains("exceeds the maximum of 2 URLs per batch (got 3)"),
+            "message was: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_batch_accepts_a_list_exactly_at_the_max_batch_urls_cap() {
+        // At the cap, the request must pass the size guard and move on to
+        // per-URL validation (all invalid here, so it fails downstream —
+        // proving the cap check itself did not reject it).
+        let config: AppConfig = toml::from_str("[crawler]\nmax_batch_urls = 2\n").unwrap();
+        let state = AppState::new(config).unwrap();
+        let err = call(&state, json!({"urls": ["not-a-url", "also-not-a-url"]}))
+            .await
+            .unwrap_err();
+        assert_eq!(invalid_request_message(&err), "no valid URLs to scrape");
+    }
+
+    #[tokio::test]
+    async fn start_batch_rejects_an_unavailable_pinned_renderer_before_url_validation() {
+        // Default config builds no CDP tier, so any pinned renderer is
+        // unavailable. This must be caught up front, before the (also
+        // invalid) URLs are even checked.
+        let state = default_state();
+        let err = call(&state, json!({"urls": ["not-a-url"], "renderer": "chrome"}))
+            .await
+            .unwrap_err();
+        let msg = invalid_request_message(&err);
+        assert!(
+            msg.contains("renderer 'chrome' not available"),
+            "message was: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_batch_rejects_invalid_scrape_options() {
+        let state = default_state();
+        let err = call(
+            &state,
+            json!({"urls": ["https://example.com"], "formats": "not-an-array"}),
+        )
+        .await
+        .unwrap_err();
+        assert!(invalid_request_message(&err).starts_with("invalid batch scrape options"),);
+    }
+
+    #[tokio::test]
+    async fn start_batch_rejects_when_every_url_is_invalid() {
+        let state = default_state();
+        // "not-a-url" fails to parse; the loopback address fails the SSRF
+        // host check. Neither needs DNS, so this stays hermetic.
+        let err = call(&state, json!({"urls": ["not-a-url", "http://127.0.0.1/"]}))
+            .await
+            .unwrap_err();
+        assert_eq!(invalid_request_message(&err), "no valid URLs to scrape");
+    }
+
+    #[tokio::test]
+    async fn get_batch_errors_not_found_for_a_missing_id() {
+        let state = default_state();
+        let err = get_batch(State(state), Path(Uuid::new_v4()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err.0, CrwError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_batch_returns_the_jobs_current_snapshot() {
+        let state = default_state();
+        let id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::watch::channel(CrawlState {
+            id,
+            success: true,
+            status: CrawlStatus::InProgress,
+            total: 3,
+            completed: 1,
+            blocked: 0,
+            data: vec![],
+            error: None,
+        });
+        state.crawl_jobs.write().await.insert(
+            id,
+            crate::state::CrawlJob {
+                rx,
+                tx,
+                created_at: std::time::Instant::now(),
+                abort_handle: None,
+            },
+        );
+
+        let Json(snapshot) = get_batch(State(state), Path(id))
+            .await
+            .unwrap_or_else(|_| panic!("get_batch failed"));
+        assert_eq!(snapshot.status, CrawlStatus::InProgress);
+        assert_eq!(snapshot.total, 3);
+        assert_eq!(snapshot.completed, 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_batch_errors_not_found_for_a_missing_id() {
+        let state = default_state();
+        let err = cancel_batch(State(state), Path(Uuid::new_v4()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err.0, CrwError::NotFound(_)));
     }
 }

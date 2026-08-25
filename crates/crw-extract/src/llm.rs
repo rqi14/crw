@@ -764,6 +764,33 @@ fn parse_openai_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn openai_chat_response() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{ "message": { "content": "hello from mock" } }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 }
+        })
+    }
+
+    fn anthropic_chat_response() -> serde_json::Value {
+        serde_json::json!({
+            "content": [{ "type": "text", "text": "hello from anthropic mock" }],
+            "usage": { "input_tokens": 12, "output_tokens": 6 }
+        })
+    }
+
+    fn base_cfg(provider: &str, base_url: String) -> LlmConfig {
+        LlmConfig {
+            provider: provider.into(),
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: Some(base_url),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn supported_providers_are_the_ones_dispatch_accepts() {
@@ -955,5 +982,848 @@ mod tests {
         assert_eq!(usage.cache_hit_input_tokens, Some(400));
         assert_eq!(usage.cache_miss_input_tokens, Some(600));
         assert_eq!(usage.provider, "openai");
+    }
+
+    // ── SUPPORTED_PROVIDERS / dispatch table ──────────────────────────────
+
+    #[test]
+    fn supported_providers_exact_list() {
+        // Pins the exact advertised set + order for `/v1/capabilities`. A drift
+        // here (add/remove/reorder) must be a deliberate edit, not a surprise.
+        assert_eq!(
+            SUPPORTED_PROVIDERS,
+            &[
+                "anthropic",
+                "openai",
+                "deepseek",
+                "openai-compatible",
+                "openai-responses",
+                "azure",
+            ]
+        );
+    }
+
+    #[test]
+    fn is_supported_provider_rejects_whitespace_and_garbage() {
+        assert!(!is_supported_provider(" openai"));
+        assert!(!is_supported_provider("openai "));
+        assert!(!is_supported_provider("open ai"));
+        assert!(!is_supported_provider("openai\n"));
+        assert!(!is_supported_provider(&"x".repeat(10_000)));
+    }
+
+    #[test]
+    fn unknown_provider_error_echoes_offending_tag_verbatim() {
+        let msg = unknown_provider_error("Gr0q!!").to_string();
+        assert!(msg.contains("Gr0q!!"), "got: {msg}");
+    }
+
+    // ── truncate_on_char_boundary ──────────────────────────────────────────
+
+    #[test]
+    fn truncate_on_char_boundary_zero_cap_yields_empty() {
+        assert_eq!(truncate_on_char_boundary("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_cap_larger_than_input_is_a_noop() {
+        assert_eq!(truncate_on_char_boundary("hi", 1_000), "hi");
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_exact_boundary_kept_whole() {
+        // "hello" is 5 ASCII bytes; a cap exactly at the length must not clip.
+        assert_eq!(truncate_on_char_boundary("hello", 5), "hello");
+    }
+
+    // ── parse_anthropic_usage edge cases ───────────────────────────────────
+
+    #[test]
+    fn parse_anthropic_usage_missing_usage_field_is_none() {
+        let payload = serde_json::json!({ "content": [] });
+        assert!(parse_anthropic_usage(&payload, "claude-haiku-4-5").is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_usage_wrong_field_type_is_none() {
+        // `input_tokens` as a string fails the `.as_u64()` extraction, and the
+        // whole function returns `None` via `?` rather than panicking.
+        let payload = serde_json::json!({
+            "usage": { "input_tokens": "not-a-number", "output_tokens": 5 }
+        });
+        assert!(parse_anthropic_usage(&payload, "claude-haiku-4-5").is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_usage_zero_tokens() {
+        let payload = serde_json::json!({ "usage": { "input_tokens": 0, "output_tokens": 0 } });
+        let usage = parse_anthropic_usage(&payload, "claude-haiku-4-5").unwrap();
+        assert_eq!(usage.total_tokens, 0);
+        assert_eq!(usage.estimated_cost_usd, Some(0.0));
+    }
+
+    #[test]
+    fn parse_anthropic_usage_unknown_model_has_no_cost() {
+        let payload = serde_json::json!({ "usage": { "input_tokens": 100, "output_tokens": 50 } });
+        let usage = parse_anthropic_usage(&payload, "some-future-model-xyz").unwrap();
+        assert_eq!(usage.estimated_cost_usd, None);
+    }
+
+    // ── parse_openai_usage edge cases ──────────────────────────────────────
+
+    #[test]
+    fn parse_openai_usage_missing_usage_field_is_none() {
+        let payload = serde_json::json!({ "choices": [] });
+        assert!(parse_openai_usage(&payload, "gpt-4o-mini", "openai").is_none());
+    }
+
+    #[test]
+    fn parse_openai_usage_total_tokens_falls_back_to_sum_when_absent() {
+        let payload =
+            serde_json::json!({ "usage": { "prompt_tokens": 30, "completion_tokens": 20 } });
+        let usage = parse_openai_usage(&payload, "gpt-4o-mini", "openai").unwrap();
+        assert_eq!(usage.total_tokens, 50);
+    }
+
+    #[test]
+    fn parse_openai_usage_deepseek_hit_only_derives_miss() {
+        let payload = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 10,
+                "prompt_cache_hit_tokens": 700,
+            }
+        });
+        let usage = parse_openai_usage(&payload, "deepseek-chat", "deepseek").unwrap();
+        assert_eq!(usage.cache_hit_input_tokens, Some(700));
+        assert_eq!(usage.cache_miss_input_tokens, Some(300));
+    }
+
+    #[test]
+    fn parse_openai_usage_deepseek_miss_only_derives_hit() {
+        let payload = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 10,
+                "prompt_cache_miss_tokens": 250,
+            }
+        });
+        let usage = parse_openai_usage(&payload, "deepseek-chat", "deepseek").unwrap();
+        assert_eq!(usage.cache_hit_input_tokens, Some(750));
+        assert_eq!(usage.cache_miss_input_tokens, Some(250));
+    }
+
+    #[test]
+    fn parse_openai_usage_unknown_model_has_no_cost() {
+        let payload =
+            serde_json::json!({ "usage": { "prompt_tokens": 100, "completion_tokens": 50 } });
+        let usage = parse_openai_usage(&payload, "totally-unknown-model", "openai").unwrap();
+        assert_eq!(usage.estimated_cost_usd, None);
+    }
+
+    #[test]
+    fn parse_openai_usage_provider_tag_passthrough_for_azure() {
+        let payload =
+            serde_json::json!({ "usage": { "prompt_tokens": 10, "completion_tokens": 5 } });
+        let usage = parse_openai_usage(&payload, "gpt-4o-mini", "azure").unwrap();
+        assert_eq!(usage.provider, "azure");
+    }
+
+    // ── extract_via_llm: truncation edge cases (no network) ────────────────
+
+    #[tokio::test]
+    async fn extract_via_llm_zero_max_html_bytes_truncates_to_empty() {
+        // Provider is unknown so no network call is ever made; truncation runs
+        // first and must not panic on a zero-byte cap.
+        let result = extract_via_llm("<html>hi</html>", "key", "unknown", "m", None, 512, 0, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(result, CrwError::InvalidRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn extract_via_llm_azure_case_insensitive_still_requires_base_url() {
+        let result = extract_via_llm(
+            "<html></html>",
+            "key",
+            "AZURE",
+            "gpt-4o-mini",
+            None,
+            512,
+            10_000,
+            Some("2024-05-01-preview"),
+        )
+        .await;
+        assert!(matches!(result, Err(CrwError::InvalidRequest(_))));
+    }
+
+    // ── OpenAI-compatible URL construction: the doubling bug class ─────────
+
+    #[tokio::test]
+    async fn openai_bare_base_url_gets_chat_completions_appended() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let res = chat(&cfg, "sys", "user").await.expect("chat succeeds");
+        assert_eq!(res.content, "hello from mock");
+    }
+
+    #[tokio::test]
+    async fn openai_full_endpoint_used_verbatim_never_doubled() {
+        let server = MockServer::start().await;
+        // Mounted ONLY at the single, non-doubled path. A doubling bug would
+        // POST to `/chat/completions/chat/completions` and 404 here.
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", format!("{}/chat/completions", server.uri()));
+        chat(&cfg, "sys", "user")
+            .await
+            .expect("verbatim endpoint must not be doubled");
+    }
+
+    #[tokio::test]
+    async fn openai_v1_base_gets_single_chat_completions_suffix() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", format!("{}/v1", server.uri()));
+        chat(&cfg, "sys", "user").await.expect("chat succeeds");
+    }
+
+    #[tokio::test]
+    async fn openai_trailing_slash_base_not_double_slashed() {
+        let server = MockServer::start().await;
+        // Exact path match: a stray double slash (`/v1//chat/completions`) would
+        // NOT match this mock and the call would fail.
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", format!("{}/v1/", server.uri()));
+        chat(&cfg, "sys", "user").await.expect("chat succeeds");
+    }
+
+    #[tokio::test]
+    async fn deepseek_provider_tag_shares_openai_url_logic_and_reports_own_tag() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("deepseek", format!("{}/v1", server.uri()));
+        let res = chat(&cfg, "sys", "user").await.expect("chat succeeds");
+        assert_eq!(res.usage.unwrap().provider, "deepseek");
+    }
+
+    #[tokio::test]
+    async fn openai_compatible_provider_tag_routes_through_call_openai() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai-compatible", server.uri());
+        chat(&cfg, "sys", "user").await.expect("chat succeeds");
+    }
+
+    #[tokio::test]
+    async fn dispatch_provider_matching_is_case_insensitive_for_openai_and_deepseek() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .mount(&server)
+            .await;
+
+        let cfg_mixed = base_cfg("OpenAI", server.uri());
+        chat(&cfg_mixed, "sys", "user")
+            .await
+            .expect("mixed-case provider tag must still route");
+
+        let cfg_upper = base_cfg("DEEPSEEK", server.uri());
+        chat(&cfg_upper, "sys", "user")
+            .await
+            .expect("upper-case provider tag must still route");
+    }
+
+    // ── OpenAI error variants ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn openai_auth_failure_surfaces_status_and_provider() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "error": { "message": "Invalid API key" }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(err.contains("401"), "got: {err}");
+        assert!(err.contains("openai"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn openai_malformed_json_body_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("{not valid json", "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(err.contains("LLM response parse failed"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn openai_empty_choices_array_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "choices": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(
+            err.contains("openai response missing content"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_null_message_content_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": null } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(
+            err.contains("openai response missing content"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn openai_500_is_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(err.contains("500"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn openai_temperature_and_seed_forwarded_when_set() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .mount(&server)
+            .await;
+
+        let mut cfg = base_cfg("openai", server.uri());
+        cfg.temperature = Some(0.0);
+        chat(&cfg, "sys", "user").await.expect("chat succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body.get("temperature").and_then(|v| v.as_f64()), Some(0.0));
+        assert_eq!(body.get("seed").and_then(|v| v.as_i64()), Some(42));
+    }
+
+    #[tokio::test]
+    async fn openai_temperature_absent_when_unset() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        chat(&cfg, "sys", "user").await.expect("chat succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("seed").is_none());
+    }
+
+    // ── Anthropic ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn anthropic_success_round_trip_via_full_endpoint() {
+        // call_anthropic uses base_url VERBATIM (no path-appending logic), so
+        // the base must already be the full `/v1/messages` endpoint.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("anthropic", format!("{}/v1/messages", server.uri()));
+        let res = chat(&cfg, "sys", "user").await.expect("chat succeeds");
+        assert_eq!(res.content, "hello from anthropic mock");
+        let usage = res.usage.unwrap();
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 6);
+        assert_eq!(usage.provider, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn anthropic_error_status_surfaces_provider_tag() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("anthropic", format!("{}/v1/messages", server.uri()));
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(err.contains("500"), "got: {err}");
+        assert!(err.contains("anthropic"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_empty_content_array_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "content": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("anthropic", format!("{}/v1/messages", server.uri()));
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(
+            err.contains("anthropic response missing content"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_content_with_only_non_text_blocks_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "content": [{ "type": "tool_use", "id": "t1", "name": "x", "input": {} }]
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("anthropic", format!("{}/v1/messages", server.uri()));
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(
+            err.contains("anthropic response missing content"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_malformed_json_body_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("not json at all", "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("anthropic", format!("{}/v1/messages", server.uri()));
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(err.contains("LLM response parse failed"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_does_not_retry_on_429_single_post_contract() {
+        // Unlike the OpenAI path, call_anthropic has no retry loop: a 429 must
+        // hard-error on the first response, exactly one request.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(429))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("anthropic", format!("{}/v1/messages", server.uri()));
+        let err = chat(&cfg, "sys", "user").await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn anthropic_temperature_forwarded_when_set() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_chat_response()))
+            .mount(&server)
+            .await;
+
+        let mut cfg = base_cfg("anthropic", format!("{}/v1/messages", server.uri()));
+        cfg.temperature = Some(0.5);
+        chat(&cfg, "sys", "user").await.expect("chat succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body.get("temperature").and_then(|v| v.as_f64()), Some(0.5));
+    }
+
+    #[tokio::test]
+    async fn anthropic_temperature_absent_when_unset() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(anthropic_chat_response()))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("anthropic", format!("{}/v1/messages", server.uri()));
+        chat(&cfg, "sys", "user").await.expect("chat succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(body.get("temperature").is_none());
+    }
+
+    // ── Azure ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn azure_url_includes_deployment_and_api_version_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/openai/deployments/my-deployment/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = extract_via_llm(
+            "<html>hi</html>",
+            "key",
+            "azure",
+            "my-deployment",
+            Some(&server.uri()),
+            512,
+            10_000,
+            Some("2024-05-01-preview"),
+        )
+        .await;
+        assert!(result.is_ok(), "got: {result:?}");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests[0].url.query(),
+            Some("api-version=2024-05-01-preview")
+        );
+    }
+
+    #[tokio::test]
+    async fn azure_endpoint_trailing_slash_is_trimmed_not_doubled() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/openai/deployments/dep/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = extract_via_llm(
+            "<html></html>",
+            "key",
+            "azure",
+            "dep",
+            Some(&format!("{}/", server.uri())),
+            512,
+            10_000,
+            Some("2024-05-01-preview"),
+        )
+        .await;
+        assert!(result.is_ok(), "got: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn azure_success_reports_provider_tag_in_usage() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/openai/deployments/dep/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .mount(&server)
+            .await;
+
+        let cfg = LlmConfig {
+            provider: "azure".into(),
+            api_key: "key".into(),
+            model: "dep".into(),
+            base_url: Some(server.uri()),
+            azure_api_version: Some("2024-05-01-preview".into()),
+            ..Default::default()
+        };
+        let res = chat(&cfg, "sys", "user").await.expect("chat succeeds");
+        assert_eq!(res.usage.unwrap().provider, "azure");
+    }
+
+    #[tokio::test]
+    async fn azure_error_status_surfaces_provider_tag() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/openai/deployments/dep/chat/completions"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let cfg = LlmConfig {
+            provider: "azure".into(),
+            api_key: "key".into(),
+            model: "dep".into(),
+            base_url: Some(server.uri()),
+            azure_api_version: Some("2024-05-01-preview".into()),
+            ..Default::default()
+        };
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(err.contains("403"), "got: {err}");
+        assert!(err.contains("azure"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn azure_empty_choices_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/openai/deployments/dep/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "choices": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let cfg = LlmConfig {
+            provider: "azure".into(),
+            api_key: "key".into(),
+            model: "dep".into(),
+            base_url: Some(server.uri()),
+            azure_api_version: Some("2024-05-01-preview".into()),
+            ..Default::default()
+        };
+        let err = chat(&cfg, "sys", "user").await.unwrap_err().to_string();
+        assert!(err.contains("azure response missing content"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn azure_temperature_and_seed_forwarded_when_set() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/openai/deployments/dep/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .mount(&server)
+            .await;
+
+        let cfg = LlmConfig {
+            provider: "azure".into(),
+            api_key: "key".into(),
+            model: "dep".into(),
+            base_url: Some(server.uri()),
+            azure_api_version: Some("2024-05-01-preview".into()),
+            temperature: Some(0.25),
+            ..Default::default()
+        };
+        chat(&cfg, "sys", "user").await.expect("chat succeeds");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body.get("temperature").and_then(|v| v.as_f64()), Some(0.25));
+        assert_eq!(body.get("seed").and_then(|v| v.as_i64()), Some(42));
+    }
+
+    // ── expand_query ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn expand_query_parses_dedupes_and_drops_self_and_empty_lines() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content":
+                    "\"best pizza belgrade\"\n\nbest pizza in belgrade\nBest Pizza Belgrade\ntop pizzerias serbia"
+                } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let out = expand_query(&cfg, "best pizza in belgrade", 3).await;
+        // Line 1: quotes stripped -> "best pizza belgrade".
+        // Line 2 (blank): skipped.
+        // Line 3: identical to the query (case-insensitive) -> skipped.
+        // Line 4: dup of line 1 (case-insensitive) -> skipped.
+        // Line 5: kept.
+        assert_eq!(out, vec!["best pizza belgrade", "top pizzerias serbia"]);
+    }
+
+    #[tokio::test]
+    async fn expand_query_returns_empty_on_llm_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let out = expand_query(&cfg, "some query", 3).await;
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn expand_query_caps_at_max_variants() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": "a\nb\nc\nd\ne" } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let out = expand_query(&cfg, "query", 2).await;
+        assert_eq!(out.len(), 2);
+        assert_eq!(out, vec!["a", "b"]);
+    }
+
+    // ── scout_followups ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn scout_followups_sends_question_and_evidence_and_parses_lines() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": "\"exact phrase query\"\nauthoritative source guess" } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let out =
+            scout_followups(&cfg, "who won the 16th edition", "no clear winner found", 5).await;
+        assert_eq!(
+            out,
+            vec!["exact phrase query", "authoritative source guess"]
+        );
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let user_msg = body["messages"][1]["content"].as_str().unwrap();
+        assert!(user_msg.contains("QUESTION: who won the 16th edition"));
+        assert!(user_msg.contains("EVIDENCE (did not answer it):\nno clear winner found"));
+    }
+
+    #[tokio::test]
+    async fn scout_followups_returns_empty_on_llm_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        let out = scout_followups(&cfg, "q", "evidence", 3).await;
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scout_followups_zero_max_queries_floors_to_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": "only one line\nsecond line ignored by caller cap" } }]
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        // `max_queries.max(1)` means 0 behaves like 1: at most one result kept.
+        let out = scout_followups(&cfg, "q", "evidence", 0).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], "only one line");
+    }
+
+    // ── dispatch: reserved gate does not block a request from completing ──
+
+    #[tokio::test]
+    async fn dispatch_multiple_sequential_calls_all_succeed() {
+        // Exercises the llm_gate permit acquire/release across repeated calls on
+        // the same provider — a leaked permit would deadlock later calls.
+        let server = MockServer::start().await;
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(openai_chat_response()))
+            .mount(&server)
+            .await;
+
+        let cfg = base_cfg("openai", server.uri());
+        for _ in 0..3 {
+            chat(&cfg, "sys", "user").await.expect("chat succeeds");
+            hits.fetch_add(1, Ordering::SeqCst);
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
     }
 }

@@ -1229,4 +1229,1171 @@ mod tests {
             source
         ));
     }
+
+    // ── is_scalar_schema / scalar_leaves ──────────────────────────────────
+
+    #[test]
+    fn is_scalar_schema_accepts_all_four_scalar_type_names() {
+        for t in ["string", "number", "integer", "boolean"] {
+            assert!(is_scalar_schema(&json!({ "type": t })), "{t}");
+        }
+    }
+
+    #[test]
+    fn is_scalar_schema_rejects_array_and_object() {
+        assert!(!is_scalar_schema(&json!({ "type": "array" })));
+        assert!(!is_scalar_schema(&json!({ "type": "object" })));
+        assert!(!is_scalar_schema(&json!({ "type": "null" })));
+    }
+
+    #[test]
+    fn is_scalar_schema_rejects_a_property_with_no_type_key() {
+        // A bare `$ref` (no `type`) is an unknown shape, not a scalar.
+        assert!(!is_scalar_schema(&json!({ "$ref": "#/$defs/Foo" })));
+    }
+
+    #[test]
+    fn is_scalar_schema_accepts_type_array_nullable_scalar() {
+        assert!(is_scalar_schema(&json!({ "type": ["string", "null"] })));
+        assert!(is_scalar_schema(&json!({ "type": ["null", "integer"] })));
+    }
+
+    #[test]
+    fn is_scalar_schema_rejects_type_array_nullable_object() {
+        assert!(!is_scalar_schema(&json!({ "type": ["object", "null"] })));
+    }
+
+    #[test]
+    fn is_scalar_schema_rejects_type_array_of_only_null() {
+        // At least one member must actually be a scalar type name.
+        assert!(!is_scalar_schema(&json!({ "type": ["null"] })));
+    }
+
+    #[test]
+    fn is_scalar_schema_rejects_empty_type_array() {
+        assert!(!is_scalar_schema(&json!({ "type": [] })));
+    }
+
+    #[test]
+    fn is_scalar_schema_one_of_with_two_scalars_is_scalar() {
+        let s = json!({ "oneOf": [{ "type": "string" }, { "type": "number" }] });
+        assert!(is_scalar_schema(&s));
+    }
+
+    #[test]
+    fn is_scalar_schema_any_of_with_a_ref_member_is_not_scalar() {
+        let s = json!({ "anyOf": [{ "type": "string" }, { "$ref": "#/$defs/X" }] });
+        assert!(!is_scalar_schema(&s));
+    }
+
+    #[test]
+    fn is_scalar_schema_any_of_empty_array_is_not_scalar() {
+        assert!(!is_scalar_schema(&json!({ "anyOf": [] })));
+    }
+
+    #[test]
+    fn is_scalar_schema_type_name_is_case_sensitive() {
+        // Schema type names are lowercase by the JSON Schema spec; an
+        // unrecognised casing must not be silently accepted.
+        assert!(!is_scalar_schema(&json!({ "type": "String" })));
+        assert!(!is_scalar_schema(&json!({ "type": "STRING" })));
+    }
+
+    #[test]
+    fn scalar_leaves_empty_schema_is_empty() {
+        assert!(scalar_leaves(&json!({})).is_empty());
+        assert!(scalar_leaves(&json!({ "type": "object" })).is_empty());
+    }
+
+    #[test]
+    fn scalar_leaves_ignores_properties_that_are_not_objects() {
+        // A malformed schema (e.g. `"properties": []`) must not panic.
+        let s = json!({ "type": "object", "properties": [] });
+        assert!(scalar_leaves(&s).is_empty());
+    }
+
+    #[test]
+    fn scalar_leaves_are_alphabetically_sorted() {
+        // serde_json's default `Map` is a `BTreeMap` (no `preserve_order`
+        // feature enabled here), so iteration order is sorted, not insertion.
+        let s = json!({ "type": "object", "properties": {
+            "zeta": { "type": "string" },
+            "alpha": { "type": "string" },
+            "mid": { "type": "number" },
+        }});
+        assert_eq!(scalar_leaves(&s), vec!["alpha", "mid", "zeta"]);
+    }
+
+    // ── reject_reason ──────────────────────────────────────────────────────
+
+    #[test]
+    fn reject_reason_rejects_non_object_root_type() {
+        assert!(reject_reason(&json!({ "type": "string" }), 4096).is_some());
+        assert!(
+            reject_reason(&json!({}), 4096).is_some(),
+            "missing type key"
+        );
+    }
+
+    #[test]
+    fn reject_reason_collision_check_runs_before_the_empty_leaves_check() {
+        // A schema with ONLY a `basis` property (no other scalar) hits both
+        // conditions; the collision message must win, since it is the more
+        // specific and actionable error.
+        let s = json!({ "type": "object", "properties": { "basis": { "type": "string" } } });
+        let msg = reject_reason(&s, 4096).unwrap();
+        assert!(msg.contains("collision"), "{msg}");
+    }
+
+    #[test]
+    fn reject_reason_boundary_needed_equals_max_tokens_is_accepted() {
+        // 1 leaf needs BASE_OUTPUT_TOKENS + PER_LEAF_OUTPUT_TOKENS exactly.
+        let s = json!({ "type": "object", "properties": { "a": { "type": "string" } } });
+        let needed = (BASE_OUTPUT_TOKENS + PER_LEAF_OUTPUT_TOKENS) as u32;
+        assert!(
+            reject_reason(&s, needed).is_none(),
+            "exactly enough must fit"
+        );
+        assert!(
+            reject_reason(&s, needed - 1).is_some(),
+            "one token short must not fit"
+        );
+    }
+
+    #[test]
+    fn reject_reason_accepts_a_huge_max_tokens_budget() {
+        let s = json!({ "type": "object", "properties": { "a": { "type": "string" } } });
+        assert!(reject_reason(&s, u32::MAX).is_none());
+    }
+
+    #[test]
+    fn reject_reason_message_mentions_leaf_count_and_limit() {
+        let leaves = |n: usize| {
+            let props: serde_json::Map<String, Value> = (0..n)
+                .map(|i| (format!("f{i}"), json!({ "type": "string" })))
+                .collect();
+            json!({ "type": "object", "properties": props })
+        };
+        let msg = reject_reason(&leaves(80), 4096).unwrap();
+        assert!(msg.contains("80"), "{msg}");
+        assert!(msg.contains("4096"), "{msg}");
+    }
+
+    // ── tool_schema ────────────────────────────────────────────────────────
+
+    #[test]
+    fn tool_schema_leaf_shape_requires_value_source_url_and_excerpt_only() {
+        let caller = json!({ "type": "object", "properties": { "a": { "type": "string" } } });
+        let out = tool_schema(&caller, &scalar_leaves(&caller));
+        let leaf = &out["properties"]["basis"]["properties"]["a"];
+        let required: Vec<&str> = leaf["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(required, vec!["value", "sourceUrl", "excerpt"]);
+        assert!(
+            !required.contains(&"confidence"),
+            "confidence must stay optional: models omit it constantly"
+        );
+        assert_eq!(
+            leaf["properties"]["excerpt"]["maxLength"],
+            EXCERPT_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn tool_schema_basis_prop_rejects_additional_properties() {
+        let caller = json!({ "type": "object", "properties": { "a": { "type": "string" } } });
+        let out = tool_schema(&caller, &scalar_leaves(&caller));
+        assert_eq!(out["properties"]["basis"]["additionalProperties"], false);
+    }
+
+    #[test]
+    fn tool_schema_with_zero_leaves_still_adds_an_empty_basis_object() {
+        let caller = json!({ "type": "object", "properties": {} });
+        let out = tool_schema(&caller, &[]);
+        assert_eq!(
+            out["properties"]["basis"]["properties"],
+            json!({}),
+            "no leaves means an empty basis schema, not a missing one"
+        );
+        assert_eq!(out["required"], json!(["basis"]));
+    }
+
+    #[test]
+    fn tool_schema_appends_basis_to_an_existing_required_array() {
+        let caller = json!({
+            "type": "object",
+            "properties": { "price": { "type": "number" } },
+            "required": ["price"],
+        });
+        let out = tool_schema(&caller, &scalar_leaves(&caller));
+        assert_eq!(out["required"], json!(["price", "basis"]));
+    }
+
+    #[test]
+    fn tool_schema_does_not_mutate_the_caller_value_in_place() {
+        let caller = json!({ "type": "object", "properties": { "a": { "type": "string" } } });
+        let caller_before = caller.clone();
+        let _ = tool_schema(&caller, &scalar_leaves(&caller));
+        assert_eq!(caller, caller_before, "tool_schema must clone, not mutate");
+    }
+
+    // ── prompt_section ─────────────────────────────────────────────────────
+
+    #[test]
+    fn prompt_section_mentions_the_excerpt_char_cap() {
+        let p = prompt_section(URL);
+        assert!(p.contains(&EXCERPT_MAX_CHARS.to_string()));
+        assert!(p.contains("Never invent an excerpt."));
+    }
+
+    #[test]
+    fn prompt_section_handles_an_empty_url() {
+        let p = prompt_section("");
+        assert!(p.contains("## Source URL\n\n"));
+    }
+
+    #[test]
+    fn prompt_section_handles_a_unicode_url() {
+        let p = prompt_section("https://例え.jp/商品");
+        assert!(p.contains("https://例え.jp/商品"));
+    }
+
+    // ── collapse_ws / collapse_ws_lower ───────────────────────────────────
+
+    #[test]
+    fn collapse_ws_squashes_tabs_and_newlines() {
+        assert_eq!(collapse_ws("a\t\tb\n\nc"), "a b c");
+    }
+
+    #[test]
+    fn collapse_ws_trims_leading_and_trailing_whitespace() {
+        assert_eq!(collapse_ws("   hello world   "), "hello world");
+    }
+
+    #[test]
+    fn collapse_ws_empty_and_all_whitespace_input_is_empty() {
+        assert_eq!(collapse_ws(""), "");
+        assert_eq!(collapse_ws("   \n\t  "), "");
+    }
+
+    #[test]
+    fn collapse_ws_already_normalized_is_unchanged() {
+        assert_eq!(collapse_ws("hello world"), "hello world");
+    }
+
+    #[test]
+    fn collapse_ws_lower_lowercases_and_collapses_together() {
+        assert_eq!(collapse_ws_lower("HELLO   World"), "hello world");
+    }
+
+    // ── norm_url ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn norm_url_lowercases_scheme_and_host_but_not_path() {
+        // Only the scheme and host are lowered; the path retains its case.
+        assert_eq!(
+            norm_url("HTTPS://EXAMPLE.com/PathCase"),
+            "https://example.com/PathCase"
+        );
+    }
+
+    #[test]
+    fn norm_url_trims_all_trailing_slashes() {
+        // `trim_end_matches` removes every trailing occurrence, not just one.
+        assert_eq!(norm_url("https://example.com/p//"), "https://example.com/p");
+    }
+
+    #[test]
+    fn norm_url_preserves_query_string() {
+        assert_eq!(
+            norm_url("https://example.com/p?q=1&r=2"),
+            "https://example.com/p?q=1&r=2"
+        );
+    }
+
+    #[test]
+    fn norm_url_without_a_scheme_lowercases_the_whole_string() {
+        assert_eq!(norm_url("Example.com/Path"), "example.com/path");
+    }
+
+    #[test]
+    fn norm_url_empty_string_round_trips_to_empty() {
+        assert_eq!(norm_url(""), "");
+    }
+
+    #[test]
+    fn norm_url_preserves_port() {
+        assert_eq!(
+            norm_url("HTTPS://Example.com:8443/p"),
+            "https://example.com:8443/p"
+        );
+    }
+
+    // ── values_equal ───────────────────────────────────────────────────────
+
+    #[test]
+    fn values_equal_negative_integers() {
+        assert!(values_equal(&json!(-5), &json!(-5)));
+        assert!(!values_equal(&json!(-5), &json!(5)));
+    }
+
+    #[test]
+    fn values_equal_string_and_number_never_equal() {
+        assert!(!values_equal(&json!("5"), &json!(5)));
+    }
+
+    #[test]
+    fn values_equal_booleans() {
+        assert!(values_equal(&json!(true), &json!(true)));
+        assert!(!values_equal(&json!(true), &json!(false)));
+    }
+
+    #[test]
+    fn values_equal_null_to_null() {
+        assert!(values_equal(&json!(null), &json!(null)));
+        assert!(!values_equal(&json!(null), &json!(0)));
+    }
+
+    #[test]
+    fn values_equal_large_u64_beyond_i64_range() {
+        let big = json!(18446744073709551615u64); // u64::MAX
+        assert!(values_equal(&big, &big.clone()));
+    }
+
+    #[test]
+    fn values_equal_fractional_floats() {
+        assert!(values_equal(&json!(19.99), &json!(19.99)));
+        assert!(!values_equal(&json!(19.99), &json!(19.98)));
+    }
+
+    #[test]
+    fn values_equal_arrays_and_objects_fall_back_to_structural_eq() {
+        assert!(values_equal(&json!([1, 2]), &json!([1, 2])));
+        assert!(!values_equal(&json!([1, 2]), &json!([2, 1])));
+        assert!(values_equal(&json!({"a": 1}), &json!({"a": 1})));
+    }
+
+    // ── render_value ───────────────────────────────────────────────────────
+
+    #[test]
+    fn render_value_integer_has_no_decimal() {
+        assert_eq!(render_value(&json!(20)).as_deref(), Some("20"));
+    }
+
+    #[test]
+    fn render_value_whole_float_drops_the_decimal() {
+        assert_eq!(render_value(&json!(20.0)).as_deref(), Some("20"));
+    }
+
+    #[test]
+    fn render_value_fractional_float_keeps_the_decimal() {
+        assert_eq!(render_value(&json!(19.99)).as_deref(), Some("19.99"));
+    }
+
+    #[test]
+    fn render_value_negative_whole_float() {
+        assert_eq!(render_value(&json!(-20.0)).as_deref(), Some("-20"));
+    }
+
+    #[test]
+    fn render_value_bool_renders_as_literal_word() {
+        assert_eq!(render_value(&json!(true)).as_deref(), Some("true"));
+        assert_eq!(render_value(&json!(false)).as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn render_value_string_passes_through_unchanged() {
+        assert_eq!(
+            render_value(&json!("Widget Pro")).as_deref(),
+            Some("Widget Pro")
+        );
+    }
+
+    #[test]
+    fn render_value_array_and_object_and_null_are_none() {
+        assert_eq!(render_value(&json!([1, 2])), None);
+        assert_eq!(render_value(&json!({"a": 1})), None);
+        assert_eq!(render_value(&json!(null)), None);
+    }
+
+    // ── strip_digit_separators ─────────────────────────────────────────────
+
+    #[test]
+    fn strip_digit_separators_underscores_and_spaces() {
+        assert_eq!(strip_digit_separators("1_000_000"), "1000000");
+        assert_eq!(strip_digit_separators("1 000 000"), "1000000");
+    }
+
+    #[test]
+    fn strip_digit_separators_nbsp_and_narrow_nbsp() {
+        assert_eq!(strip_digit_separators("1\u{00a0}000"), "1000");
+        assert_eq!(strip_digit_separators("1\u{202f}000"), "1000");
+    }
+
+    #[test]
+    fn strip_digit_separators_leaves_non_digit_adjacent_commas() {
+        // Ordinary prose punctuation must survive untouched.
+        assert_eq!(strip_digit_separators("hello, world"), "hello, world");
+    }
+
+    #[test]
+    fn strip_digit_separators_leading_and_trailing_separators_are_kept() {
+        assert_eq!(strip_digit_separators(",100"), ",100");
+        assert_eq!(strip_digit_separators("100,"), "100,");
+    }
+
+    #[test]
+    fn strip_digit_separators_consecutive_separators_between_digits_are_kept() {
+        // Neither comma has a digit on both sides, so both are left alone
+        // rather than collapsed into a single separator.
+        assert_eq!(strip_digit_separators("1,,000"), "1,,000");
+    }
+
+    #[test]
+    fn strip_digit_separators_empty_string() {
+        assert_eq!(strip_digit_separators(""), "");
+    }
+
+    // ── contains_word / contains_bounded ──────────────────────────────────
+
+    #[test]
+    fn contains_word_empty_needle_never_matches() {
+        assert!(!contains_word("anything", "", false));
+    }
+
+    #[test]
+    fn contains_word_empty_haystack_never_matches() {
+        assert!(!contains_word("", "x", false));
+    }
+
+    #[test]
+    fn contains_word_needle_at_start_and_end_of_haystack() {
+        assert!(contains_word("cat sat", "cat", false));
+        assert!(contains_word("cat sat", "sat", false));
+    }
+
+    #[test]
+    fn contains_word_needle_equals_whole_haystack() {
+        assert!(contains_word("cat", "cat", false));
+    }
+
+    #[test]
+    fn contains_word_dot_joins_false_splits_on_period_for_strings() {
+        // With `.` treated as a boundary, "19" IS a standalone token inside
+        // "19.99" (it splits into "19" and "99"), and the full "19.99" also
+        // matches as its own token.
+        assert!(contains_word("price 19.99 today", "19", false));
+        assert!(contains_word("price 19.99 today", "19.99", false));
+    }
+
+    #[test]
+    fn contains_bounded_dot_joins_true_keeps_decimal_together() {
+        assert!(contains_bounded("version 1.50 shipped", "1.50"));
+        assert!(!contains_bounded("version 1.50 shipped", "50"));
+    }
+
+    #[test]
+    fn contains_word_rejects_a_partial_prefix_match() {
+        assert!(!contains_word("category page", "cat", false));
+    }
+
+    // ── value_carried ──────────────────────────────────────────────────────
+
+    #[test]
+    fn value_carried_bool_ignores_excerpt_content_entirely() {
+        assert!(value_carried(
+            &json!(true),
+            "completely unrelated text",
+            "anything"
+        ));
+        assert!(value_carried(&json!(false), "", ""));
+    }
+
+    #[test]
+    fn value_carried_null_and_array_and_object_are_never_carried() {
+        assert!(!value_carried(&json!(null), "null", "null"));
+        assert!(!value_carried(&json!([1, 2]), "1 2", "1 2"));
+        assert!(!value_carried(&json!({"a": 1}), "a 1", "a 1"));
+    }
+
+    #[test]
+    fn value_carried_number_ignores_thousands_separators_in_the_excerpt() {
+        assert!(value_carried(
+            &json!(1000000),
+            "Revenue: 1,000,000 USD",
+            "irrelevant"
+        ));
+    }
+
+    #[test]
+    fn value_carried_number_that_cannot_be_rendered_is_not_carried() {
+        // NaN/Infinity are unrepresentable in serde_json::Number, but a value
+        // whose render_value is None (array/object) must short-circuit false
+        // rather than panic on an unwrap.
+        assert!(!value_carried(&json!([1]), "1", "1"));
+    }
+
+    // ── parse_claim ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_claim_confidence_is_case_insensitive() {
+        let c = parse_claim(&json!({ "confidence": "HIGH" }));
+        assert_eq!(c.confidence, Some(ConfidenceLevel::High));
+        let c = parse_claim(&json!({ "confidence": "Medium" }));
+        assert_eq!(c.confidence, Some(ConfidenceLevel::Medium));
+    }
+
+    #[test]
+    fn parse_claim_unrecognized_confidence_is_none() {
+        let c = parse_claim(&json!({ "confidence": "urgent" }));
+        assert_eq!(c.confidence, None);
+    }
+
+    #[test]
+    fn parse_claim_missing_object_entirely_yields_all_none() {
+        let c = parse_claim(&json!({}));
+        assert!(c.value.is_none());
+        assert!(c.source_url.is_none());
+        assert!(c.excerpt.is_none());
+        assert!(c.confidence.is_none());
+    }
+
+    #[test]
+    fn parse_claim_value_can_be_any_json_type() {
+        assert_eq!(
+            parse_claim(&json!({ "value": null })).value,
+            Some(json!(null))
+        );
+        assert_eq!(
+            parse_claim(&json!({ "value": [1, 2] })).value,
+            Some(json!([1, 2]))
+        );
+        assert_eq!(
+            parse_claim(&json!({ "value": {"a": 1} })).value,
+            Some(json!({"a": 1}))
+        );
+    }
+
+    #[test]
+    fn parse_claim_non_string_source_url_is_none() {
+        let c = parse_claim(&json!({ "sourceUrl": 42 }));
+        assert!(c.source_url.is_none());
+    }
+
+    // ── align_basis: additional integration coverage ────────────────────────
+
+    #[test]
+    fn align_basis_model_basis_as_non_object_degrades_like_absent() {
+        // A model that hands back `"basis": "oops"` (wrong shape) must degrade
+        // exactly like a missing basis object, not panic on `as_object`.
+        let (b, w) = align_basis(
+            &schema(),
+            &json!({ "price": 19.99, "name": "Widget Pro" }),
+            Some(&json!("oops, not an object")),
+            URL,
+            HASH,
+            SRC,
+        );
+        assert_eq!(b.len(), 2);
+        assert!(b.iter().all(|x| x.status == FieldStatus::Unsupported));
+        assert_eq!(w.len(), 2);
+    }
+
+    #[test]
+    fn align_basis_unicode_value_and_excerpt_round_trip_supported() {
+        let s = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let src = "商品名: 「日本語ウィジェット」 在庫あり。";
+        let (b, w) = run(
+            &s,
+            json!({ "name": "日本語ウィジェット" }),
+            json!({ "name": claim(json!("日本語ウィジェット"), Some("「日本語ウィジェット」")) }),
+            src,
+        );
+        assert_eq!(b[0].status, FieldStatus::Supported, "warnings: {w:?}");
+    }
+
+    #[test]
+    fn align_basis_emoji_value_is_supported_when_grounded() {
+        let s = json!({ "type": "object", "properties": { "mood": { "type": "string" } } });
+        let src = "Customer reaction: 😀 great product!";
+        let (b, _) = run(
+            &s,
+            json!({ "mood": "😀" }),
+            json!({ "mood": claim(json!("😀"), Some("reaction: 😀 great")) }),
+            src,
+        );
+        assert_eq!(b[0].status, FieldStatus::Supported);
+    }
+
+    #[test]
+    fn align_basis_empty_source_document_yields_only_not_found_or_unsupported() {
+        let (b, w) = run(
+            &schema(),
+            json!({ "price": 19.99, "name": "Widget Pro" }),
+            json!({
+                "price": claim(json!(19.99), Some("$19.99")),
+                "name": claim(json!("Widget Pro"), Some("Widget Pro")),
+            }),
+            "",
+        );
+        // Nothing in an empty source can pass excerpt-in-source.
+        assert!(
+            b.iter().all(|x| x.status != FieldStatus::Supported),
+            "{w:?}"
+        );
+    }
+
+    #[test]
+    fn align_basis_empty_data_object_marks_every_leaf_not_found() {
+        let (b, w) = run(&schema(), json!({}), json!({}), SRC);
+        assert!(b.iter().all(|x| x.status == FieldStatus::NotFound));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn align_basis_schema_with_no_properties_key_yields_no_leaves() {
+        let s = json!({ "type": "object" });
+        let (b, w) = run(&s, json!({}), json!({}), SRC);
+        assert!(b.is_empty());
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn align_basis_deeply_nested_but_non_scalar_properties_are_all_skipped() {
+        let s = json!({ "type": "object", "properties": {
+            "meta": { "type": "object", "properties": {
+                "nested": { "type": "object", "properties": {
+                    "deep": { "type": "string" },
+                }},
+            }},
+            "flag": { "type": "boolean" },
+        }});
+        assert_eq!(scalar_leaves(&s), vec!["flag"]);
+        let (b, _) = run(
+            &s,
+            json!({ "meta": {"nested": {"deep": "x"}}, "flag": true }),
+            json!({ "flag": claim(json!(true), Some("$19.99 in stock")) }),
+            SRC,
+        );
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].field, "flag");
+    }
+
+    #[test]
+    fn align_basis_very_long_source_text_still_grounds_correctly() {
+        let padding = "filler sentence that adds bulk. ".repeat(500);
+        let src = format!("{padding}**Price:** $19.99 in stock.{padding}");
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let (b, w) = run(
+            &s,
+            json!({ "price": 19.99 }),
+            json!({ "price": claim(json!(19.99), Some("Price:** $19.99")) }),
+            &src,
+        );
+        assert_eq!(b[0].status, FieldStatus::Supported, "{w:?}");
+    }
+
+    #[test]
+    fn align_basis_source_hash_and_url_with_special_characters_are_echoed_verbatim() {
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let url = "https://example.com/p?x=1&y=2#frag";
+        let hash = "sha256:ff&<>\"'";
+        let (b, _) = align_basis(
+            &s,
+            &json!({ "price": 19.99 }),
+            Some(&json!({ "price": {
+                "value": 19.99,
+                "sourceUrl": url,
+                "excerpt": "$19.99",
+                "confidence": "high",
+            }})),
+            url,
+            hash,
+            SRC,
+        );
+        assert_eq!(b[0].citations[0].url, url);
+        assert_eq!(b[0].citations[0].source_hash, hash);
+    }
+
+    #[test]
+    fn align_basis_claim_missing_sourceurl_is_unsupported_source_unknown() {
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let basis = json!({ "price": { "value": 19.99, "excerpt": "$19.99" } });
+        let (b, w) = run(&s, json!({ "price": 19.99 }), basis, SRC);
+        assert_eq!(b[0].status, FieldStatus::Unsupported);
+        assert!(w.iter().any(|x| x.code == code::BASIS_SOURCE_UNKNOWN));
+    }
+
+    #[test]
+    fn align_basis_claim_missing_value_key_is_a_value_mismatch() {
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let basis = json!({ "price": { "sourceUrl": URL, "excerpt": "$19.99" } });
+        let (b, w) = run(&s, json!({ "price": 19.99 }), basis, SRC);
+        assert_eq!(b[0].status, FieldStatus::Unsupported);
+        assert!(w.iter().any(|x| x.code == code::BASIS_VALUE_MISMATCH));
+    }
+
+    #[test]
+    fn align_basis_all_scalar_types_at_once_mixed_statuses() {
+        let s = json!({ "type": "object", "properties": {
+            "name": { "type": "string" },
+            "price": { "type": "number" },
+            "qty": { "type": "integer" },
+            "active": { "type": "boolean" },
+        }});
+        // Numbers immediately followed by `.` fail the boundary check (the
+        // trailing `.` is treated as part of the numeric token), so the
+        // grounding excerpts below keep a space after each number.
+        let src = "Widget Pro. **Price:** $19.99 now. Qty: 3 units. Active now.";
+        let (b, w) = run(
+            &s,
+            json!({ "name": "Widget Pro", "price": 19.99, "qty": 3, "active": true }),
+            json!({
+                "name": claim(json!("Widget Pro"), Some("Widget Pro.")),
+                "price": claim(json!(19.99), Some("Price:** $19.99 now")),
+                "qty": claim(json!(3), Some("Qty: 3 units")),
+                // Deliberately omit "active" so one leaf downgrades among three
+                // that succeed.
+            }),
+            src,
+        );
+        assert_eq!(b.len(), 4);
+        let active = b.iter().find(|x| x.field == "active").unwrap();
+        assert_eq!(active.status, FieldStatus::Unsupported);
+        assert_eq!(
+            b.iter()
+                .filter(|x| x.status == FieldStatus::Supported)
+                .count(),
+            3
+        );
+        assert!(w.iter().any(|x| x.field == "active"));
+    }
+
+    #[test]
+    fn align_basis_excerpt_matches_only_after_whitespace_collapse_across_newlines() {
+        let src = "**Price:**\n\n  $19.99\n  in stock";
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let (b, _) = run(
+            &s,
+            json!({ "price": 19.99 }),
+            json!({ "price": claim(json!(19.99), Some("**Price:** $19.99 in stock")) }),
+            src,
+        );
+        assert_eq!(b[0].status, FieldStatus::Supported);
+    }
+
+    // ── more schema-shape edge cases ────────────────────────────────────────
+
+    #[test]
+    fn is_scalar_schema_type_as_a_non_string_non_array_value_is_not_scalar() {
+        assert!(!is_scalar_schema(&json!({ "type": 5 })));
+        assert!(!is_scalar_schema(&json!({ "type": true })));
+    }
+
+    #[test]
+    fn is_scalar_schema_any_of_member_with_type_array_extends_all_names() {
+        let s = json!({ "anyOf": [{ "type": ["string", "integer"] }, { "type": "null" }] });
+        assert!(is_scalar_schema(&s));
+    }
+
+    #[test]
+    fn reject_reason_rejects_a_type_array_root_even_if_it_includes_object() {
+        // `reject_reason` only accepts a bare `"type": "object"` string; a
+        // union type at the root (however unusual) is rejected, not partially
+        // accepted.
+        let s = json!({ "type": ["object", "null"], "properties": { "a": {"type": "string"} } });
+        assert!(reject_reason(&s, 4096).is_some());
+    }
+
+    #[test]
+    fn tool_schema_duplicate_leaf_names_collapse_to_one_entry() {
+        let caller = json!({ "type": "object", "properties": { "a": { "type": "string" } } });
+        let out = tool_schema(&caller, &["a".to_string(), "a".to_string()]);
+        assert_eq!(
+            out["properties"]["basis"]["properties"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn tool_schema_unicode_leaf_name_is_preserved() {
+        let caller = json!({ "type": "object", "properties": { "商品名": { "type": "string" } } });
+        let out = tool_schema(&caller, &scalar_leaves(&caller));
+        assert!(out["properties"]["basis"]["properties"]["商品名"].is_object());
+    }
+
+    // ── excerpt-length boundary ──────────────────────────────────────────────
+
+    #[test]
+    fn excerpt_exactly_at_the_max_length_is_not_too_long() {
+        let s = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let value = "x".repeat(EXCERPT_MAX_CHARS);
+        let src = format!("prefix {value} suffix");
+        let (b, w) = run(
+            &s,
+            json!({ "name": value.clone() }),
+            json!({ "name": claim(json!(value), Some(&value)) }),
+            &src,
+        );
+        assert_ne!(b[0].status, FieldStatus::Unverified, "{w:?}");
+        assert!(!w.iter().any(|x| x.code == code::EXCERPT_TOO_LONG));
+    }
+
+    // ── url whitespace / normalization robustness ────────────────────────────
+
+    #[test]
+    fn align_basis_source_url_claim_with_surrounding_whitespace_still_matches() {
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let basis = json!({ "price": {
+            "value": 19.99,
+            "sourceUrl": format!("  {URL}  "),
+            "excerpt": "Price:** $19.99",
+            "confidence": "high",
+        }});
+        let (b, _) = run(&s, json!({ "price": 19.99 }), basis, SRC);
+        assert_eq!(b[0].status, FieldStatus::Supported);
+    }
+
+    #[test]
+    fn norm_url_ipv6_host_is_lowercased_but_path_case_is_kept() {
+        assert_eq!(norm_url("HTTP://[::1]:8080/Path"), "http://[::1]:8080/Path");
+    }
+
+    // ── data/schema mismatch robustness (backend inconsistency, must not panic) ──
+
+    #[test]
+    fn align_basis_actual_value_of_wrong_shape_does_not_panic_and_is_not_supported() {
+        // The schema calls "price" a number, but the served `data` unexpectedly
+        // carries an array. align_basis must degrade gracefully, never panic.
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let (b, w) = run(
+            &s,
+            json!({ "price": [1, 2] }),
+            json!({ "price": claim(json!([1, 2]), Some("$19.99")) }),
+            SRC,
+        );
+        assert_ne!(b[0].status, FieldStatus::Supported, "{w:?}");
+    }
+
+    #[test]
+    fn align_basis_claim_value_wrong_type_against_correct_actual_is_unsupported() {
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let basis = json!({ "price": claim(json!("19.99"), Some("$19.99")) });
+        let (b, w) = run(&s, json!({ "price": 19.99 }), basis, SRC);
+        assert_eq!(b[0].status, FieldStatus::Unsupported);
+        assert!(w.iter().any(|x| x.code == code::BASIS_VALUE_MISMATCH));
+    }
+
+    // ── large schema / many fields ─────────────────────────────────────────
+
+    #[test]
+    fn align_basis_handles_thirty_scalar_fields_at_once() {
+        let mut props = serde_json::Map::new();
+        let mut data = serde_json::Map::new();
+        let mut basis = serde_json::Map::new();
+        let mut src = String::new();
+        for i in 0..30 {
+            let key = format!("f{i}");
+            props.insert(key.clone(), json!({ "type": "string" }));
+            let val = format!("value{i}");
+            data.insert(key.clone(), json!(val));
+            basis.insert(key.clone(), claim(json!(val), Some(&val)));
+            src.push_str(&val);
+            src.push(' ');
+        }
+        let s = json!({ "type": "object", "properties": Value::Object(props) });
+        let (b, w) = run(&s, Value::Object(data), Value::Object(basis), &src);
+        assert_eq!(b.len(), 30);
+        assert!(
+            b.iter().all(|x| x.status == FieldStatus::Supported),
+            "{w:?}"
+        );
+    }
+
+    // ── malformed / truncated excerpt & claim shapes ─────────────────────────
+
+    #[test]
+    fn align_basis_claim_excerpt_as_non_string_json_is_treated_as_absent() {
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let basis = json!({ "price": {
+            "value": 19.99, "sourceUrl": URL, "excerpt": 12345, "confidence": "high",
+        }});
+        let (b, w) = run(&s, json!({ "price": 19.99 }), basis, SRC);
+        // A non-string excerpt parses to `None`, same as an honestly-absent one.
+        assert_eq!(b[0].status, FieldStatus::Unverified);
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn align_basis_truncated_source_text_still_grounds_a_prefix_value() {
+        // Simulates the server truncating `source_text` to a token budget:
+        // an excerpt that fell outside the truncated window is honestly
+        // ungroundable, not a crash.
+        let truncated = &SRC[..20];
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let (b, _) = run(
+            &s,
+            json!({ "price": 19.99 }),
+            json!({ "price": claim(json!(19.99), Some("Price:** $19.99")) }),
+            truncated,
+        );
+        assert_eq!(b[0].status, FieldStatus::Unverified);
+    }
+
+    #[test]
+    fn align_basis_claim_with_null_confidence_field_has_no_confidence() {
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let basis = json!({ "price": {
+            "value": 19.99, "sourceUrl": URL, "excerpt": "$19.99", "confidence": null,
+        }});
+        let (b, _) = run(&s, json!({ "price": 19.99 }), basis, SRC);
+        assert_eq!(b[0].confidence, None);
+    }
+
+    // ── contains_word further boundary coverage ──────────────────────────────
+
+    #[test]
+    fn contains_word_matches_at_punctuation_boundaries() {
+        assert!(contains_word("Widget Pro, in stock.", "Pro", false));
+        assert!(contains_word("(Widget)", "Widget", false));
+    }
+
+    #[test]
+    fn contains_word_does_not_match_across_a_hyphenated_compound() {
+        // "cat" inside "cat-food" is boundary-adjacent to '-', which is not
+        // alphanumeric, so this DOES count as a boundary match — document the
+        // actual (permissive) behaviour rather than assume the opposite.
+        assert!(contains_word("cat-food on sale", "cat", false));
+        assert!(contains_word("cat-food on sale", "food", false));
+    }
+
+    #[test]
+    fn contains_bounded_rejects_digit_glued_to_a_longer_number() {
+        assert!(!contains_bounded("order id 12345", "234"));
+        assert!(contains_bounded("order id 12345", "12345"));
+    }
+
+    // ── value_carried further string coverage ─────────────────────────────
+
+    #[test]
+    fn value_carried_string_whitespace_only_value_is_never_carried() {
+        assert!(!value_carried(&json!("   "), "some excerpt", "some source"));
+    }
+
+    #[test]
+    fn value_carried_string_case_insensitive_match() {
+        assert!(value_carried(
+            &json!("Widget Pro"),
+            "widget pro in stock",
+            "irrelevant"
+        ));
+    }
+
+    #[test]
+    fn value_carried_long_value_absent_from_source_is_not_carried() {
+        let long: String = "unique long description phrase. ".repeat(8);
+        assert!(long.chars().count() > EXCERPT_MAX_CHARS);
+        assert!(!value_carried(
+            &json!(long),
+            "short excerpt",
+            "totally unrelated source text"
+        ));
+    }
+
+    // ── final sweep: numeric edges, whitespace-trimmed excerpts, empty claims ──
+
+    #[test]
+    fn values_equal_positive_and_negative_zero() {
+        assert!(values_equal(&json!(0), &json!(0)));
+        assert!(values_equal(&json!(0.0), &json!(-0.0)));
+    }
+
+    #[test]
+    fn values_equal_i64_min_and_max_compare_exactly() {
+        assert!(values_equal(&json!(i64::MIN), &json!(i64::MIN)));
+        assert!(values_equal(&json!(i64::MAX), &json!(i64::MAX)));
+        assert!(!values_equal(&json!(i64::MIN), &json!(i64::MAX)));
+    }
+
+    #[test]
+    fn render_value_i64_max_is_not_reformatted_as_a_float() {
+        assert_eq!(
+            render_value(&json!(i64::MAX)).as_deref(),
+            Some(i64::MAX.to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn strip_digit_separators_currency_prefixed_number() {
+        assert_eq!(strip_digit_separators("$1,000 total"), "$1000 total");
+    }
+
+    #[test]
+    fn align_basis_excerpt_with_surrounding_whitespace_is_trimmed_before_matching() {
+        let s = json!({ "type": "object", "properties": { "price": { "type": "number" } } });
+        let basis = json!({ "price": {
+            "value": 19.99,
+            "sourceUrl": URL,
+            "excerpt": "   Price:** $19.99   ",
+            "confidence": "high",
+        }});
+        let (b, _) = run(&s, json!({ "price": 19.99 }), basis, SRC);
+        assert_eq!(b[0].status, FieldStatus::Supported);
+    }
+
+    #[test]
+    fn align_basis_explicit_empty_claims_object_behaves_like_missing_basis() {
+        let (b, w) = run(
+            &schema(),
+            json!({ "price": 19.99, "name": "Widget Pro" }),
+            json!({}),
+            SRC,
+        );
+        assert!(b.iter().all(|x| x.status == FieldStatus::Unsupported));
+        assert_eq!(w.len(), 2);
+    }
+
+    #[test]
+    fn align_basis_two_fields_same_value_different_field_names_both_ground_independently() {
+        let s = json!({ "type": "object", "properties": {
+            "priceA": { "type": "number" }, "priceB": { "type": "number" },
+        }});
+        // A space (not a period) after each number, since a number glued to a
+        // trailing `.` fails the boundary check (see the "3." case above).
+        let src = "Price A: 19.99 now. Price B: 19.99 now.";
+        let (b, _) = run(
+            &s,
+            json!({ "priceA": 19.99, "priceB": 19.99 }),
+            json!({
+                "priceA": claim(json!(19.99), Some("Price A: 19.99 now")),
+                "priceB": claim(json!(19.99), Some("Price B: 19.99 now")),
+            }),
+            src,
+        );
+        assert!(b.iter().all(|x| x.status == FieldStatus::Supported));
+    }
+
+    #[test]
+    fn norm_url_userinfo_in_authority_is_lowercased_with_the_host() {
+        assert_eq!(
+            norm_url("HTTPS://User:Pass@Example.com/p"),
+            "https://user:pass@example.com/p"
+        );
+    }
+
+    #[test]
+    fn contains_word_dot_joins_true_needle_ending_at_string_end() {
+        assert!(contains_bounded("total: 19.99", "19.99"));
+    }
+
+    #[test]
+    fn scalar_leaves_schema_with_only_non_scalar_properties_is_empty() {
+        let s = json!({ "type": "object", "properties": {
+            "tags": { "type": "array" }, "meta": { "type": "object" },
+        }});
+        assert!(scalar_leaves(&s).is_empty());
+    }
+
+    // ── a few more targeted cases to round out coverage ──────────────────────
+
+    #[test]
+    fn is_scalar_schema_any_of_and_one_of_both_present_are_combined() {
+        let s = json!({
+            "anyOf": [{ "type": "string" }],
+            "oneOf": [{ "type": "null" }],
+        });
+        assert!(is_scalar_schema(&s));
+    }
+
+    #[test]
+    fn reject_reason_rejects_a_schema_whose_properties_key_is_the_wrong_shape() {
+        let s = json!({ "type": "object", "properties": "not-a-map" });
+        // scalar_leaves treats this as zero leaves, so it is rejected for
+        // that reason rather than panicking on the malformed shape.
+        assert!(reject_reason(&s, 4096).is_some());
+    }
+
+    #[test]
+    fn tool_schema_preserves_unrelated_sibling_keys_on_the_root() {
+        let caller = json!({
+            "type": "object",
+            "title": "Product",
+            "properties": { "a": { "type": "string" } },
+        });
+        let out = tool_schema(&caller, &scalar_leaves(&caller));
+        assert_eq!(out["title"], "Product");
+    }
+
+    #[test]
+    fn collapse_ws_lower_handles_a_string_with_no_whitespace() {
+        assert_eq!(collapse_ws_lower("WIDGET"), "widget");
+    }
+
+    #[test]
+    fn norm_url_two_urls_that_only_differ_by_fragment_are_equal() {
+        assert_eq!(
+            norm_url("https://example.com/p#section-1"),
+            norm_url("https://example.com/p#section-2")
+        );
+    }
+
+    #[test]
+    fn value_carried_number_with_negative_sign_grounds_correctly() {
+        assert!(value_carried(
+            &json!(-5),
+            "temperature: -5 degrees",
+            "irrelevant"
+        ));
+        assert!(!value_carried(
+            &json!(-5),
+            "temperature: 5 degrees",
+            "irrelevant"
+        ));
+    }
+
+    #[test]
+    fn align_basis_negative_number_field_grounds_and_is_supported() {
+        let s = json!({ "type": "object", "properties": { "delta": { "type": "integer" } } });
+        let src = "Change: -5 units this week.";
+        let (b, _) = run(
+            &s,
+            json!({ "delta": -5 }),
+            json!({ "delta": claim(json!(-5), Some("Change: -5 units")) }),
+            src,
+        );
+        assert_eq!(b[0].status, FieldStatus::Supported);
+    }
+
+    #[test]
+    fn parse_claim_confidence_with_surrounding_whitespace_is_trimmed() {
+        let c = parse_claim(&json!({ "confidence": "  high  " }));
+        assert_eq!(c.confidence, Some(ConfidenceLevel::High));
+    }
+
+    #[test]
+    fn align_basis_field_name_with_special_characters_round_trips() {
+        let s = json!({ "type": "object", "properties": { "price-usd": { "type": "number" } } });
+        let (b, _) = run(
+            &s,
+            json!({ "price-usd": 19.99 }),
+            json!({ "price-usd": claim(json!(19.99), Some("Price:** $19.99")) }),
+            SRC,
+        );
+        assert_eq!(b[0].field, "price-usd");
+        assert_eq!(b[0].status, FieldStatus::Supported);
+    }
+
+    #[test]
+    fn strip_digit_separators_all_separator_types_mixed_in_one_string() {
+        // The space between "000" and "500" is also digit-adjacent, so it is
+        // stripped too (space is a valid thousands separator in some locales).
+        assert_eq!(strip_digit_separators("1,000_000 500"), "1000000500");
+    }
 }

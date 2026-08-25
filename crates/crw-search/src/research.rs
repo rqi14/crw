@@ -1239,6 +1239,673 @@ mod tests {
         assert_eq!(out[0].primary_id, "arxiv:1.1");
         assert_eq!(out[0].abstract_.as_deref(), Some("x")); // merged the richer record
     }
+
+    // --- norm_arxiv ---
+
+    #[test]
+    fn norm_arxiv_empty_string_is_empty() {
+        assert_eq!(norm_arxiv(""), "");
+    }
+
+    #[test]
+    fn norm_arxiv_leaves_a_version_free_id_unchanged() {
+        assert_eq!(norm_arxiv("2311.12345"), "2311.12345");
+    }
+
+    #[test]
+    fn norm_arxiv_trims_surrounding_whitespace() {
+        assert_eq!(norm_arxiv("  1706.03762  "), "1706.03762");
+    }
+
+    #[test]
+    fn norm_arxiv_does_not_strip_a_wrong_case_prefix() {
+        // only the exact `arXiv:`/`arxiv:` prefixes are stripped; the whole
+        // string still gets lowercased.
+        assert_eq!(norm_arxiv("ARXIV:1234.5678"), "arxiv:1234.5678");
+    }
+
+    // --- reconstruct_abstract ---
+
+    #[test]
+    fn reconstruct_abstract_empty_object_is_none() {
+        assert!(reconstruct_abstract(&json!({})).is_none());
+    }
+
+    #[test]
+    fn reconstruct_abstract_orders_out_of_order_positions() {
+        let inv = json!({"world": [1], "hello": [0]});
+        assert_eq!(reconstruct_abstract(&inv).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn reconstruct_abstract_keeps_unicode_words() {
+        let inv = json!({"café": [0], "日本語": [1]});
+        assert_eq!(reconstruct_abstract(&inv).unwrap(), "café 日本語");
+    }
+
+    #[test]
+    fn reconstruct_abstract_skips_non_array_positions() {
+        let inv = json!({"Good": [0], "Bad": "not-an-array"});
+        assert_eq!(reconstruct_abstract(&inv).unwrap(), "Good");
+    }
+
+    #[test]
+    fn reconstruct_abstract_skips_non_integer_position_values() {
+        let inv = json!({"Only": [1.5]});
+        assert!(reconstruct_abstract(&inv).is_none());
+    }
+
+    // --- openalex_work_to_hit ---
+
+    #[test]
+    fn openalex_work_to_hit_none_without_a_display_name() {
+        let w = json!({"id": "https://openalex.org/W1"});
+        assert!(openalex_work_to_hit(&w).is_none());
+    }
+
+    #[test]
+    fn openalex_work_to_hit_survives_a_missing_id_field() {
+        let w = json!({"display_name": "A Paper With No Id"});
+        let h = openalex_work_to_hit(&w).unwrap();
+        assert!(h.work_id.is_none());
+        assert!(h.doi.is_none());
+        assert_eq!(h.cited_by, 0);
+        assert_eq!(h.score, 0.0);
+    }
+
+    #[test]
+    fn openalex_work_to_hit_keeps_a_non_arxiv_doi() {
+        let w = json!({
+            "display_name": "A Journal Paper",
+            "ids": {"doi": "https://doi.org/10.1145/123456"}
+        });
+        let h = openalex_work_to_hit(&w).unwrap();
+        assert_eq!(h.doi.as_deref(), Some("10.1145/123456"));
+        assert!(h.arxiv.is_none());
+    }
+
+    #[test]
+    fn openalex_work_to_hit_tolerates_a_malformed_ids_field() {
+        // `ids` shaped as a string instead of an object must not panic: every
+        // downstream `.get()` on a non-object `Value` just returns `None`.
+        let w = json!({"display_name": "T", "ids": "not-an-object"});
+        let h = openalex_work_to_hit(&w).unwrap();
+        assert!(h.doi.is_none());
+    }
+
+    #[test]
+    fn openalex_work_to_hit_accepts_an_id_with_no_slash() {
+        let w = json!({"id": "W123", "display_name": "T"});
+        let h = openalex_work_to_hit(&w).unwrap();
+        assert_eq!(h.work_id.as_deref(), Some("W123"));
+    }
+
+    // --- oa_sanitize / arxiv_sanitize ---
+
+    #[test]
+    fn oa_sanitize_leaves_adjacent_wildcard_runs_as_spaces() {
+        assert_eq!(oa_sanitize("a??**b"), "a    b");
+    }
+
+    #[test]
+    fn oa_sanitize_passes_unicode_through_untouched() {
+        assert_eq!(oa_sanitize("日本語 テスト"), "日本語 テスト");
+    }
+
+    #[test]
+    fn arxiv_sanitize_keeps_unicode_terms() {
+        assert_eq!(arxiv_sanitize("café société?"), "café société");
+    }
+
+    #[test]
+    fn arxiv_sanitize_collapses_repeated_internal_whitespace() {
+        assert_eq!(arxiv_sanitize("too   many    spaces"), "too many spaces");
+    }
+
+    // --- unescape_xml ---
+
+    #[test]
+    fn unescape_xml_leaves_plain_text_untouched() {
+        assert_eq!(unescape_xml("hello world"), "hello world");
+    }
+
+    #[test]
+    fn unescape_xml_decodes_all_five_entities() {
+        assert_eq!(
+            unescape_xml("a &lt;b&gt; &quot;c&quot; &amp; d&#39;s"),
+            "a <b> \"c\" & d's"
+        );
+    }
+
+    #[test]
+    fn unescape_xml_amp_last_avoids_double_decoding() {
+        // If `&amp;` ran first, "&amp;lt;" would decode to "&lt;" and then to
+        // "<" on a second pass. Decoding `&amp;` LAST keeps it at "&lt;".
+        assert_eq!(unescape_xml("&amp;lt;"), "&lt;");
+    }
+
+    // --- parse_arxiv_atom ---
+
+    #[test]
+    fn parse_arxiv_atom_drops_entries_whose_id_is_not_an_abs_url() {
+        let body = "<entry><id>http://arxiv.org/pdf/1234.5678</id><title>T</title></entry>";
+        assert!(parse_arxiv_atom(body).is_empty());
+    }
+
+    #[test]
+    fn parse_arxiv_atom_leaves_abstract_none_when_summary_is_absent() {
+        let body = "<entry><id>http://arxiv.org/abs/1234.5678</id><title>T</title></entry>";
+        let hits = parse_arxiv_atom(body);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].abstract_.is_none());
+    }
+
+    #[test]
+    fn parse_arxiv_atom_does_not_dedup_the_same_paper_across_entries() {
+        // Two entries for the same paper at different arXiv versions: deduping
+        // across sources is merge_rank's job, not the parser's.
+        let body = r#"<entry><id>http://arxiv.org/abs/1234.5678v1</id><title>T</title></entry>
+<entry><id>http://arxiv.org/abs/1234.5678v2</id><title>T</title></entry>"#;
+        let hits = parse_arxiv_atom(body);
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().all(|h| h.arxiv.as_deref() == Some("1234.5678")));
+    }
+
+    #[test]
+    fn parse_arxiv_atom_keeps_unicode_in_title_and_summary() {
+        let body = "<entry><id>http://arxiv.org/abs/1234.5678</id><title>日本語のタイトル</title><summary>résumé en français</summary></entry>";
+        let hits = parse_arxiv_atom(body);
+        assert_eq!(hits[0].title, "日本語のタイトル");
+        assert_eq!(hits[0].abstract_.as_deref(), Some("résumé en français"));
+    }
+
+    #[test]
+    fn parse_arxiv_atom_handles_a_large_number_of_entries_without_panicking() {
+        let mut body = String::new();
+        for i in 0..40 {
+            body.push_str(&format!(
+                "<entry><id>http://arxiv.org/abs/24{i:02}.00001</id><title>Paper {i}</title></entry>"
+            ));
+        }
+        let hits = parse_arxiv_atom(&body);
+        assert_eq!(hits.len(), 40);
+    }
+
+    #[test]
+    fn parse_arxiv_atom_uses_the_first_id_when_an_entry_has_more_than_one() {
+        let body = "<entry><id>http://arxiv.org/abs/1111.1111</id><id>http://arxiv.org/abs/2222.2222</id><title>T</title></entry>";
+        let hits = parse_arxiv_atom(body);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].arxiv.as_deref(), Some("1111.1111"));
+    }
+
+    // --- as_arxiv_id ---
+
+    #[test]
+    fn as_arxiv_id_rejects_openalex_work_ids() {
+        assert!(as_arxiv_id("W123456").is_none());
+    }
+
+    #[test]
+    fn as_arxiv_id_rejects_doi_prefixed_ids() {
+        assert!(as_arxiv_id("doi:10.1000/xyz").is_none());
+    }
+
+    #[test]
+    fn as_arxiv_id_accepts_a_prefixed_id() {
+        assert_eq!(
+            as_arxiv_id("arxiv:1706.03762").as_deref(),
+            Some("1706.03762")
+        );
+        assert_eq!(
+            as_arxiv_id("arXiv:1706.03762v3").as_deref(),
+            Some("1706.03762")
+        );
+    }
+
+    #[test]
+    fn as_arxiv_id_accepts_a_bare_id() {
+        assert_eq!(as_arxiv_id("1706.03762").as_deref(), Some("1706.03762"));
+    }
+
+    #[test]
+    fn as_arxiv_id_rejects_non_matching_text() {
+        assert!(as_arxiv_id("hello world").is_none());
+        assert!(as_arxiv_id("arxiv:hello").is_none());
+    }
+
+    // --- PaperHit::key ---
+
+    #[test]
+    fn paper_hit_key_prefers_arxiv_over_doi_and_title() {
+        let h = PaperHit {
+            work_id: None,
+            arxiv: Some("1.1".into()),
+            doi: Some("10.1/x".into()),
+            title: "T".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        assert_eq!(h.key(), "arxiv:1.1");
+    }
+
+    #[test]
+    fn paper_hit_key_falls_back_to_lowercased_doi() {
+        let h = PaperHit {
+            work_id: None,
+            arxiv: None,
+            doi: Some("10.1/ABC".into()),
+            title: "T".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        assert_eq!(h.key(), "doi:10.1/abc");
+    }
+
+    #[test]
+    fn paper_hit_key_falls_back_to_lowercased_title() {
+        let h = PaperHit {
+            work_id: None,
+            arxiv: None,
+            doi: None,
+            title: "Attention Is All You Need".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        assert_eq!(h.key(), "title:attention is all you need");
+    }
+
+    // --- PaperHit::from_searxng ---
+
+    #[test]
+    fn from_searxng_returns_none_without_an_arxiv_id() {
+        assert!(PaperHit::from_searxng("Some Blog Post", "no ids here", 0.5).is_none());
+    }
+
+    #[test]
+    fn from_searxng_extracts_the_arxiv_id_from_the_blob() {
+        let h = PaperHit::from_searxng(
+            "ExpertFlow paper",
+            "see https://arxiv.org/abs/2410.17954v2 for details",
+            0.73,
+        )
+        .unwrap();
+        assert_eq!(h.arxiv.as_deref(), Some("2410.17954"));
+        assert_eq!(h.title, "ExpertFlow paper");
+        assert_eq!(h.score, 0.73);
+        assert_eq!(h.cited_by, 0);
+        assert!(h.doi.is_none() && h.work_id.is_none() && h.abstract_.is_none());
+    }
+
+    #[test]
+    fn from_searxng_keeps_unicode_and_emoji_in_the_title() {
+        let h = PaperHit::from_searxng("论文 🚀 arXiv:1706.03762", "arxiv.org/abs/1706.03762", 0.1)
+            .unwrap();
+        assert_eq!(h.title, "论文 🚀 arXiv:1706.03762");
+    }
+
+    // --- PaperHit::into_result ---
+
+    #[test]
+    fn into_result_falls_back_to_the_title_when_nothing_else_identifies_the_paper() {
+        let h = PaperHit {
+            work_id: None,
+            arxiv: None,
+            doi: None,
+            title: "Untitled Preprint".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        let r = h.into_result();
+        assert_eq!(r.primary_id, "Untitled Preprint");
+        assert_eq!(r.paper_id, "Untitled Preprint");
+        assert!(r.ids.is_empty());
+    }
+
+    #[test]
+    fn into_result_uses_the_work_id_as_paper_id_when_present() {
+        let h = PaperHit {
+            work_id: Some("W99".into()),
+            arxiv: None,
+            doi: Some("10.1/y".into()),
+            title: "T".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        let r = h.into_result();
+        // arxiv absent, so primary_id falls back to doi; paper_id always
+        // prefers the canonical OpenAlex work id when we have one.
+        assert_eq!(r.primary_id, "doi:10.1/y");
+        assert_eq!(r.paper_id, "W99");
+        assert_eq!(r.ids["doi"][0], "10.1/y");
+        assert_eq!(r.ids["openalex"][0], "W99");
+    }
+
+    #[test]
+    fn into_result_prefers_arxiv_primary_id_even_with_doi_and_work_id_present() {
+        let h = PaperHit {
+            work_id: Some("W1".into()),
+            arxiv: Some("1.1".into()),
+            doi: Some("10.1/z".into()),
+            title: "T".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        let r = h.into_result();
+        assert_eq!(r.primary_id, "arxiv:1.1");
+        assert_eq!(r.paper_id, "W1");
+        assert_eq!(r.ids.len(), 3);
+    }
+
+    // --- merge_rank ---
+
+    #[test]
+    fn merge_rank_empty_pools_yield_empty_result() {
+        assert!(merge_rank(vec![], 10).is_empty());
+        assert!(merge_rank(vec![vec![], vec![]], 10).is_empty());
+    }
+
+    #[test]
+    fn merge_rank_k_zero_returns_nothing_even_with_hits() {
+        let a = PaperHit {
+            work_id: None,
+            arxiv: Some("2.1".into()),
+            doi: None,
+            title: "A".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        assert!(merge_rank(vec![vec![a]], 0).is_empty());
+    }
+
+    #[test]
+    fn merge_rank_k_larger_than_pool_returns_everything() {
+        let a = PaperHit {
+            work_id: None,
+            arxiv: Some("2.1".into()),
+            doi: None,
+            title: "A".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        let b = PaperHit {
+            work_id: None,
+            arxiv: Some("2.2".into()),
+            doi: None,
+            title: "B".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        let out = merge_rank(vec![vec![a, b]], 100);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn merge_rank_breaks_frequency_ties_by_score() {
+        let a = PaperHit {
+            work_id: None,
+            arxiv: Some("7.1".into()),
+            doi: None,
+            title: "A".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.1,
+        };
+        let b = PaperHit {
+            work_id: None,
+            arxiv: Some("7.2".into()),
+            doi: None,
+            title: "B".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.8,
+        };
+        let out = merge_rank(vec![vec![a, b]], 10);
+        assert_eq!(out[0].primary_id, "arxiv:7.2");
+        assert_eq!(out[1].primary_id, "arxiv:7.1");
+    }
+
+    #[test]
+    fn merge_rank_breaks_score_ties_by_citation_count() {
+        let a = PaperHit {
+            work_id: None,
+            arxiv: Some("8.1".into()),
+            doi: None,
+            title: "A".into(),
+            abstract_: None,
+            cited_by: 2,
+            score: 0.0,
+        };
+        let b = PaperHit {
+            work_id: None,
+            arxiv: Some("8.2".into()),
+            doi: None,
+            title: "B".into(),
+            abstract_: None,
+            cited_by: 40,
+            score: 0.0,
+        };
+        let out = merge_rank(vec![vec![a, b]], 10);
+        assert_eq!(out[0].primary_id, "arxiv:8.2");
+        assert_eq!(out[1].primary_id, "arxiv:8.1");
+    }
+
+    #[test]
+    fn merge_rank_keeps_the_first_known_doi_when_a_duplicate_has_a_different_one() {
+        let a = PaperHit {
+            work_id: None,
+            arxiv: Some("3.1".into()),
+            doi: Some("10.1/first".into()),
+            title: "T".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        let b = PaperHit {
+            work_id: None,
+            arxiv: Some("3.1".into()),
+            doi: Some("10.1/second".into()),
+            title: "T".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.0,
+        };
+        let out = merge_rank(vec![vec![a], vec![b]], 10);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].ids["doi"][0], "10.1/first");
+    }
+
+    #[test]
+    fn merge_rank_keeps_the_max_citation_count_across_duplicates() {
+        let a1 = PaperHit {
+            work_id: None,
+            arxiv: Some("5.1".into()),
+            doi: None,
+            title: "A".into(),
+            abstract_: None,
+            cited_by: 3,
+            score: 0.0,
+        };
+        let a2 = PaperHit {
+            work_id: None,
+            arxiv: Some("5.1".into()),
+            doi: None,
+            title: "A".into(),
+            abstract_: None,
+            cited_by: 10,
+            score: 0.0,
+        };
+        let b1 = PaperHit {
+            work_id: None,
+            arxiv: Some("5.2".into()),
+            doi: None,
+            title: "B".into(),
+            abstract_: None,
+            cited_by: 5,
+            score: 0.0,
+        };
+        let b2 = PaperHit {
+            work_id: None,
+            arxiv: Some("5.2".into()),
+            doi: None,
+            title: "B".into(),
+            abstract_: None,
+            cited_by: 5,
+            score: 0.0,
+        };
+        // Both papers are surfaced by 2 distinct pools (frequency tied at 2),
+        // so the tie-break falls through to citation count: the merged
+        // max(3,10)=10 must beat B's flat 5, proving the merge keeps the MAX,
+        // not the last-seen value.
+        let out = merge_rank(vec![vec![a1], vec![a2], vec![b1], vec![b2]], 10);
+        assert_eq!(out[0].primary_id, "arxiv:5.1");
+        assert_eq!(out[1].primary_id, "arxiv:5.2");
+    }
+
+    #[test]
+    fn merge_rank_keeps_the_max_relevance_score_across_duplicates() {
+        let a1 = PaperHit {
+            work_id: None,
+            arxiv: Some("6.1".into()),
+            doi: None,
+            title: "A".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.2,
+        };
+        let a2 = PaperHit {
+            work_id: None,
+            arxiv: Some("6.1".into()),
+            doi: None,
+            title: "A".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.9,
+        };
+        let b1 = PaperHit {
+            work_id: None,
+            arxiv: Some("6.2".into()),
+            doi: None,
+            title: "B".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.5,
+        };
+        let b2 = PaperHit {
+            work_id: None,
+            arxiv: Some("6.2".into()),
+            doi: None,
+            title: "B".into(),
+            abstract_: None,
+            cited_by: 0,
+            score: 0.5,
+        };
+        let out = merge_rank(vec![vec![a1], vec![a2], vec![b1], vec![b2]], 10);
+        assert_eq!(out[0].primary_id, "arxiv:6.1");
+        assert_eq!(out[0].score, 0.9);
+        assert_eq!(out[1].primary_id, "arxiv:6.2");
+    }
+
+    #[test]
+    fn merge_rank_intra_pool_duplicate_does_not_inflate_frequency() {
+        let x1 = PaperHit {
+            work_id: None,
+            arxiv: Some("9.1".into()),
+            doi: None,
+            title: "X".into(),
+            abstract_: None,
+            cited_by: 100,
+            score: 0.0,
+        };
+        let x2 = x1.clone(); // literal duplicate within the SAME pool
+        let y1 = PaperHit {
+            work_id: None,
+            arxiv: Some("9.2".into()),
+            doi: None,
+            title: "Y".into(),
+            abstract_: None,
+            cited_by: 1,
+            score: 0.0,
+        };
+        let y2 = PaperHit {
+            work_id: None,
+            arxiv: Some("9.2".into()),
+            doi: None,
+            title: "Y".into(),
+            abstract_: None,
+            cited_by: 1,
+            score: 0.0,
+        };
+        // Y was surfaced by 2 DISTINCT pools (frequency 2); X is the same pool
+        // counted twice and must dedup down to frequency 1, so it must rank
+        // BELOW Y despite its far higher citation count.
+        let out = merge_rank(vec![vec![x1, x2, y1], vec![y2]], 10);
+        assert_eq!(out[0].primary_id, "arxiv:9.2");
+        assert_eq!(out[1].primary_id, "arxiv:9.1");
+    }
+
+    // --- enc ---
+
+    #[test]
+    fn enc_form_urlencodes_reserved_characters() {
+        assert_eq!(enc("a b&c=d"), "a+b%26c%3Dd");
+    }
+
+    #[test]
+    fn enc_empty_string_stays_empty() {
+        assert_eq!(enc(""), "");
+    }
+
+    // --- Default impls ---
+
+    #[test]
+    fn research_keys_default_is_all_none() {
+        let k = ResearchKeys::default();
+        assert!(k.openalex_key.is_none());
+        assert!(k.openalex_mailto.is_none());
+        assert!(k.s2_key.is_none());
+    }
+
+    #[test]
+    fn search_filters_default_is_all_none() {
+        let f = SearchFilters::default();
+        assert!(
+            f.authors.is_none() && f.categories.is_none() && f.from.is_none() && f.to.is_none()
+        );
+    }
+
+    // --- regex helpers ---
+
+    #[test]
+    fn arxiv_re_requires_a_four_digit_year_month_prefix() {
+        assert!(arxiv_re().find("123.1234").is_none());
+        assert!(arxiv_re().find("1234.1234").is_some());
+    }
+
+    #[test]
+    fn arxiv_re_accepts_both_four_and_five_digit_suffixes() {
+        assert_eq!(arxiv_re().find("1234.1234").unwrap().as_str(), "1234.1234");
+        assert_eq!(
+            arxiv_re().find("1234.12345").unwrap().as_str(),
+            "1234.12345"
+        );
+    }
+
+    #[test]
+    fn ver_re_matches_a_trailing_version_case_insensitively() {
+        assert!(ver_re().is_match("2105.05233V12"));
+        assert!(!ver_re().is_match("2105.05233vX"));
+        assert!(!ver_re().is_match("2105.05233v12x"));
+    }
 }
 
 #[cfg(test)]

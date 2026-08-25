@@ -1938,4 +1938,1083 @@ mod tests {
     fn _suppress_unused_search_source_warning() {
         let _ = SearchSource::Web;
     }
+
+    // ── validate_request: more boundary/format coverage ────────────────
+
+    #[test]
+    fn validate_accepts_categories_at_max_boundary() {
+        let mut r = req("rust");
+        r.categories = Some(vec![
+            crw_core::types::SearchCategory::Github,
+            crw_core::types::SearchCategory::Research,
+            crw_core::types::SearchCategory::Pdf,
+            crw_core::types::SearchCategory::Other("news".into()),
+            crw_core::types::SearchCategory::Github,
+        ]);
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_categories_over_max() {
+        let mut r = req("rust");
+        r.categories = Some(vec![
+            crw_core::types::SearchCategory::Github,
+            crw_core::types::SearchCategory::Research,
+            crw_core::types::SearchCategory::Pdf,
+            crw_core::types::SearchCategory::Other("news".into()),
+            crw_core::types::SearchCategory::Github,
+            crw_core::types::SearchCategory::Research,
+        ]);
+        assert!(matches!(
+            validate_request(&r, 20),
+            Err(CrwError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_empty_categories_vec() {
+        let mut r = req("rust");
+        r.categories = Some(vec![]);
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_scrape_options_plain_text_format() {
+        let mut r = req("rust");
+        let mut opts = scrape_opts(None);
+        opts.formats = vec![OutputFormat::PlainText];
+        r.scrape_options = Some(opts);
+        let err = validate_request(&r, 20).unwrap_err();
+        match err {
+            CrwError::InvalidRequest(msg) => {
+                assert!(
+                    msg.contains("plainText") || msg.contains("PlainText"),
+                    "{msg}"
+                );
+            }
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_scrape_options_json_format() {
+        let mut r = req("rust");
+        let mut opts = scrape_opts(None);
+        opts.formats = vec![OutputFormat::Json];
+        r.scrape_options = Some(opts);
+        assert!(matches!(
+            validate_request(&r, 20),
+            Err(CrwError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_all_allowed_scrape_formats() {
+        let mut r = req("rust");
+        let mut opts = scrape_opts(None);
+        opts.formats = vec![
+            OutputFormat::Markdown,
+            OutputFormat::Html,
+            OutputFormat::RawHtml,
+            OutputFormat::Links,
+        ];
+        r.scrape_options = Some(opts);
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_scrape_options_timeout_lower_boundary() {
+        let mut r = req("rust");
+        r.scrape_options = Some(scrape_opts(Some(1)));
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_scrape_options_timeout_upper_boundary() {
+        let mut r = req("rust");
+        r.scrape_options = Some(scrape_opts(Some(SEARCH_ENRICH_DEADLINE_MAX_MS)));
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_query_at_max_chars_boundary() {
+        let q = "x".repeat(MAX_QUERY_CHARS);
+        assert!(validate_request(&req(&q), 20).is_ok());
+    }
+
+    #[test]
+    fn validate_counts_query_length_in_chars_not_bytes() {
+        // Multi-byte emoji: well under MAX_QUERY_CHARS in `.chars().count()`
+        // even though the byte length is several times larger.
+        let q = "🦀".repeat(500);
+        assert_eq!(q.chars().count(), 500);
+        assert!(validate_request(&req(&q), 20).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_limit_at_max_boundary() {
+        let mut r = req("rust");
+        r.limit = Some(20);
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_limit_of_one() {
+        let mut r = req("rust");
+        r.limit = Some(1);
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_whitespace_only_lang_as_empty() {
+        // `validate_request` trims before checking emptiness, so a
+        // whitespace-only lang is treated the same as an absent one.
+        let mut r = req("rust");
+        r.lang = Some("   ".into());
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    #[test]
+    fn validate_none_lang_is_accepted() {
+        let mut r = req("rust");
+        r.lang = None;
+        assert!(validate_request(&r, 20).is_ok());
+    }
+
+    // ── is_valid_lang: direct coverage of the private predicate ─────────
+
+    #[test]
+    fn is_valid_lang_accepts_sentinels() {
+        assert!(is_valid_lang("auto"));
+        assert!(is_valid_lang("all"));
+    }
+
+    #[test]
+    fn is_valid_lang_rejects_single_char_primary() {
+        assert!(!is_valid_lang("e"));
+    }
+
+    #[test]
+    fn is_valid_lang_rejects_four_char_primary() {
+        assert!(!is_valid_lang("engl"));
+    }
+
+    #[test]
+    fn is_valid_lang_accepts_two_and_three_char_primary() {
+        assert!(is_valid_lang("en"));
+        assert!(is_valid_lang("eng"));
+    }
+
+    // ── is_abstention: broader marker + shape coverage ──────────────────
+
+    #[test]
+    fn is_abstention_case_insensitive() {
+        assert!(is_abstention("THE SOURCES DO NOT CONTAIN THIS."));
+        assert!(is_abstention("I Cannot Answer That."));
+    }
+
+    #[test]
+    fn is_abstention_marker_inside_larger_sentence() {
+        assert!(is_abstention(
+            "Based on the provided passages, I am unable to answer this question directly."
+        ));
+    }
+
+    #[test]
+    fn is_abstention_empty_string_is_false() {
+        assert!(!is_abstention(""));
+    }
+
+    #[test]
+    fn is_abstention_every_marker_individually_triggers() {
+        const MARKERS: &[&str] = &[
+            "do not contain",
+            "does not contain",
+            "doesn't contain",
+            "cannot answer",
+            "can't answer",
+            "cannot determine",
+            "could not find",
+            "couldn't find",
+            "no information",
+            "do not provide",
+            "does not provide",
+            "not mentioned in",
+            "not specified",
+            "unable to answer",
+            "cannot be answered",
+            "sources do not",
+            "i cannot",
+        ];
+        for m in MARKERS {
+            let sentence = format!("Well, {m} the answer.");
+            assert!(is_abstention(&sentence), "marker {m:?} did not trigger");
+        }
+    }
+
+    // ── is_block_shell: boundary + phrase coverage ───────────────────────
+
+    #[test]
+    fn is_block_shell_boundary_exactly_2000_chars_not_flagged() {
+        // The size gate is `md.len() >= 2000`, so exactly 2000 bytes already
+        // returns false regardless of content.
+        let md = format!(
+            "{}{}",
+            "just a moment ",
+            "x".repeat(2000 - "just a moment ".len())
+        );
+        assert_eq!(md.len(), 2000);
+        assert!(!is_block_shell(&md));
+    }
+
+    #[test]
+    fn is_block_shell_just_under_2000_flagged() {
+        let md = format!(
+            "{}{}",
+            "just a moment ",
+            "x".repeat(1999 - "just a moment ".len())
+        );
+        assert_eq!(md.len(), 1999);
+        assert!(is_block_shell(&md));
+    }
+
+    #[test]
+    fn is_block_shell_case_insensitive() {
+        assert!(is_block_shell("ACCESS DENIED"));
+        assert!(is_block_shell("Request Blocked by firewall"));
+    }
+
+    #[test]
+    fn is_block_shell_every_phrase_individually() {
+        for phrase in [
+            "wikimedia error",
+            "are forbidden",
+            "access denied",
+            "request blocked",
+            "just a moment",
+            "attention required",
+            "enable javascript and cookies",
+        ] {
+            assert!(is_block_shell(phrase), "phrase {phrase:?} did not flag");
+        }
+    }
+
+    #[test]
+    fn is_block_shell_empty_string_is_false() {
+        assert!(!is_block_shell(""));
+    }
+
+    // ── map_search_error: remaining variants ─────────────────────────────
+
+    #[test]
+    fn map_search_error_invalid_response_to_http_error() {
+        let err = SearchError::InvalidResponse("unexpected EOF".into());
+        assert!(matches!(
+            map_search_error(err, 5000, "http://searxng:8080"),
+            CrwError::HttpError(_)
+        ));
+    }
+
+    #[test]
+    fn map_search_error_upstream_body_truncated_to_200_chars() {
+        let long_body = "x".repeat(500);
+        let err = SearchError::Upstream {
+            status: 500,
+            body: long_body,
+        };
+        match map_search_error(err, 5000, "http://searxng:8080") {
+            CrwError::HttpError(msg) => {
+                // 200 chars of body plus the "HTTP {status}: " prefix.
+                let x_count = msg.chars().filter(|c| *c == 'x').count();
+                assert_eq!(x_count, 200, "expected body truncated to 200 chars: {msg}");
+            }
+            other => panic!("expected HttpError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_search_error_transport_plain_host_no_credentials() {
+        let err = SearchError::Transport("connection refused".into());
+        match map_search_error(err, 5000, "http://searxng-internal:8080") {
+            CrwError::TargetUnreachable(msg) => {
+                assert!(msg.contains("http://searxng-internal:8080"), "{msg}");
+                assert!(msg.contains("connection refused"), "{msg}");
+            }
+            other => panic!("expected TargetUnreachable, got {other:?}"),
+        }
+    }
+
+    // ── fold_prescraped: remaining shapes ─────────────────────────────────
+
+    #[test]
+    fn fold_prescraped_empty_prescraped_is_noop() {
+        let mut pool = vec![bare_result("https://example.com/a")];
+        fold_prescraped(&mut pool, &[]);
+        assert!(pool[0].markdown.is_none());
+        assert!(pool[0].error.is_none());
+    }
+
+    #[test]
+    fn fold_prescraped_skips_target_that_already_has_metadata() {
+        // A target the caller already scraped some other way must not be
+        // clobbered by a same-URL prescraped row.
+        let mut already = bare_result("https://example.com/a");
+        already.metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "sourceURL": "https://example.com/a", "statusCode": 200, "elapsedMs": 1
+            }))
+            .expect("valid metadata"),
+        );
+        already.markdown = Some("# original".into());
+        let mut pool = vec![already];
+
+        let mut src = bare_result("https://example.com/a");
+        src.markdown = Some("# from prescrape".into());
+        src.metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "sourceURL": "https://example.com/a", "statusCode": 200, "elapsedMs": 1
+            }))
+            .expect("valid metadata"),
+        );
+
+        fold_prescraped(&mut pool, &[src]);
+        assert_eq!(pool[0].markdown.as_deref(), Some("# original"));
+    }
+
+    #[test]
+    fn fold_prescraped_preserves_links_and_raw_html() {
+        let mut ok = bare_result("https://example.com/ok");
+        ok.markdown = Some("# ok".into());
+        ok.html = Some("<h1>ok</h1>".into());
+        ok.raw_html = Some("<html><h1>ok</h1></html>".into());
+        ok.links = Some(vec!["https://example.com/child".into()]);
+        ok.metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "sourceURL": "https://example.com/ok", "statusCode": 200, "elapsedMs": 1
+            }))
+            .expect("valid metadata"),
+        );
+
+        let mut pool = vec![bare_result("https://example.com/ok")];
+        fold_prescraped(&mut pool, &[ok]);
+        assert_eq!(pool[0].html.as_deref(), Some("<h1>ok</h1>"));
+        assert_eq!(
+            pool[0].raw_html.as_deref(),
+            Some("<html><h1>ok</h1></html>")
+        );
+        assert_eq!(
+            pool[0].links.as_deref(),
+            Some(&["https://example.com/child".to_string()][..])
+        );
+    }
+
+    // ── drop_known_urls: remaining shapes ─────────────────────────────────
+
+    #[test]
+    fn drop_known_urls_grouped_variant_returns_rows_unchanged() {
+        let data = SearchData::Grouped(crw_core::types::GroupedSearchData {
+            web: Some(vec![bare_result("https://example.com/known")]),
+            news: None,
+            images: None,
+        });
+        let rows = vec![
+            bare_result("https://example.com/known"),
+            bare_result("https://example.com/fresh"),
+        ];
+        let kept = drop_known_urls(&data, rows);
+        assert_eq!(kept.len(), 2, "Grouped data is not deduped, left as-is");
+    }
+
+    #[test]
+    fn drop_known_urls_empty_rows_returns_empty() {
+        let data = SearchData::Flat(vec![bare_result("https://example.com/known")]);
+        let kept = drop_known_urls(&data, vec![]);
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn drop_known_urls_empty_pool_keeps_all_rows() {
+        let data = SearchData::Flat(vec![]);
+        let rows = vec![
+            bare_result("https://example.com/a"),
+            bare_result("https://example.com/b"),
+        ];
+        let kept = drop_known_urls(&data, rows);
+        assert_eq!(kept.len(), 2);
+    }
+
+    // ── merge_scraped ──────────────────────────────────────────────────
+
+    #[test]
+    fn merge_scraped_adds_rows_with_markdown() {
+        let mut data = SearchData::Flat(vec![]);
+        let mut fresh = bare_result("https://example.com/fresh");
+        fresh.markdown = Some("# fresh".into());
+        let added = merge_scraped(&mut data, vec![fresh]);
+        assert!(added);
+        let SearchData::Flat(pool) = data else {
+            panic!("expected flat");
+        };
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool[0].url, "https://example.com/fresh");
+    }
+
+    #[test]
+    fn merge_scraped_skips_rows_without_markdown() {
+        let mut data = SearchData::Flat(vec![]);
+        let no_md = bare_result("https://example.com/empty");
+        let added = merge_scraped(&mut data, vec![no_md]);
+        assert!(!added);
+        let SearchData::Flat(pool) = data else {
+            panic!("expected flat");
+        };
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn merge_scraped_dedups_by_url_against_existing_pool() {
+        let mut existing = bare_result("https://example.com/dup");
+        existing.markdown = Some("# original".into());
+        let mut data = SearchData::Flat(vec![existing]);
+
+        let mut dup = bare_result("https://example.com/dup");
+        dup.markdown = Some("# from scout".into());
+        let added = merge_scraped(&mut data, vec![dup]);
+        assert!(!added, "duplicate URL must not be added again");
+        let SearchData::Flat(pool) = data else {
+            panic!("expected flat");
+        };
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool[0].markdown.as_deref(), Some("# original"));
+    }
+
+    #[test]
+    fn merge_scraped_grouped_variant_returns_false_and_is_untouched() {
+        let mut data = SearchData::Grouped(crw_core::types::GroupedSearchData {
+            web: Some(vec![]),
+            news: None,
+            images: None,
+        });
+        let mut fresh = bare_result("https://example.com/fresh");
+        fresh.markdown = Some("# fresh".into());
+        let added = merge_scraped(&mut data, vec![fresh]);
+        assert!(!added);
+        let SearchData::Grouped(g) = data else {
+            panic!("expected grouped");
+        };
+        assert_eq!(g.web.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn merge_scraped_returns_false_when_nothing_to_add() {
+        let mut data = SearchData::Flat(vec![]);
+        let added = merge_scraped(&mut data, vec![]);
+        assert!(!added);
+    }
+
+    // ── evidence_excerpt ───────────────────────────────────────────────
+
+    #[test]
+    fn evidence_excerpt_flat_pool_includes_title_and_snippet() {
+        let mut r = bare_result("https://example.com/a");
+        r.markdown = Some("full markdown body here".into());
+        let data = SearchData::Flat(vec![r]);
+        let out = evidence_excerpt(&data, 5, 400);
+        assert!(out.contains('t'), "title should appear: {out}"); // title is "t"
+        assert!(out.contains("full markdown body here"), "{out}");
+    }
+
+    #[test]
+    fn evidence_excerpt_grouped_with_web_uses_web_bucket() {
+        let mut r = bare_result("https://example.com/a");
+        r.markdown = Some("web bucket body".into());
+        let data = SearchData::Grouped(crw_core::types::GroupedSearchData {
+            web: Some(vec![r]),
+            news: None,
+            images: None,
+        });
+        let out = evidence_excerpt(&data, 5, 400);
+        assert!(out.contains("web bucket body"), "{out}");
+    }
+
+    #[test]
+    fn evidence_excerpt_grouped_without_web_returns_empty() {
+        let data = SearchData::Grouped(crw_core::types::GroupedSearchData {
+            web: None,
+            news: Some(vec![bare_result("https://example.com/n")]),
+            images: None,
+        });
+        assert_eq!(evidence_excerpt(&data, 5, 400), "");
+    }
+
+    #[test]
+    fn evidence_excerpt_respects_max_sources() {
+        let pool: Vec<SearchResult> = (0..10)
+            .map(|i| bare_result(&format!("https://example.com/{i}")))
+            .collect();
+        let data = SearchData::Flat(pool);
+        let out = evidence_excerpt(&data, 3, 400);
+        assert_eq!(out.lines().count(), 3);
+    }
+
+    #[test]
+    fn evidence_excerpt_max_sources_zero_returns_empty() {
+        let data = SearchData::Flat(vec![bare_result("https://example.com/a")]);
+        assert_eq!(evidence_excerpt(&data, 0, 400), "");
+    }
+
+    #[test]
+    fn evidence_excerpt_respects_per_chars_truncation() {
+        let mut r = bare_result("https://example.com/a");
+        r.markdown = Some("x".repeat(1000));
+        let data = SearchData::Flat(vec![r]);
+        let out = evidence_excerpt(&data, 5, 10);
+        // "- t :: " prefix plus at most 10 chars of body plus a newline.
+        let body_line = out.lines().next().unwrap();
+        assert!(body_line.matches('x').count() <= 10, "{body_line}");
+    }
+
+    #[test]
+    fn evidence_excerpt_falls_back_to_description_when_markdown_absent() {
+        let r = bare_result("https://example.com/a"); // description "d", no markdown
+        let data = SearchData::Flat(vec![r]);
+        let out = evidence_excerpt(&data, 5, 400);
+        assert!(out.contains("d"), "{out}");
+    }
+
+    #[test]
+    fn evidence_excerpt_unicode_safe_truncation() {
+        let mut r = bare_result("https://example.com/a");
+        r.markdown = Some("🦀".repeat(50));
+        let data = SearchData::Flat(vec![r]);
+        // Must not panic on a char boundary inside a multi-byte sequence.
+        let out = evidence_excerpt(&data, 5, 10);
+        assert!(out.matches('🦀').count() <= 10);
+    }
+
+    // ── build_byok_search_llm_config: remaining override combinations ────
+
+    #[test]
+    fn byok_config_overrides_provider() {
+        let server_cfg = LlmConfig {
+            provider: "anthropic".into(),
+            ..Default::default()
+        };
+        let mut r = req("hello");
+        r.llm_api_key = Some("key".into());
+        r.llm_provider = Some("openai".into());
+        let byok = build_byok_search_llm_config(&r, Some(&server_cfg)).unwrap();
+        assert_eq!(byok.provider, "openai");
+    }
+
+    #[test]
+    fn byok_config_overrides_model() {
+        let mut r = req("hello");
+        r.llm_api_key = Some("key".into());
+        r.llm_model = Some("gpt-5".into());
+        let byok = build_byok_search_llm_config(&r, None).unwrap();
+        assert_eq!(byok.model, "gpt-5");
+    }
+
+    #[test]
+    fn byok_config_overrides_base_url() {
+        let mut r = req("hello");
+        r.llm_api_key = Some("key".into());
+        r.base_url = Some("https://byok.example.com/v1".into());
+        let byok = build_byok_search_llm_config(&r, None).unwrap();
+        assert_eq!(
+            byok.base_url.as_deref(),
+            Some("https://byok.example.com/v1")
+        );
+    }
+
+    #[test]
+    fn byok_config_defaults_when_server_cfg_none() {
+        let mut r = req("hello");
+        r.llm_api_key = Some("key".into());
+        let byok = build_byok_search_llm_config(&r, None).unwrap();
+        assert_eq!(byok.api_key, "key");
+        assert_eq!(byok.provider, LlmConfig::default().provider);
+    }
+
+    #[test]
+    fn byok_config_keeps_server_fields_when_not_overridden() {
+        let server_cfg = LlmConfig {
+            provider: "azure".into(),
+            model: "kimi-k2".into(),
+            ..Default::default()
+        };
+        let mut r = req("hello");
+        r.llm_api_key = Some("key".into());
+        let byok = build_byok_search_llm_config(&r, Some(&server_cfg)).unwrap();
+        assert_eq!(byok.provider, "azure");
+        assert_eq!(byok.model, "kimi-k2");
+    }
+
+    // ── build_aggregated_usage ────────────────────────────────────────
+
+    #[test]
+    fn build_aggregated_usage_falls_back_to_cfg_model_and_provider_when_empty() {
+        let fallback = LlmConfig {
+            provider: "fallback-provider".into(),
+            model: "fallback-model".into(),
+            ..Default::default()
+        };
+        let usage = build_aggregated_usage(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            String::new(),
+            String::new(),
+            false,
+            &fallback,
+        );
+        assert_eq!(usage.provider, "fallback-provider");
+        assert_eq!(usage.model, "fallback-model");
+    }
+
+    #[test]
+    fn build_aggregated_usage_keeps_supplied_model_and_provider() {
+        let fallback = LlmConfig::default();
+        let usage = build_aggregated_usage(
+            10,
+            20,
+            0,
+            0,
+            1,
+            0,
+            false,
+            "actual-provider".into(),
+            "actual-model".into(),
+            false,
+            &fallback,
+        );
+        assert_eq!(usage.provider, "actual-provider");
+        assert_eq!(usage.model, "actual-model");
+    }
+
+    #[test]
+    fn build_aggregated_usage_calls_floor_is_one() {
+        let fallback = LlmConfig::default();
+        let usage = build_aggregated_usage(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            "p".into(),
+            "m".into(),
+            false,
+            &fallback,
+        );
+        assert_eq!(usage.calls, 1, "calls must never report zero LLM calls");
+    }
+
+    #[test]
+    fn build_aggregated_usage_cache_tokens_none_when_zero() {
+        let fallback = LlmConfig::default();
+        let usage = build_aggregated_usage(
+            5,
+            5,
+            0,
+            0,
+            1,
+            0,
+            false,
+            "p".into(),
+            "m".into(),
+            false,
+            &fallback,
+        );
+        assert_eq!(usage.cache_hit_input_tokens, None);
+        assert_eq!(usage.cache_miss_input_tokens, None);
+    }
+
+    #[test]
+    fn build_aggregated_usage_cache_tokens_some_when_nonzero() {
+        let fallback = LlmConfig::default();
+        let usage = build_aggregated_usage(
+            5,
+            5,
+            3,
+            2,
+            1,
+            0,
+            false,
+            "p".into(),
+            "m".into(),
+            false,
+            &fallback,
+        );
+        assert_eq!(usage.cache_hit_input_tokens, Some(3));
+        assert_eq!(usage.cache_miss_input_tokens, Some(2));
+    }
+
+    #[test]
+    fn build_aggregated_usage_total_tokens_sums_input_and_output() {
+        let fallback = LlmConfig::default();
+        let usage = build_aggregated_usage(
+            100,
+            50,
+            0,
+            0,
+            1,
+            0,
+            false,
+            "p".into(),
+            "m".into(),
+            false,
+            &fallback,
+        );
+        assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn build_aggregated_usage_total_tokens_saturates_at_u32_max() {
+        let fallback = LlmConfig::default();
+        let usage = build_aggregated_usage(
+            u32::MAX,
+            u32::MAX,
+            0,
+            0,
+            1,
+            0,
+            false,
+            "p".into(),
+            "m".into(),
+            false,
+            &fallback,
+        );
+        assert_eq!(
+            usage.total_tokens,
+            u32::MAX,
+            "must saturate, not overflow-panic"
+        );
+    }
+
+    #[test]
+    fn build_aggregated_usage_carries_executed_summaries_and_answer_flag() {
+        let fallback = LlmConfig::default();
+        let usage = build_aggregated_usage(
+            0,
+            0,
+            0,
+            0,
+            1,
+            3,
+            true,
+            "p".into(),
+            "m".into(),
+            true,
+            &fallback,
+        );
+        assert_eq!(usage.executed_summaries, 3);
+        assert!(usage.answer_executed);
+        assert!(usage.truncated);
+    }
+
+    // ── apply_scrape_to_result: format gating ────────────────────────────
+
+    #[test]
+    fn apply_scrape_to_result_only_requested_formats_are_applied() {
+        let mut slot = bare_result("https://example.com/a");
+        let data: ScrapeData = serde_json::from_value(serde_json::json!({
+            "markdown": "# md",
+            "html": "<h1>md</h1>",
+            "rawHtml": "<html><h1>md</h1></html>",
+            "links": ["https://example.com/child"],
+            "metadata": {"sourceURL": "https://example.com/a", "statusCode": 200, "elapsedMs": 1}
+        }))
+        .expect("valid scrape data");
+        // Only markdown was requested: html/rawHtml/links must stay unset.
+        apply_scrape_to_result(&mut slot, data, &[OutputFormat::Markdown]);
+        assert_eq!(slot.markdown.as_deref(), Some("# md"));
+        assert!(slot.html.is_none());
+        assert!(slot.raw_html.is_none());
+        assert!(slot.links.is_none());
+    }
+
+    #[test]
+    fn apply_scrape_to_result_links_format_is_applied_when_requested() {
+        let mut slot = bare_result("https://example.com/a");
+        let data: ScrapeData = serde_json::from_value(serde_json::json!({
+            "links": ["https://example.com/child"],
+            "metadata": {"sourceURL": "https://example.com/a", "statusCode": 200, "elapsedMs": 1}
+        }))
+        .expect("valid scrape data");
+        apply_scrape_to_result(&mut slot, data, &[OutputFormat::Links]);
+        assert_eq!(
+            slot.links.as_deref(),
+            Some(&["https://example.com/child".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn apply_scrape_to_result_metadata_is_always_set() {
+        let mut slot = bare_result("https://example.com/a");
+        let data: ScrapeData = serde_json::from_value(serde_json::json!({
+            "metadata": {"sourceURL": "https://example.com/a", "statusCode": 404, "elapsedMs": 1}
+        }))
+        .expect("valid scrape data");
+        // No formats requested at all: metadata is still populated.
+        apply_scrape_to_result(&mut slot, data, &[]);
+        assert!(slot.metadata.is_some());
+        assert!(slot.markdown.is_none());
+    }
+
+    // ── enrich_deadline_ms ───────────────────────────────────────────────
+
+    #[test]
+    fn enrich_deadline_ms_uses_caller_timeout_when_present() {
+        assert_eq!(enrich_deadline_ms(&scrape_opts(Some(5_000))), 5_000);
+    }
+
+    #[test]
+    fn enrich_deadline_ms_default_when_none() {
+        assert_eq!(
+            enrich_deadline_ms(&scrape_opts(None)),
+            SEARCH_ENRICH_DEADLINE_MS
+        );
+    }
+
+    // ── union_pools ──────────────────────────────────────────────────────
+
+    fn searxng_row(url: &str) -> crw_search::SearxngResult {
+        serde_json::from_value(serde_json::json!({"url": url, "title": url, "engine": "google"}))
+            .expect("valid searxng result")
+    }
+
+    #[test]
+    fn union_pools_dedups_by_url() {
+        let mut merged = SearxngResponse {
+            results: vec![searxng_row("https://example.com/a")],
+            ..Default::default()
+        };
+        let pools = vec![SearxngResponse {
+            results: vec![
+                searxng_row("https://example.com/a"), // duplicate
+                searxng_row("https://example.com/b"),
+            ],
+            ..Default::default()
+        }];
+        union_pools(&mut merged, pools);
+        assert_eq!(merged.results.len(), 2);
+        assert_eq!(merged.number_of_results, 2);
+    }
+
+    #[test]
+    fn union_pools_drops_incoming_rows_with_no_url() {
+        // A malformed row without a URL can't be deduped, and `union_pools`'s
+        // `if let Some(u) = row.url.clone()` gate means it is never pushed —
+        // only URL-bearing rows widen the merged pool. An originally-present
+        // no-url row (already in `merged`) is left untouched either way.
+        let none_url_row: crw_search::SearxngResult =
+            serde_json::from_value(serde_json::json!({"title": "no url", "engine": "google"}))
+                .expect("valid searxng result");
+        let mut merged = SearxngResponse {
+            results: vec![none_url_row.clone()],
+            ..Default::default()
+        };
+        let pools = vec![SearxngResponse {
+            results: vec![none_url_row],
+            ..Default::default()
+        }];
+        union_pools(&mut merged, pools);
+        assert_eq!(merged.results.len(), 1);
+    }
+
+    #[test]
+    fn union_pools_empty_pools_list_is_noop() {
+        let mut merged = SearxngResponse {
+            results: vec![searxng_row("https://example.com/a")],
+            ..Default::default()
+        };
+        union_pools(&mut merged, vec![]);
+        assert_eq!(merged.results.len(), 1);
+        assert_eq!(merged.number_of_results, 1);
+    }
+
+    #[test]
+    fn union_pools_preserves_original_rows_before_new_ones() {
+        let mut merged = SearxngResponse {
+            results: vec![searxng_row("https://example.com/first")],
+            ..Default::default()
+        };
+        let pools = vec![SearxngResponse {
+            results: vec![searxng_row("https://example.com/second")],
+            ..Default::default()
+        }];
+        union_pools(&mut merged, pools);
+        assert_eq!(
+            merged.results[0].url.as_deref(),
+            Some("https://example.com/first")
+        );
+        assert_eq!(
+            merged.results[1].url.as_deref(),
+            Some("https://example.com/second")
+        );
+    }
+
+    // ── SearchScrapeOptions defaults / serde shape ──────────────────────
+
+    #[test]
+    fn search_scrape_options_default_formats_is_markdown() {
+        let opts: SearchScrapeOptions = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(opts.formats, vec![OutputFormat::Markdown]);
+        assert!(opts.only_main_content);
+        assert!(opts.country.is_none());
+        assert!(opts.timeout.is_none());
+    }
+
+    #[test]
+    fn search_scrape_options_camel_case_timeout_field() {
+        let opts: SearchScrapeOptions =
+            serde_json::from_value(serde_json::json!({"timeout": 3000, "onlyMainContent": false}))
+                .unwrap();
+        assert_eq!(opts.timeout, Some(3000));
+        assert!(!opts.only_main_content);
+    }
+
+    #[test]
+    fn search_scrape_options_roundtrip_preserves_all_fields() {
+        let opts = SearchScrapeOptions {
+            formats: vec![OutputFormat::Markdown, OutputFormat::Links],
+            only_main_content: false,
+            country: Some("de".into()),
+            timeout: Some(9_000),
+        };
+        let json = serde_json::to_value(&opts).unwrap();
+        let back: SearchScrapeOptions = serde_json::from_value(json).unwrap();
+        assert_eq!(back.formats, opts.formats);
+        assert_eq!(back.only_main_content, opts.only_main_content);
+        assert_eq!(back.country, opts.country);
+        assert_eq!(back.timeout, opts.timeout);
+    }
+
+    // ── stable constants (regression pins for values other systems rely on) ─
+
+    #[test]
+    fn constant_max_query_chars_is_2000() {
+        assert_eq!(MAX_QUERY_CHARS, 2000);
+    }
+
+    #[test]
+    fn constant_max_lang_chars_is_35() {
+        assert_eq!(MAX_LANG_CHARS, 35);
+    }
+
+    #[test]
+    fn constant_search_llm_max_tokens_per_leg_matches_saas_mirror() {
+        // Mirrored in crw-saas/src/lib/llm-pricing.ts::legCost; changing this
+        // without updating the SaaS credit pre-reservation would let real
+        // usage exceed what was reserved.
+        assert_eq!(SEARCH_LLM_MAX_TOKENS_PER_LEG, 1024);
+    }
+
+    #[test]
+    fn constant_default_max_chars_per_source_is_8192() {
+        assert_eq!(DEFAULT_MAX_CHARS_PER_SOURCE, 8192);
+    }
+
+    #[test]
+    fn constant_search_enrich_deadline_max_ms_is_60s() {
+        assert_eq!(SEARCH_ENRICH_DEADLINE_MAX_MS, 60_000);
+    }
+
+    #[test]
+    fn degraded_message_text_is_stable() {
+        // Several rescue-warning assertions across the pipeline (and the SaaS
+        // side) match on this exact string; changing the copy silently would
+        // desync those checks.
+        assert_eq!(
+            DEGRADED_MESSAGE,
+            "The search backend could not answer this query. Retry shortly."
+        );
+    }
+
+    #[test]
+    fn is_valid_lang_rejects_subtag_over_8_chars() {
+        assert!(!is_valid_lang("en-toolongsubtagvalue"));
+    }
+
+    #[test]
+    fn is_valid_lang_rejects_non_alphanumeric_subtag() {
+        assert!(!is_valid_lang("en-US!"));
+    }
+
+    #[test]
+    fn fold_prescraped_multiple_entries_map_to_correct_slots() {
+        let mut a = bare_result("https://example.com/a");
+        a.markdown = Some("# a".into());
+        a.metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "sourceURL": "https://example.com/a", "statusCode": 200, "elapsedMs": 1
+            }))
+            .expect("valid metadata"),
+        );
+        let mut b = bare_result("https://example.com/b");
+        b.markdown = Some("# b".into());
+        b.metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "sourceURL": "https://example.com/b", "statusCode": 200, "elapsedMs": 1
+            }))
+            .expect("valid metadata"),
+        );
+
+        let mut pool = vec![
+            bare_result("https://example.com/b"),
+            bare_result("https://example.com/a"),
+        ];
+        fold_prescraped(&mut pool, &[a, b]);
+        // Order in `pool` is unchanged; each slot gets its OWN matching entry.
+        assert_eq!(pool[0].url, "https://example.com/b");
+        assert_eq!(pool[0].markdown.as_deref(), Some("# b"));
+        assert_eq!(pool[1].url, "https://example.com/a");
+        assert_eq!(pool[1].markdown.as_deref(), Some("# a"));
+    }
+
+    #[test]
+    fn drop_known_urls_is_exact_string_match_not_normalized() {
+        // A trailing-slash variant of a known URL is NOT deduped: the pool
+        // dedups by exact URL string, so this documents current behavior
+        // rather than a normalization guarantee.
+        let known = {
+            let mut r = bare_result("https://example.com/known");
+            r.markdown = Some("# known".into());
+            r
+        };
+        let data = SearchData::Flat(vec![known]);
+        let rows = vec![bare_result("https://example.com/known/")];
+        let fresh = drop_known_urls(&data, rows);
+        assert_eq!(fresh.len(), 1, "trailing-slash variant is a distinct URL");
+    }
+
+    #[test]
+    fn validate_rejects_scrape_options_with_first_bad_format_in_list() {
+        let mut r = req("rust");
+        let mut opts = scrape_opts(None);
+        opts.formats = vec![
+            OutputFormat::Markdown,
+            OutputFormat::Json,
+            OutputFormat::PlainText,
+        ];
+        r.scrape_options = Some(opts);
+        assert!(matches!(
+            validate_request(&r, 20),
+            Err(CrwError::InvalidRequest(_))
+        ));
+    }
+
+    #[test]
+    fn summary_fanout_count_default_is_zero() {
+        let c = SummaryFanoutCount::default();
+        assert_eq!(c.ok, 0);
+        assert_eq!(c.failed, 0);
+    }
 }

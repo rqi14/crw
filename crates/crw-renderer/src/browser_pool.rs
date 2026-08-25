@@ -957,7 +957,13 @@ mod tests {
         dispose_ctx_calls: AtomicU32,
         close_target_calls: AtomicU32,
         close_conn_calls: AtomicU32,
+        health_check_calls: AtomicU32,
         close_target_should_fail: AtomicBool,
+        dispose_ctx_should_fail: AtomicBool,
+        create_ctx_should_fail: AtomicBool,
+        health_check_should_fail: AtomicBool,
+        last_close_target_id: StdMutex<Option<String>>,
+        last_dispose_ctx_id: StdMutex<Option<String>>,
         closed: AtomicBool,
     }
 
@@ -965,14 +971,23 @@ mod tests {
     impl ChromeConnOps for FakeConn {
         async fn create_browser_context(&self) -> CrwResult<String> {
             let n = self.create_ctx_calls.fetch_add(1, Ordering::SeqCst);
+            if self.create_ctx_should_fail.load(Ordering::SeqCst) {
+                return Err(CrwError::RendererError("create_ctx forced fail".into()));
+            }
             Ok(format!("ctx-{n}"))
         }
-        async fn dispose_browser_context(&self, _ctx_id: &str) -> CrwResult<()> {
+        async fn dispose_browser_context(&self, ctx_id: &str) -> CrwResult<()> {
             self.dispose_ctx_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            *self.last_dispose_ctx_id.lock().unwrap() = Some(ctx_id.to_string());
+            if self.dispose_ctx_should_fail.load(Ordering::SeqCst) {
+                Err(CrwError::RendererError("dispose_ctx forced fail".into()))
+            } else {
+                Ok(())
+            }
         }
-        async fn close_target(&self, _target_id: &str) -> CrwResult<()> {
+        async fn close_target(&self, target_id: &str) -> CrwResult<()> {
             self.close_target_calls.fetch_add(1, Ordering::SeqCst);
+            *self.last_close_target_id.lock().unwrap() = Some(target_id.to_string());
             if self.close_target_should_fail.load(Ordering::SeqCst) {
                 Err(CrwError::RendererError("close_target forced fail".into()))
             } else {
@@ -980,7 +995,12 @@ mod tests {
             }
         }
         async fn health_check(&self) -> CrwResult<()> {
-            Ok(())
+            self.health_check_calls.fetch_add(1, Ordering::SeqCst);
+            if self.health_check_should_fail.load(Ordering::SeqCst) {
+                Err(CrwError::RendererError("health check forced fail".into()))
+            } else {
+                Ok(())
+            }
         }
         async fn close_conn(&self) {
             self.close_conn_calls.fetch_add(1, Ordering::SeqCst);
@@ -993,6 +1013,54 @@ mod tests {
 
     fn fake_factory() -> ConnFactory<FakeConn> {
         Arc::new(|| Box::pin(async { Ok(Arc::new(FakeConn::default())) }))
+    }
+
+    /// A factory whose FIRST call fails, then succeeds on every subsequent
+    /// call. Used to verify a failed `acquire()` does not leak the semaphore
+    /// permit it already holds.
+    fn factory_failing_first_call() -> ConnFactory<FakeConn> {
+        let first = Arc::new(AtomicBool::new(true));
+        Arc::new(move || {
+            let first = first.clone();
+            Box::pin(async move {
+                if first.swap(false, Ordering::SeqCst) {
+                    Err(CrwError::RendererError("factory forced fail".into()))
+                } else {
+                    Ok(Arc::new(FakeConn::default()))
+                }
+            })
+        })
+    }
+
+    /// A factory that always succeeds connecting, but whose FIRST produced
+    /// connection fails `create_browser_context` (the ctx-creation step run
+    /// right after connect, inside the same `acquire()` cold path).
+    fn factory_first_conn_ctx_creation_fails() -> ConnFactory<FakeConn> {
+        let first = Arc::new(AtomicBool::new(true));
+        Arc::new(move || {
+            let first = first.clone();
+            Box::pin(async move {
+                let conn = Arc::new(FakeConn::default());
+                if first.swap(false, Ordering::SeqCst) {
+                    conn.create_ctx_should_fail.store(true, Ordering::SeqCst);
+                }
+                Ok(conn)
+            })
+        })
+    }
+
+    /// Build a manually-crafted idle slot (bypassing `acquire()`'s normal
+    /// creation path) so tests can exercise the health-check / eviction logic
+    /// without waiting out real `health_check_after` durations.
+    fn stale_idle_slot(conn: Arc<FakeConn>, ctx_id: &str, age: Duration) -> Slot<FakeConn> {
+        Arc::new(StdMutex::new(PooledSlot {
+            state: SlotState::Idle {
+                conn,
+                ctx_id: ctx_id.to_string(),
+            },
+            terminator: AtomicBool::new(false),
+            last_used: Instant::now() - age,
+        }))
     }
 
     fn small_pool_cfg() -> PoolCfg {
@@ -1191,5 +1259,637 @@ mod tests {
         pool.clone().shutdown(Duration::from_millis(100)).await;
         let r = pool.acquire().await;
         assert!(matches!(r, Err(CrwError::Shutdown)));
+    }
+
+    // ── PoolCfg defaults ─────────────────────────────────────────────
+
+    #[test]
+    fn default_pool_cfg_matches_documented_values() {
+        let cfg = PoolCfg::default();
+        assert_eq!(cfg.size, 4);
+        assert_eq!(cfg.reserved_interactive_renders, None);
+        assert_eq!(cfg.recycle_after_navs, 1);
+        assert_eq!(cfg.idle_timeout, Duration::from_secs(300));
+        assert_eq!(cfg.health_check_after, Duration::from_secs(60));
+        assert_eq!(cfg.shutdown_drain, Duration::from_secs(30));
+        assert_eq!(cfg.close_target_timeout, Duration::from_secs(2));
+        assert_eq!(cfg.dispose_ctx_timeout, Duration::from_secs(1));
+        assert_eq!(cfg.create_ctx_timeout, Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn cfg_accessor_returns_the_configured_pool_cfg() {
+        let cfg = PoolCfg {
+            size: 7,
+            ..small_pool_cfg()
+        };
+        let pool = BrowserContextPool::new(cfg, fake_factory());
+        assert_eq!(pool.cfg().size, 7);
+    }
+
+    #[tokio::test]
+    async fn pool_cfg_reserved_interactive_renders_is_carried_through() {
+        let cfg = PoolCfg {
+            reserved_interactive_renders: Some(2),
+            ..small_pool_cfg()
+        };
+        let pool = BrowserContextPool::new(cfg, fake_factory());
+        assert_eq!(pool.cfg().reserved_interactive_renders, Some(2));
+    }
+
+    // ── size / exhaustion boundaries ────────────────────────────────
+
+    #[tokio::test]
+    async fn acquire_unblocks_after_release_frees_the_permit() {
+        let pool = BrowserContextPool::new(
+            PoolCfg {
+                size: 1,
+                ..small_pool_cfg()
+            },
+            fake_factory(),
+        );
+        let g1 = pool.acquire().await.unwrap();
+        let pool2 = pool.clone();
+        let handle = tokio::spawn(async move { pool2.acquire().await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !handle.is_finished(),
+            "acquire on an exhausted size=1 pool must block"
+        );
+        g1.release().await.unwrap();
+        let g2 = handle
+            .await
+            .unwrap()
+            .expect("second acquire should succeed once the permit frees");
+        assert_eq!(pool.inflight(), 1);
+        drop(g2);
+    }
+
+    #[tokio::test]
+    async fn pool_size_zero_acquire_blocks_then_fails_on_shutdown() {
+        let pool = BrowserContextPool::new(
+            PoolCfg {
+                size: 0,
+                ..small_pool_cfg()
+            },
+            fake_factory(),
+        );
+        let pool2 = pool.clone();
+        let handle = tokio::spawn(async move { pool2.acquire().await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !handle.is_finished(),
+            "acquire on a zero-size pool must block forever absent shutdown"
+        );
+        pool.clone().shutdown(Duration::from_millis(50)).await;
+        let result = handle.await.unwrap();
+        assert!(matches!(result, Err(CrwError::Shutdown)));
+    }
+
+    #[tokio::test]
+    async fn concurrent_acquire_up_to_pool_size_both_succeed() {
+        let pool = BrowserContextPool::new(
+            PoolCfg {
+                size: 2,
+                ..small_pool_cfg()
+            },
+            fake_factory(),
+        );
+        let g1 = pool.acquire().await.unwrap();
+        let g2 = pool.acquire().await.unwrap();
+        assert_eq!(pool.inflight(), 2);
+        // Not asserting distinct ctx ids here: the shared `fake_factory()` in
+        // this module hands out a fixed id, so id uniqueness is a property of
+        // the real factory, not something this fake can demonstrate.
+        drop(g1);
+        drop(g2);
+    }
+
+    // ── terminator race: concurrent cleanup must never double-act ────
+
+    #[tokio::test]
+    async fn release_is_a_noop_when_terminator_already_claimed() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let conn = guard.conn.clone();
+        // Simulate a concurrent winner (e.g. shutdown's phase-3 force-close)
+        // claiming the terminator before release() gets a chance to.
+        guard
+            .slot
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminator
+            .store(true, Ordering::SeqCst);
+        guard.release().await.unwrap();
+        assert_eq!(conn.close_target_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(conn.dispose_ctx_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn drop_is_a_noop_when_terminator_already_claimed() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let conn = guard.conn.clone();
+        guard
+            .slot
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminator
+            .store(true, Ordering::SeqCst);
+        drop(guard);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(
+            conn.close_conn_calls.load(Ordering::SeqCst),
+            0,
+            "Drop must not act when another path already won the terminator"
+        );
+    }
+
+    // ── record_target edge cases ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn record_target_without_a_slot_does_not_panic() {
+        let conn: Arc<FakeConn> = Arc::new(FakeConn::default());
+        let guard = PoolGuard::<FakeConn> {
+            slot: None,
+            permit: None,
+            conn,
+            ctx_id: "ctx".into(),
+            pool: Weak::new(),
+        };
+        guard.record_target("t-1".into()); // must log + return, never panic
+    }
+
+    #[tokio::test]
+    async fn record_target_when_slot_not_checked_out_logs_and_does_not_panic() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        {
+            let slot = guard.slot.as_ref().unwrap();
+            let mut g = slot.lock().unwrap();
+            let (conn, ctx_id) = match std::mem::replace(&mut g.state, SlotState::Closing) {
+                SlotState::CheckedOut { conn, ctx_id, .. } => (conn, ctx_id),
+                _ => unreachable!("freshly acquired guard is always CheckedOut"),
+            };
+            g.state = SlotState::Recycling {
+                conn,
+                ctx_id,
+                target_id: None,
+                phase: RecyclePhase::CloseTarget,
+            };
+        }
+        guard.record_target("t-1".into()); // state mismatch — must not panic
+    }
+
+    #[tokio::test]
+    async fn record_target_survives_a_poisoned_slot_mutex() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let slot = guard.slot.as_ref().unwrap().clone();
+
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = slot.lock().unwrap();
+            panic!("intentional poison for the test");
+        }));
+        assert!(poisoned.is_err());
+        assert!(slot.is_poisoned());
+
+        // The poison-tolerant `match slot.lock() { Err(p) => p.into_inner(), .. }`
+        // path must still record instead of panicking.
+        guard.record_target("t-1".into());
+
+        // Clear poison so the guard's own (non-poison-tolerant) Drop doesn't
+        // panic when this test ends.
+        slot.clear_poison();
+    }
+
+    // ── health-check-driven eviction on acquire ───────────────────────
+
+    #[tokio::test]
+    async fn acquire_health_checks_stale_idle_slot_and_reuses_when_healthy() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let conn = Arc::new(FakeConn::default());
+        let stale = stale_idle_slot(conn.clone(), "stale-ctx", Duration::from_secs(120));
+        pool.idle.lock().unwrap().push_back(stale.clone());
+        pool.all_slots.lock().unwrap().push(Arc::downgrade(&stale));
+
+        let guard = pool.acquire().await.unwrap();
+        assert_eq!(
+            guard.ctx_id, "stale-ctx",
+            "a healthy stale slot must be reused, not discarded"
+        );
+        assert!(Arc::ptr_eq(&guard.conn, &conn));
+        assert_eq!(conn.health_check_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn health_check_not_invoked_when_slot_was_recently_used() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let conn = Arc::new(FakeConn::default());
+        let fresh = stale_idle_slot(conn.clone(), "fresh-ctx", Duration::from_millis(0));
+        pool.idle.lock().unwrap().push_back(fresh.clone());
+        pool.all_slots.lock().unwrap().push(Arc::downgrade(&fresh));
+
+        let guard = pool.acquire().await.unwrap();
+        assert_eq!(guard.ctx_id, "fresh-ctx");
+        assert_eq!(
+            conn.health_check_calls.load(Ordering::SeqCst),
+            0,
+            "a recently-used slot must skip the health check entirely"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_evicts_unhealthy_stale_slot_and_creates_a_fresh_one() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let dead_conn = Arc::new(FakeConn::default());
+        dead_conn
+            .health_check_should_fail
+            .store(true, Ordering::SeqCst);
+        let stale = stale_idle_slot(dead_conn.clone(), "stale-ctx", Duration::from_secs(120));
+        pool.idle.lock().unwrap().push_back(stale.clone());
+        pool.all_slots.lock().unwrap().push(Arc::downgrade(&stale));
+
+        let guard = pool.acquire().await.unwrap();
+        assert_ne!(
+            guard.ctx_id, "stale-ctx",
+            "an unhealthy stale slot must not be reused"
+        );
+        assert!(!Arc::ptr_eq(&guard.conn, &dead_conn));
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            dead_conn.close_conn_calls.load(Ordering::SeqCst) >= 1,
+            "the evicted dead connection must be closed, not leaked"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_returns_error_after_exhausting_health_check_retries() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        for i in 0..3 {
+            let dead_conn = Arc::new(FakeConn::default());
+            dead_conn
+                .health_check_should_fail
+                .store(true, Ordering::SeqCst);
+            let stale = stale_idle_slot(dead_conn, &format!("stale-{i}"), Duration::from_secs(120));
+            pool.idle.lock().unwrap().push_back(stale.clone());
+            pool.all_slots.lock().unwrap().push(Arc::downgrade(&stale));
+        }
+        let result = pool.acquire().await;
+        assert!(
+            matches!(result, Err(CrwError::RendererError(_))),
+            "3 consecutive unhealthy stale slots must exhaust the 3 retry attempts"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_after_dead_marking_does_not_resurrect_the_dead_slot() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let dead_conn = guard.conn.clone();
+        dead_conn
+            .close_target_should_fail
+            .store(true, Ordering::SeqCst);
+        guard.record_target("t-1".into());
+        guard.release().await.unwrap(); // recycle fails -> slot goes Dead, not Idle
+        assert_eq!(pool.idle_len(), 0);
+
+        let guard2 = pool.acquire().await.unwrap();
+        assert!(
+            !Arc::ptr_eq(&guard2.conn, &dead_conn),
+            "acquire must create a fresh connection, never resurrect a Dead one"
+        );
+    }
+
+    // ── recycle failure paths (dispose_ctx / create_ctx) ──────────────
+
+    #[tokio::test]
+    async fn release_dispose_ctx_failure_marks_dead_and_closes_conn() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let conn = guard.conn.clone();
+        guard.record_target("t-1".into());
+        conn.dispose_ctx_should_fail.store(true, Ordering::SeqCst);
+        guard.release().await.unwrap();
+        assert_eq!(conn.close_target_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(conn.dispose_ctx_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(conn.close_conn_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.idle_len(), 0);
+        assert_eq!(pool.inflight(), 0);
+    }
+
+    #[tokio::test]
+    async fn release_create_ctx_failure_marks_dead_and_closes_conn() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let conn = guard.conn.clone();
+        guard.record_target("t-1".into());
+        conn.create_ctx_should_fail.store(true, Ordering::SeqCst);
+        guard.release().await.unwrap();
+        // close_target + dispose_ctx both succeeded; the recycle create_ctx failed.
+        assert_eq!(conn.close_target_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(conn.dispose_ctx_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(conn.close_conn_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(pool.idle_len(), 0);
+        assert_eq!(pool.inflight(), 0);
+    }
+
+    #[tokio::test]
+    async fn close_target_receives_the_recorded_target_id() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let conn = guard.conn.clone();
+        guard.record_target("t-42".into());
+        guard.release().await.unwrap();
+        assert_eq!(
+            *conn.last_close_target_id.lock().unwrap(),
+            Some("t-42".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn dispose_ctx_receives_the_current_ctx_id() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let conn = guard.conn.clone();
+        let ctx_id = guard.ctx_id.clone();
+        guard.record_target("t-1".into());
+        guard.release().await.unwrap();
+        assert_eq!(*conn.last_dispose_ctx_id.lock().unwrap(), Some(ctx_id));
+    }
+
+    #[tokio::test]
+    async fn drop_reap_is_skipped_when_target_id_was_never_recorded() {
+        // Mirrors `release_skips_close_target_when_none` but for the Drop
+        // (cancellation) path: createTarget never returned, so there is no
+        // browser-owned target to reap — only the context.
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let conn = guard.conn.clone();
+        drop(guard); // no record_target call
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(conn.close_target_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(conn.dispose_ctx_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(conn.close_conn_calls.load(Ordering::SeqCst), 1);
+    }
+
+    // ── permit leak guards on the acquire cold-path error branches ────
+
+    #[tokio::test]
+    async fn acquire_conn_factory_failure_releases_the_permit_for_retry() {
+        let pool = BrowserContextPool::new(
+            PoolCfg {
+                size: 1,
+                ..small_pool_cfg()
+            },
+            factory_failing_first_call(),
+        );
+        let first = pool.acquire().await;
+        assert!(
+            first.is_err(),
+            "the factory's forced failure must propagate"
+        );
+        let second = pool.acquire().await;
+        assert!(
+            second.is_ok(),
+            "a failed connect during acquire must not leak the semaphore permit"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquire_create_ctx_failure_releases_the_permit_for_retry() {
+        let pool = BrowserContextPool::new(
+            PoolCfg {
+                size: 1,
+                ..small_pool_cfg()
+            },
+            factory_first_conn_ctx_creation_fails(),
+        );
+        let first = pool.acquire().await;
+        assert!(first.is_err());
+        let second = pool.acquire().await;
+        assert!(
+            second.is_ok(),
+            "a failed create_browser_context during acquire must not leak the permit"
+        );
+    }
+
+    // ── reconcile_set_phase (private recycle-phase helper) ────────────
+
+    #[test]
+    fn reconcile_set_phase_returns_true_and_advances_when_recycling() {
+        let conn: Arc<FakeConn> = Arc::new(FakeConn::default());
+        let slot: Slot<FakeConn> = Arc::new(StdMutex::new(PooledSlot {
+            state: SlotState::Recycling {
+                conn,
+                ctx_id: "ctx".into(),
+                target_id: None,
+                phase: RecyclePhase::CloseTarget,
+            },
+            terminator: AtomicBool::new(false),
+            last_used: Instant::now(),
+        }));
+        let advanced = PoolGuard::reconcile_set_phase(&slot, RecyclePhase::DisposeCtx);
+        assert!(advanced);
+        let g = slot.lock().unwrap();
+        assert!(matches!(
+            g.state,
+            SlotState::Recycling {
+                phase: RecyclePhase::DisposeCtx,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reconcile_set_phase_returns_false_when_not_recycling() {
+        let conn: Arc<FakeConn> = Arc::new(FakeConn::default());
+        let slot: Slot<FakeConn> = Arc::new(StdMutex::new(PooledSlot {
+            state: SlotState::Idle {
+                conn,
+                ctx_id: "ctx".into(),
+            },
+            terminator: AtomicBool::new(false),
+            last_used: Instant::now(),
+        }));
+        assert!(!PoolGuard::reconcile_set_phase(
+            &slot,
+            RecyclePhase::CreateCtx
+        ));
+    }
+
+    // ── take_conn state matrix (additional states) ────────────────────
+
+    #[test]
+    fn take_conn_from_checked_out_transitions_to_closing() {
+        let conn: Arc<FakeConn> = Arc::new(FakeConn::default());
+        let mut slot = PooledSlot {
+            state: SlotState::CheckedOut {
+                conn,
+                ctx_id: "x".into(),
+                target_id: Some("t".into()),
+            },
+            terminator: AtomicBool::new(false),
+            last_used: Instant::now(),
+        };
+        assert!(slot.take_conn().is_some());
+        assert!(matches!(slot.state, SlotState::Closing));
+        assert!(slot.take_conn().is_none());
+    }
+
+    #[test]
+    fn take_conn_from_recycling_transitions_to_closing() {
+        let conn: Arc<FakeConn> = Arc::new(FakeConn::default());
+        let mut slot = PooledSlot {
+            state: SlotState::Recycling {
+                conn,
+                ctx_id: "x".into(),
+                target_id: None,
+                phase: RecyclePhase::CreateCtx,
+            },
+            terminator: AtomicBool::new(false),
+            last_used: Instant::now(),
+        };
+        assert!(slot.take_conn().is_some());
+        assert!(matches!(slot.state, SlotState::Closing));
+    }
+
+    // ── bookkeeping / registry / pool-level invariants ────────────────
+
+    #[tokio::test]
+    async fn inflight_and_idle_len_track_across_multiple_acquire_release_cycles() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        for i in 0..3 {
+            let g = pool.acquire().await.unwrap();
+            assert_eq!(pool.inflight(), 1);
+            g.record_target(format!("t-{i}"));
+            g.release().await.unwrap();
+            assert_eq!(pool.inflight(), 0);
+            assert_eq!(pool.idle_len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn all_slots_registry_does_not_grow_on_slot_reuse() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let g1 = pool.acquire().await.unwrap();
+        g1.record_target("t-1".into());
+        g1.release().await.unwrap();
+        assert_eq!(pool.all_slots.lock().unwrap().len(), 1);
+
+        let g2 = pool.acquire().await.unwrap();
+        g2.record_target("t-2".into());
+        g2.release().await.unwrap();
+        assert_eq!(
+            pool.all_slots.lock().unwrap().len(),
+            1,
+            "reusing the same slot must not register a second entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_pools_do_not_share_inflight_state() {
+        let pool_a = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let pool_b = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let _guard_a = pool_a.acquire().await.unwrap();
+        assert_eq!(pool_a.inflight(), 1);
+        assert_eq!(pool_b.inflight(), 0);
+    }
+
+    #[tokio::test]
+    async fn guard_ctx_id_and_conn_are_populated_on_acquire() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        assert!(!guard.ctx_id.is_empty());
+        assert!(!guard.conn.is_closed());
+    }
+
+    #[tokio::test]
+    async fn is_closed_reflects_shutdown_state() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        assert!(!pool.is_closed());
+        pool.clone().shutdown(Duration::from_millis(50)).await;
+        assert!(pool.is_closed());
+    }
+
+    // ── shutdown edge cases ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn shutdown_is_idempotent_when_called_twice() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        pool.clone().shutdown(Duration::from_millis(50)).await;
+        pool.clone().shutdown(Duration::from_millis(50)).await;
+        assert!(pool.is_closed());
+    }
+
+    #[tokio::test]
+    async fn shutdown_with_nothing_acquired_completes_well_before_the_drain_deadline() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let start = Instant::now();
+        pool.clone().shutdown(Duration::from_secs(2)).await;
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "an idle pool must not wait out the full drain deadline"
+        );
+        assert!(pool.is_closed());
+    }
+
+    #[tokio::test]
+    async fn shutdown_zero_drain_still_force_closes_a_leaked_guard() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        let guard = pool.acquire().await.unwrap();
+        let conn = guard.conn.clone();
+        std::mem::forget(guard);
+        pool.clone().shutdown(Duration::ZERO).await;
+        assert_eq!(pool.inflight(), 0);
+        assert_eq!(conn.close_conn_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_phase3_reconciles_inflight_for_multiple_leaked_guards() {
+        let pool = BrowserContextPool::new(
+            PoolCfg {
+                size: 3,
+                ..small_pool_cfg()
+            },
+            fake_factory(),
+        );
+        let leaked_a = pool.acquire().await.unwrap();
+        let leaked_b = pool.acquire().await.unwrap();
+        let conn_a = leaked_a.conn.clone();
+        let conn_b = leaked_b.conn.clone();
+        std::mem::forget(leaked_a);
+        std::mem::forget(leaked_b);
+        assert_eq!(pool.inflight(), 2);
+
+        pool.clone().shutdown(Duration::from_millis(100)).await;
+        assert_eq!(pool.inflight(), 0);
+        assert_eq!(conn_a.close_conn_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(conn_b.close_conn_calls.load(Ordering::SeqCst), 1);
+    }
+
+    // ── BookkeepingToken ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn bookkeeping_token_drop_without_commit_still_decrements() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        pool.inflight.fetch_add(1, Ordering::SeqCst);
+        let token = BookkeepingToken::<FakeConn>::new(Arc::downgrade(&pool));
+        drop(token);
+        assert_eq!(pool.inflight(), 0);
+    }
+
+    #[tokio::test]
+    async fn bookkeeping_token_commit_decrement_decrements_exactly_once() {
+        let pool = BrowserContextPool::new(small_pool_cfg(), fake_factory());
+        pool.inflight.fetch_add(1, Ordering::SeqCst);
+        let token = BookkeepingToken::<FakeConn>::new(Arc::downgrade(&pool));
+        token.commit_decrement();
+        assert_eq!(pool.inflight(), 0);
     }
 }

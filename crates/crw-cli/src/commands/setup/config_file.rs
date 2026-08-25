@@ -590,4 +590,195 @@ mod tests {
         assert!(!s.contains("[search]"));
         assert!(!s.contains("[extraction"));
     }
+
+    #[test]
+    fn user_config_path_honors_env_override() {
+        let _g = env_lock();
+        let dir = isolated_dir("path-override");
+        let path = user_config_path().unwrap();
+        assert_eq!(path, dir.join("config.toml"));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn user_config_path_falls_back_to_home_when_unset() {
+        let _g = env_lock();
+        unsafe {
+            std::env::remove_var("CRW_USER_CONFIG_DIR");
+        }
+        let path = user_config_path();
+        // On any machine running this test suite HOME is set, so this must
+        // resolve, not error, and must land under ~/.config/crw.
+        let path = path.expect("HOME should be set in the test environment");
+        assert!(path.ends_with(".config/crw/config.toml"));
+    }
+
+    #[test]
+    fn read_user_config_missing_file_returns_default() {
+        let _g = env_lock();
+        let dir = isolated_dir("missing-file");
+        let cfg = read_user_config(&dir.join("does-not-exist.toml")).unwrap();
+        assert!(cfg.client.is_none());
+        assert!(cfg.search.is_none());
+        assert!(cfg.extraction.is_none());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn read_user_config_malformed_toml_is_an_error() {
+        let _g = env_lock();
+        let dir = isolated_dir("malformed");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "this is not [ valid toml").unwrap();
+        let err = read_user_config(&path).unwrap_err();
+        assert!(err.contains("Failed to parse"), "got: {err}");
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn read_user_config_accepts_legacy_searxng_url_alias() {
+        let _g = env_lock();
+        let dir = isolated_dir("alias");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[search]\nsearxng_url = \"http://localhost:8080\"\n").unwrap();
+        let cfg = read_user_config(&path).unwrap();
+        assert_eq!(
+            cfg.search.unwrap().search_backend_url.as_deref(),
+            Some("http://localhost:8080")
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn write_user_config_creates_missing_parent_dir() {
+        let _g = env_lock();
+        let dir = std::env::temp_dir().join(format!(
+            "crw-cfgfile-autocreate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // Deliberately do NOT create `dir` — write_user_config must create it.
+        unsafe {
+            std::env::set_var("CRW_USER_CONFIG_DIR", &dir);
+        }
+        assert!(!dir.exists());
+        let path = write_user_config(UserConfig::default()).unwrap();
+        assert!(path.exists());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn merge_config_update_none_keeps_base_untouched() {
+        let base = UserConfig {
+            client: Some(ClientSection {
+                api_url: Some("https://api.example.com".into()),
+                api_key: Some("k".into()),
+            }),
+            search: Some(SearchSection {
+                search_backend_url: Some("http://localhost:8080".into()),
+            }),
+            extraction: None,
+        };
+        let merged = merge_config(base.clone(), UserConfig::default());
+        assert_eq!(merged.client.unwrap().api_url, base.client.unwrap().api_url);
+        assert_eq!(
+            merged.search.unwrap().search_backend_url,
+            base.search.unwrap().search_backend_url
+        );
+    }
+
+    #[test]
+    fn merge_config_base_none_takes_update_wholesale() {
+        let update = UserConfig {
+            client: Some(ClientSection {
+                api_url: Some("https://new.example.com".into()),
+                api_key: None,
+            }),
+            ..Default::default()
+        };
+        let merged = merge_config(UserConfig::default(), update);
+        assert_eq!(
+            merged.client.unwrap().api_url.as_deref(),
+            Some("https://new.example.com")
+        );
+    }
+
+    #[test]
+    fn merge_llm_field_by_field_update_wins_only_when_some() {
+        // update.api_key is None so base's key must survive; update.model is
+        // Some so it must win — proves the merge is per-field, not per-section.
+        let base = LlmSection {
+            provider: Some("anthropic".into()),
+            api_key: Some("old-key".into()),
+            model: Some("old-model".into()),
+            base_url: None,
+            azure_api_version: None,
+        };
+        let update = LlmSection {
+            provider: None,
+            api_key: None,
+            model: Some("new-model".into()),
+            base_url: Some("https://custom.example.com".into()),
+            azure_api_version: None,
+        };
+        let merged = merge_llm(Some(base), Some(update)).unwrap();
+        assert_eq!(merged.provider.as_deref(), Some("anthropic"));
+        assert_eq!(merged.api_key.as_deref(), Some("old-key"));
+        assert_eq!(merged.model.as_deref(), Some("new-model"));
+        assert_eq!(
+            merged.base_url.as_deref(),
+            Some("https://custom.example.com")
+        );
+    }
+
+    #[test]
+    fn merge_extraction_both_none_stays_none() {
+        assert!(merge_extraction(None, None).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reject_symlink_blocks_symlinked_config_path() {
+        use std::os::unix::fs;
+        let dir = std::env::temp_dir().join(format!("crw-cfgfile-sym-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("real.toml");
+        std::fs::write(&target, "x").unwrap();
+        let link = dir.join("link.toml");
+        fs::symlink(&target, &link).unwrap();
+        assert!(reject_symlink(&link).is_err());
+        assert!(reject_symlink(&target).is_ok());
+        assert!(reject_symlink(&dir.join("nope.toml")).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_user_config_round_trips_extraction_only() {
+        let _g = env_lock();
+        let dir = isolated_dir("extraction-only");
+        let cfg = UserConfig {
+            client: None,
+            search: None,
+            extraction: Some(ExtractionSection {
+                llm: Some(LlmSection {
+                    provider: Some("openai".into()),
+                    api_key: Some("sk-test".into()),
+                    model: Some("gpt-5".into()),
+                    base_url: None,
+                    azure_api_version: None,
+                }),
+            }),
+        };
+        let path = write_user_config(cfg).unwrap();
+        let on_disk = read_user_config(&path).unwrap();
+        assert!(on_disk.client.is_none());
+        assert!(on_disk.search.is_none());
+        let llm = on_disk.extraction.unwrap().llm.unwrap();
+        assert_eq!(llm.provider.as_deref(), Some("openai"));
+        assert_eq!(llm.model.as_deref(), Some("gpt-5"));
+        cleanup(&dir);
+    }
 }
