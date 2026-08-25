@@ -14,7 +14,7 @@ Before diving into individual patterns:
 
 1. Check `success` in the response body — `false` means a hard failure.
 2. Check `error_code` (snake_case string) for the machine-readable cause.
-3. Check `data.warnings[]` when `success: true` — soft issues like truncation, unsupported formats, and renderer fallbacks surface there. Anti-bot blocks are **not** in `data.warnings[]`; they always return `success: false` + `error_code: "anti_bot"` (see pattern 2). A page the origin answered with a `>= 400` status returns `success: false` + `error_code: "http_error"`, with the error page still in `data`.
+3. Check `data.warnings[]` when `success: true` — soft issues like truncation, unsupported formats, and renderer fallbacks surface there. Anti-bot blocks are **not** in `data.warnings[]`; they always return `success: false` + `error_code: "anti_bot"` (see pattern 2). A page the origin answered with a `>= 400` status returns `success: false`; if it is a plain origin error page the code is `"http_error"` and the page stays in `data`, but when the anti-bot classifier recognises it as a wall (Cloudflare and friends serve their challenge with a 403) the code is `"anti_bot"` and the challenge shell is stripped from `data`.
 4. Check `metadata.statusCode` — this is the **target site's** HTTP status, not fastCRW's.
 5. Check the fastCRW HTTP status separately — `401`/`422`/`429` all mean different things.
 
@@ -411,8 +411,8 @@ if data["balance"] < 100:
 | `invalid_url` | — | Reserved — not emitted in practice; invalid URLs are returned as `invalid_request` (HTTP 400) by all server routes |
 | `target_unreachable` | 422 | DNS failure, connection refused, host down |
 | `extraction_error` | 422 | LLM extraction failed or CSS/XPath selector invalid |
-| `http_error` | 502, or 200 with `success: false` | The origin answered with a `>= 400` status and what came back is its error page. The body is kept in `data` so you can read the error page and `metadata.statusCode`. A large page served under an error status is still returned as a success — some sites answer 403/404 while serving the real content |
-| `no_usable_content` | 200 with `success: false` | The fetch worked, the page held nothing extractable (parked domain, un-hydrated JS shell, error stub). Not an anti-bot block |
+| `http_error` | 502, or 200 with `success: false` | The origin answered with a `>= 400` status and what came back is its error page. The body is kept in `data` so you can read the error page and `metadata.statusCode`. A large page served under an error status is still returned as a success — some sites answer 403/404 while serving the real content. If the page is also recognised as an anti-bot wall, `anti_bot` wins instead and the body is cleared |
+| `no_usable_content` | 200 with `success: false` | The fetch worked and produced nothing you asked for — a parked domain, an un-hydrated JS shell, an error stub, an oversized PDF the decompression-bomb guard refused, or any requested format that came back empty. Not an anti-bot block |
 | `timeout` | 504 | Engine or upstream search timed out |
 | `rate_limited` | 429 | RPM rate limit (engine-level) |
 | `search_disabled` | 503 | `/v1/search` called with no search backend configured |
