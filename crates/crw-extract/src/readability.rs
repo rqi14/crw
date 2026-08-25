@@ -950,4 +950,538 @@ mod tests {
                 || links.contains(&"https://other.com/".to_string())
         );
     }
+
+    // ── extract_main_content: page shapes ──────────────────────────────
+
+    #[test]
+    fn blog_shape_prefers_post_content_class_when_no_semantic_tags() {
+        let html = r#"<html><body>
+            <nav>Home About Contact Blog Archive Categories Tags Search Login</nav>
+            <div class="post-content"><p>This is the real blog post body, long enough to score well as the winning candidate in the density scan.</p></div>
+        </body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("real blog post body"));
+    }
+
+    #[test]
+    fn docs_shape_prefers_content_id_over_unlisted_sidebar_class() {
+        let html = r#"<html><body>
+            <div class="sidebar-nav">SIDENAV_MARKER install quickstart api reference changelog faq</div>
+            <div id="content"><p>Documentation body explaining how to install and configure the CLI tool in detail.</p></div>
+        </body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("Documentation body"));
+        assert!(!content.contains("SIDENAV_MARKER"));
+    }
+
+    #[test]
+    fn forum_shape_extracts_stackoverflow_post_body() {
+        let html = r#"<html><body>
+            <div class="js-post-body"><p>Question body: why does my Rust borrow checker complain here in this specific case?</p></div>
+            <div class="related-questions">REL_Q_MARKER similar question one similar question two similar question three</div>
+        </body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("borrow checker"));
+        assert!(!content.contains("REL_Q_MARKER"));
+    }
+
+    #[test]
+    fn product_page_shape_extracts_content_body_class() {
+        let html = r#"<html><body>
+            <div class="related-products">REL_PROD_MARKER item one item two item three item four</div>
+            <div class="content-body"><p>Full product description: durable stainless steel water bottle with vacuum insulation.</p></div>
+        </body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("stainless steel water bottle"));
+        assert!(!content.contains("REL_PROD_MARKER"));
+    }
+
+    #[test]
+    fn nested_article_keeps_outer_article_content() {
+        let html = r#"<html><body><article>
+            <p>OUTER_START: this is the primary article body with plenty of real prose to dominate the score.</p>
+            <article><p>Related teaser, much shorter.</p></article>
+            <p>OUTER_END: closing paragraph of the primary article body, also long enough to add real weight.</p>
+        </article></body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("OUTER_START"));
+        assert!(content.contains("OUTER_END"));
+    }
+
+    #[test]
+    fn find_content_within_narrows_main_that_wraps_whole_body() {
+        let filler = "filler word ".repeat(80);
+        let html = format!(
+            r#"<html><body><main>
+                <div class="site-header-filler">{filler}</div>
+                <div class="content-body"><p>Real docs content here about installing the CLI tool from source. {filler}</p></div>
+                <div class="site-footer-filler">{filler}</div>
+            </main></body></html>"#
+        );
+        let content = extract_main_content(&html);
+        assert!(content.contains("installing the CLI tool"));
+        assert!(!content.contains("site-header-filler"));
+        assert!(!content.contains("site-footer-filler"));
+    }
+
+    #[test]
+    fn sidebar_penalty_token_loses_to_smaller_unpenalized_article() {
+        let article_text = "Real article prose. ".repeat(40);
+        let sidebar_text = "Sidebar filler text. ".repeat(45);
+        let html = format!(
+            r#"<html><body>
+                <article><p>ARTICLE_MARKER {article_text}</p></article>
+                <main class="sidebar-nav-widget"><p>SIDEBAR_MARKER {sidebar_text}</p></main>
+            </body></html>"#
+        );
+        let content = extract_main_content(&html);
+        assert!(
+            content.contains("ARTICLE_MARKER"),
+            "penalized sidebar-classed main must not beat the plain article: {content}"
+        );
+        assert!(!content.contains("SIDEBAR_MARKER"));
+    }
+
+    #[test]
+    fn single_div_content_no_semantic_wrapper() {
+        let html = r#"<html><body>
+            <div class="content"><p>All the page's real content lives in this one plain div, with no article or main wrapper at all.</p></div>
+        </body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("one plain div"));
+    }
+
+    #[test]
+    fn falls_back_to_body_when_no_candidate_matches() {
+        let html = r#"<html><body><section class="unlisted-wrapper"><p>Just a plain unmarked section with some content.</p></section></body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("plain unmarked section"));
+    }
+
+    #[test]
+    fn empty_html_does_not_panic_and_returns_empty() {
+        let content = extract_main_content("");
+        assert!(content.trim().is_empty());
+    }
+
+    #[test]
+    fn truncated_unclosed_html_does_not_panic() {
+        let html = r#"<html><body><article><p>Unterminated paragraph and tag <div class="broken"#;
+        let content = extract_main_content(html);
+        // Just must not panic; html5ever recovers something (possibly empty).
+        let _ = content;
+    }
+
+    #[test]
+    fn deeply_nested_markup_does_not_panic() {
+        let mut html = String::from("<html><body><article>");
+        for _ in 0..500 {
+            html.push_str("<div>");
+        }
+        html.push_str("<p>Deeply nested real content.</p>");
+        for _ in 0..500 {
+            html.push_str("</div>");
+        }
+        html.push_str("</article></body></html>");
+        let content = extract_main_content(&html);
+        assert!(content.contains("Deeply nested real content"));
+    }
+
+    #[test]
+    fn rtl_arabic_text_preserved() {
+        let html = r#"<html><body><article><p>مرحبا بالعالم، هذه مقالة تجريبية طويلة تحتوي على نص عربي من اليمين إلى اليسار للتحقق من عدم كسر المستخرج أثناء المعالجة.</p></article></body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("مرحبا بالعالم"));
+    }
+
+    #[test]
+    fn emoji_and_unicode_do_not_panic() {
+        let html = r#"<html><body><article><p>Launch day 🚀🔥✨ celebration post with plenty of real prose surrounding the emoji so the density scan has something to chew on.</p></article></body></html>"#;
+        let content = extract_main_content(html);
+        assert!(content.contains("🚀🔥✨"));
+    }
+
+    // ── extract_main_content_with_provenance ───────────────────────────
+
+    #[test]
+    fn provenance_selected_primary_for_normal_article() {
+        let html = r#"<html><body><article><p>Real content here, more than enough characters to clear the minimum-body threshold easily.</p></article></body></html>"#;
+        match extract_main_content_with_provenance(html) {
+            ReadabilityOutcome::Selected { html, provenance } => {
+                assert!(html.contains("Real content here"));
+                assert_eq!(provenance.kind, ProvenanceKind::Primary);
+            }
+            ReadabilityOutcome::Rejected { reason } => {
+                panic!("expected Selected, got Rejected({reason:?})")
+            }
+        }
+    }
+
+    #[test]
+    fn provenance_rejected_for_empty_body() {
+        let html = "<html><body></body></html>";
+        match extract_main_content_with_provenance(html) {
+            ReadabilityOutcome::Rejected { reason } => {
+                assert_eq!(reason, RejectReason::NoBodyAboveMinChars);
+            }
+            ReadabilityOutcome::Selected { .. } => panic!("expected Rejected for empty body"),
+        }
+    }
+
+    #[test]
+    fn provenance_rejected_for_whitespace_only_body() {
+        let html = "<html><body>   \n\t   </body></html>";
+        match extract_main_content_with_provenance(html) {
+            ReadabilityOutcome::Rejected { reason } => {
+                assert_eq!(reason, RejectReason::NoBodyAboveMinChars);
+            }
+            ReadabilityOutcome::Selected { .. } => {
+                panic!("expected Rejected for whitespace-only body")
+            }
+        }
+    }
+
+    // ── extract_metadata ────────────────────────────────────────────────
+
+    #[test]
+    fn metadata_missing_head_returns_all_none() {
+        let html = "<html><body><p>No head at all.</p></body></html>";
+        let meta = extract_metadata(html);
+        assert!(meta.title.is_none());
+        assert!(meta.description.is_none());
+        assert!(meta.og_title.is_none());
+        assert!(meta.canonical_url.is_none());
+    }
+
+    #[test]
+    fn metadata_malformed_html_does_not_panic() {
+        let html = r#"<html><head><title>Unterminated<meta name="description" content="broken"#;
+        let meta = extract_metadata(html);
+        // html5ever recovers a document; just must not panic.
+        let _ = meta.title;
+    }
+
+    #[test]
+    fn metadata_lang_attribute_extracted() {
+        let html = r#"<html lang="tr"><head><title>T</title></head><body></body></html>"#;
+        let meta = extract_metadata(html);
+        assert_eq!(meta.language.as_deref(), Some("tr"));
+    }
+
+    #[test]
+    fn metadata_name_wins_over_property_on_same_tag() {
+        use serde_json::Value;
+        let html = r#"<html><head><meta name="foo" property="bar" content="X"></head><body></body></html>"#;
+        let meta = extract_metadata(html);
+        assert_eq!(meta.extra.get("foo"), Some(&Value::String("X".into())));
+        assert!(!meta.extra.contains_key("bar"));
+    }
+
+    #[test]
+    fn metadata_unicode_title_and_description() {
+        let html = r#"<html><head><title>日本語のタイトル</title><meta name="description" content="Ürünlerimiz hakkında bilgi"></head><body></body></html>"#;
+        let meta = extract_metadata(html);
+        assert_eq!(meta.title.as_deref(), Some("日本語のタイトル"));
+        assert_eq!(
+            meta.description.as_deref(),
+            Some("Ürünlerimiz hakkında bilgi")
+        );
+    }
+
+    #[test]
+    fn metadata_html_entities_in_description_are_predecoded_by_parser() {
+        let html = r#"<html><head><meta name="description" content="Cats &amp; Dogs"></head><body></body></html>"#;
+        let meta = extract_metadata(html);
+        assert_eq!(meta.description.as_deref(), Some("Cats & Dogs"));
+    }
+
+    #[test]
+    fn metadata_relative_canonical_url_kept_raw() {
+        let html =
+            r#"<html><head><link rel="canonical" href="/page/42"></head><body></body></html>"#;
+        let meta = extract_metadata(html);
+        assert_eq!(meta.canonical_url.as_deref(), Some("/page/42"));
+    }
+
+    #[test]
+    fn metadata_collect_trims_whitespace_and_skips_empty_key() {
+        let html = r#"<html><head>
+            <meta name="  spaced  " content="  padded value  ">
+            <meta name="" content="no key">
+        </head><body></body></html>"#;
+        let meta = extract_metadata(html);
+        assert!(meta.extra.contains_key("spaced"));
+        assert_eq!(meta.extra.len(), 1);
+    }
+
+    // ── extract_links ────────────────────────────────────────────────────
+
+    #[test]
+    fn links_filters_non_navigable_schemes_and_fragments() {
+        let html = r##"<html><body>
+            <a href="javascript:void(0)">JS</a>
+            <a href="mailto:a@b.com">Mail</a>
+            <a href="data:text/plain,hi">Data</a>
+            <a href="tel:+15551234">Tel</a>
+            <a href="blob:https://example.com/uuid">Blob</a>
+            <a href="#section">Fragment</a>
+            <a href="/real">Real</a>
+        </body></html>"##;
+        let links = extract_links(html, "https://example.com");
+        assert_eq!(links, vec!["https://example.com/real".to_string()]);
+    }
+
+    #[test]
+    fn links_resolves_relative_paths_against_base() {
+        let html = r#"<html><body><a href="../up/one">Up</a></body></html>"#;
+        let links = extract_links(html, "https://example.com/a/b/");
+        assert_eq!(links, vec!["https://example.com/a/up/one".to_string()]);
+    }
+
+    #[test]
+    fn links_duplicate_hrefs_are_not_deduped() {
+        let html = r#"<html><body><a href="/x">A</a><a href="/x">B</a></body></html>"#;
+        let links = extract_links(html, "https://example.com");
+        assert_eq!(links.len(), 2);
+    }
+
+    #[test]
+    fn links_malformed_base_url_falls_back_to_absolute_only() {
+        let html =
+            r#"<html><body><a href="http://ok.com/x">A</a><a href="/relative">B</a></body></html>"#;
+        let links = extract_links(html, "not a valid url");
+        assert_eq!(links, vec!["http://ok.com/x".to_string()]);
+    }
+
+    #[test]
+    fn links_malformed_html_still_extracts() {
+        let html = r#"<html><body><a href="/one">One<a href="/two">Two"#;
+        let links = extract_links(html, "https://example.com");
+        assert!(links.contains(&"https://example.com/one".to_string()));
+        assert!(links.contains(&"https://example.com/two".to_string()));
+    }
+
+    // ── extract_images ───────────────────────────────────────────────────
+
+    #[test]
+    fn images_src_and_alt_extracted() {
+        let html = r#"<html><body><img src="/a.jpg" alt="A photo"></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].url, "https://example.com/a.jpg");
+        assert_eq!(images[0].alt.as_deref(), Some("A photo"));
+    }
+
+    #[test]
+    fn images_data_src_and_src_dedup_with_alt_upgrade() {
+        let html = r#"<html><body><img src="/a.jpg" data-src="/a.jpg"><img src="/a.jpg" alt="Late alt"></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        assert_eq!(images.len(), 1, "same URL from src/data-src must dedup");
+        assert_eq!(images[0].alt.as_deref(), Some("Late alt"));
+    }
+
+    #[test]
+    fn images_srcset_multiple_candidates_extracted() {
+        let html = r#"<html><body><img srcset="/small.jpg 480w, /big.jpg 1080w" alt="Responsive"></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        let urls: Vec<&str> = images.iter().map(|i| i.url.as_str()).collect();
+        assert!(urls.contains(&"https://example.com/small.jpg"));
+        assert!(urls.contains(&"https://example.com/big.jpg"));
+    }
+
+    #[test]
+    fn images_picture_source_has_no_alt() {
+        let html = r#"<html><body><picture><source srcset="/p.jpg 1x"><img src="/fallback.jpg" alt="Fallback"></picture></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        let source_img = images
+            .iter()
+            .find(|i| i.url.ends_with("p.jpg"))
+            .expect("picture source image missing");
+        assert!(source_img.alt.is_none());
+    }
+
+    #[test]
+    fn images_og_twitter_itemprop_meta_extracted() {
+        let html = r#"<html><head>
+            <meta property="og:image" content="https://cdn.com/og.jpg">
+            <meta name="twitter:image" content="https://cdn.com/tw.jpg">
+            <meta itemprop="image" content="https://cdn.com/ip.jpg">
+        </head><body></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        let urls: Vec<&str> = images.iter().map(|i| i.url.as_str()).collect();
+        assert!(urls.contains(&"https://cdn.com/og.jpg"));
+        assert!(urls.contains(&"https://cdn.com/tw.jpg"));
+        assert!(urls.contains(&"https://cdn.com/ip.jpg"));
+    }
+
+    #[test]
+    fn images_icon_links_extracted_by_rel_substring() {
+        let html = r#"<html><head>
+            <link rel="shortcut icon" href="/favicon.ico">
+            <link rel="apple-touch-icon" href="/apple.png">
+        </head><body></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        let urls: Vec<&str> = images.iter().map(|i| i.url.as_str()).collect();
+        assert!(urls.contains(&"https://example.com/favicon.ico"));
+        assert!(urls.contains(&"https://example.com/apple.png"));
+    }
+
+    #[test]
+    fn images_video_poster_extracted() {
+        let html = r#"<html><body><video poster="/poster.jpg"></video></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        assert!(images.iter().any(|i| i.url.ends_with("poster.jpg")));
+    }
+
+    #[test]
+    fn images_inline_background_style_extracted() {
+        let html =
+            r#"<html><body><div style="background-image: url('/bg.jpg')"></div></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        assert!(images.iter().any(|i| i.url.ends_with("bg.jpg")));
+    }
+
+    #[test]
+    fn images_background_style_multiple_urls_all_extracted() {
+        let html = r#"<html><body>
+            <div style="background: url(/bg1.jpg)"></div>
+            <div style="background-image: url(&quot;/bg2.jpg&quot;)"></div>
+        </body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        assert!(images.iter().any(|i| i.url.ends_with("bg1.jpg")));
+        assert!(images.iter().any(|i| i.url.ends_with("bg2.jpg")));
+    }
+
+    #[test]
+    fn images_base_href_relative_resolved_against_doc_url() {
+        let html = r#"<html><head><base href="/cdn/"></head><body><img src="a.jpg"></body></html>"#;
+        let images = extract_images(html, "https://example.com/page");
+        assert_eq!(images[0].url, "https://example.com/cdn/a.jpg");
+    }
+
+    #[test]
+    fn images_base_href_absolute_used_directly() {
+        let html = r#"<html><head><base href="https://cdn.example.com/"></head><body><img src="a.jpg"></body></html>"#;
+        let images = extract_images(html, "https://example.com/page");
+        assert_eq!(images[0].url, "https://cdn.example.com/a.jpg");
+    }
+
+    #[test]
+    fn images_protocol_relative_src_inherits_page_scheme() {
+        let html = r#"<html><body><img src="//images.example.com/a.jpg"></body></html>"#;
+        let images = extract_images(html, "https://example.com/page");
+        assert_eq!(images[0].url, "https://images.example.com/a.jpg");
+    }
+
+    #[test]
+    fn images_javascript_scheme_src_is_dropped() {
+        let html = r#"<html><body><img src="javascript:alert(1)"></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn images_data_and_blob_uris_kept_verbatim() {
+        let html = r#"<html><body>
+            <img src="data:image/png;base64,AAAA">
+            <img src="blob:https://example.com/uuid-1">
+        </body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        assert!(images.iter().any(|i| i.url == "data:image/png;base64,AAAA"));
+        assert!(
+            images
+                .iter()
+                .any(|i| i.url == "blob:https://example.com/uuid-1")
+        );
+    }
+
+    #[test]
+    fn images_malformed_relative_src_without_base_is_dropped() {
+        let html = r#"<html><body><img src="relative.jpg"></body></html>"#;
+        let images = extract_images(html, "not a valid url");
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn images_empty_src_is_skipped() {
+        let html = r#"<html><body><img src=""><img src="/real.jpg"></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].url, "https://example.com/real.jpg");
+    }
+
+    #[test]
+    fn images_whitespace_padded_src_is_trimmed() {
+        let html = "<html><body><img src=\"  /padded.jpg  \"></body></html>";
+        let images = extract_images(html, "https://example.com");
+        assert_eq!(images[0].url, "https://example.com/padded.jpg");
+    }
+
+    #[test]
+    fn images_uppercase_https_scheme_falls_through_join_and_normalizes() {
+        let html = r#"<html><body><img src="HTTPS://Example.com/x.jpg"></body></html>"#;
+        let images = extract_images(html, "https://example.com");
+        // Case-sensitive verbatim-check misses "HTTPS://", so it falls through
+        // to `base.join(src)`, which parses+normalizes the absolute URL.
+        assert_eq!(images[0].url, "https://example.com/x.jpg");
+    }
+
+    #[test]
+    fn images_does_not_panic_on_deeply_nested_markup() {
+        let mut html = String::from("<html><body>");
+        for _ in 0..300 {
+            html.push_str("<div>");
+        }
+        html.push_str(r#"<img src="/deep.jpg">"#);
+        for _ in 0..300 {
+            html.push_str("</div>");
+        }
+        html.push_str("</body></html>");
+        let images = extract_images(&html, "https://example.com");
+        assert!(images.iter().any(|i| i.url.ends_with("deep.jpg")));
+    }
+
+    // ── srcset_url_tokens: extra edge cases ─────────────────────────────
+
+    #[test]
+    fn srcset_url_tokens_leading_trailing_whitespace() {
+        assert_eq!(
+            srcset_url_tokens("   /a.jpg 1x  ,  /b.jpg 2x   "),
+            vec!["/a.jpg", "/b.jpg"]
+        );
+    }
+
+    #[test]
+    fn srcset_url_tokens_tab_and_newline_separators() {
+        assert_eq!(
+            srcset_url_tokens("/a.jpg 1x,\n\t/b.jpg 2x"),
+            vec!["/a.jpg", "/b.jpg"]
+        );
+    }
+
+    #[test]
+    fn srcset_url_tokens_single_url_no_descriptor() {
+        assert_eq!(srcset_url_tokens("/only.jpg"), vec!["/only.jpg"]);
+    }
+
+    // ── norm_alt / text_density (private helpers) ───────────────────────
+
+    #[test]
+    fn norm_alt_trims_and_empty_becomes_none() {
+        assert_eq!(norm_alt(Some("  hello  ")), Some("hello".to_string()));
+        assert_eq!(norm_alt(Some("")), None);
+        assert_eq!(norm_alt(Some("   ")), None);
+        assert_eq!(norm_alt(None), None);
+    }
+
+    #[test]
+    fn text_density_empty_html_is_zero() {
+        assert_eq!(text_density(""), 0.0);
+    }
+
+    #[test]
+    fn text_density_pure_text_fragment_is_positive() {
+        let d = text_density("<p>hello world</p>");
+        assert!(d > 0.0 && d <= 1.0, "density out of range: {d}");
+    }
 }

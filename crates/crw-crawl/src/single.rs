@@ -1513,6 +1513,7 @@ fn build_byok_llm_config(req: &ScrapeRequest, server_cfg: Option<&LlmConfig>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crw_core::config::{RendererConfig, StealthConfig};
 
     const THRESH: usize = 100;
 
@@ -2580,5 +2581,1036 @@ mod tests {
             "<html><body>Google broke reCAPTCHA for de-googled Android users</body></html>",
         ));
         assert!(warning.is_none(), "got false-positive: {warning:?}");
+    }
+
+    // ── canonical_status_text ───────────────────────────────────────────────
+
+    #[test]
+    fn canonical_status_text_maps_every_documented_code() {
+        let cases: [(u16, &str); 13] = [
+            (400, "Bad Request"),
+            (401, "Unauthorized"),
+            (403, "Forbidden"),
+            (404, "Not Found"),
+            (405, "Method Not Allowed"),
+            (408, "Request Timeout"),
+            (410, "Gone"),
+            (429, "Too Many Requests"),
+            (451, "Unavailable For Legal Reasons"),
+            (500, "Internal Server Error"),
+            (502, "Bad Gateway"),
+            (503, "Service Unavailable"),
+            (504, "Gateway Timeout"),
+        ];
+        for (code, text) in cases {
+            assert_eq!(canonical_status_text(code), text, "status {code}");
+        }
+    }
+
+    #[test]
+    fn canonical_status_text_falls_back_to_error_for_unmapped_codes() {
+        for code in [200, 301, 402, 406, 418, 499, 501, 507, 599] {
+            assert_eq!(
+                canonical_status_text(code),
+                "Error",
+                "status {code} should not have a specific mapping"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_status_text_boundary_around_a_mapped_code() {
+        // 429 is mapped, its neighbors are not.
+        assert_eq!(canonical_status_text(428), "Error");
+        assert_eq!(canonical_status_text(429), "Too Many Requests");
+        assert_eq!(canonical_status_text(430), "Error");
+    }
+
+    // ── change_tracking_mode_label ──────────────────────────────────────────
+
+    fn ct_opts(modes: Vec<ChangeTrackingMode>) -> crw_core::types::ChangeTrackingOptions {
+        crw_core::types::ChangeTrackingOptions {
+            modes,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn change_tracking_label_binary_for_non_text_content_type() {
+        assert_eq!(
+            change_tracking_mode_label(&ct_opts(vec![]), Some("image/png")),
+            "binary"
+        );
+        assert_eq!(
+            change_tracking_mode_label(&ct_opts(vec![]), Some("application/octet-stream")),
+            "binary"
+        );
+    }
+
+    #[test]
+    fn change_tracking_label_empty_modes_defaults_to_git_diff() {
+        // `opts.modes.is_empty()` counts as gitDiff per the doc comment.
+        assert_eq!(
+            change_tracking_mode_label(&ct_opts(vec![]), None),
+            "gitDiff"
+        );
+    }
+
+    #[test]
+    fn change_tracking_label_explicit_git_diff_only() {
+        assert_eq!(
+            change_tracking_mode_label(&ct_opts(vec![ChangeTrackingMode::GitDiff]), None),
+            "gitDiff"
+        );
+    }
+
+    #[test]
+    fn change_tracking_label_json_only() {
+        assert_eq!(
+            change_tracking_mode_label(&ct_opts(vec![ChangeTrackingMode::Json]), None),
+            "json"
+        );
+    }
+
+    #[test]
+    fn change_tracking_label_mixed_modes() {
+        assert_eq!(
+            change_tracking_mode_label(
+                &ct_opts(vec![ChangeTrackingMode::GitDiff, ChangeTrackingMode::Json]),
+                None
+            ),
+            "mixed"
+        );
+    }
+
+    #[test]
+    fn change_tracking_label_content_type_none_is_text() {
+        // No content type means "assume text" (`is_none_or`).
+        assert_eq!(
+            change_tracking_mode_label(&ct_opts(vec![ChangeTrackingMode::Json]), None),
+            "json"
+        );
+    }
+
+    #[test]
+    fn change_tracking_label_content_type_case_and_charset_insensitive() {
+        assert_eq!(
+            change_tracking_mode_label(&ct_opts(vec![]), Some("TEXT/PLAIN; charset=utf-8")),
+            "gitDiff"
+        );
+        assert_eq!(
+            change_tracking_mode_label(&ct_opts(vec![]), Some("application/XML")),
+            "gitDiff"
+        );
+    }
+
+    #[test]
+    fn change_tracking_label_json_modes_irrelevant_under_binary_type() {
+        // Binary short-circuits before the modes are even inspected.
+        assert_eq!(
+            change_tracking_mode_label(
+                &ct_opts(vec![ChangeTrackingMode::GitDiff, ChangeTrackingMode::Json]),
+                Some("image/jpeg")
+            ),
+            "binary"
+        );
+    }
+
+    // ── normalized_host ──────────────────────────────────────────────────────
+
+    #[test]
+    fn normalized_host_lowercases_the_host() {
+        assert_eq!(
+            normalized_host("https://EXAMPLE.com/path"),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn normalized_host_strips_a_leading_www() {
+        assert_eq!(
+            normalized_host("https://www.example.com/"),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn normalized_host_strips_only_one_leading_www() {
+        assert_eq!(
+            normalized_host("https://www.www.example.com/"),
+            Some("www.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn normalized_host_bracketed_ipv6() {
+        assert_eq!(
+            normalized_host("http://[::1]:8080/"),
+            Some("[::1]".to_string())
+        );
+    }
+
+    #[test]
+    fn normalized_host_none_for_unparseable_url() {
+        assert_eq!(normalized_host("not a url at all"), None);
+    }
+
+    #[test]
+    fn normalized_host_none_for_hostless_scheme() {
+        assert_eq!(normalized_host("mailto:foo@example.com"), None);
+    }
+
+    #[test]
+    fn normalized_host_preserves_trailing_dot() {
+        assert_eq!(
+            normalized_host("https://example.com./x"),
+            Some("example.com.".to_string())
+        );
+    }
+
+    // ── build_byok_llm_config ────────────────────────────────────────────────
+
+    #[test]
+    fn byok_config_none_without_an_api_key() {
+        let req = ScrapeRequest::default();
+        assert!(build_byok_llm_config(&req, None).is_none());
+        assert!(build_byok_llm_config(&req, Some(&LlmConfig::default())).is_none());
+    }
+
+    #[test]
+    fn byok_config_uses_request_key_over_defaults_when_no_server_cfg() {
+        let req = ScrapeRequest {
+            llm_api_key: Some("sk-test".to_string()),
+            ..Default::default()
+        };
+        let cfg = build_byok_llm_config(&req, None).expect("api key present");
+        assert_eq!(cfg.api_key, "sk-test");
+        assert_eq!(cfg.provider, LlmConfig::default().provider);
+        assert_eq!(cfg.model, LlmConfig::default().model);
+        assert_eq!(cfg.base_url, None);
+    }
+
+    #[test]
+    fn byok_config_inherits_non_credential_fields_from_server_config() {
+        let server = LlmConfig {
+            max_tokens: 9999,
+            max_concurrency: 42,
+            provider: "azure".to_string(),
+            ..LlmConfig::default()
+        };
+        let req = ScrapeRequest {
+            llm_api_key: Some("sk-test".to_string()),
+            ..Default::default()
+        };
+        let cfg = build_byok_llm_config(&req, Some(&server)).expect("api key present");
+        assert_eq!(
+            cfg.api_key, "sk-test",
+            "credential must come from the request"
+        );
+        assert_eq!(
+            cfg.max_tokens, 9999,
+            "non-credential fields inherit from server cfg"
+        );
+        assert_eq!(cfg.max_concurrency, 42);
+        assert_eq!(
+            cfg.provider, "azure",
+            "not overridden, so server's provider wins"
+        );
+    }
+
+    #[test]
+    fn byok_config_llm_provider_override_wins() {
+        let server = LlmConfig {
+            provider: "azure".to_string(),
+            ..LlmConfig::default()
+        };
+        let req = ScrapeRequest {
+            llm_api_key: Some("sk-test".to_string()),
+            llm_provider: Some("openai".to_string()),
+            ..Default::default()
+        };
+        let cfg = build_byok_llm_config(&req, Some(&server)).unwrap();
+        assert_eq!(cfg.provider, "openai");
+    }
+
+    #[test]
+    fn byok_config_llm_model_override_wins() {
+        let req = ScrapeRequest {
+            llm_api_key: Some("sk-test".to_string()),
+            llm_model: Some("gpt-5".to_string()),
+            ..Default::default()
+        };
+        let cfg = build_byok_llm_config(&req, None).unwrap();
+        assert_eq!(cfg.model, "gpt-5");
+    }
+
+    #[test]
+    fn byok_config_base_url_override_wins() {
+        let req = ScrapeRequest {
+            llm_api_key: Some("sk-test".to_string()),
+            base_url: Some("https://byok.example.com/v1".to_string()),
+            ..Default::default()
+        };
+        let cfg = build_byok_llm_config(&req, None).unwrap();
+        assert_eq!(cfg.base_url.as_deref(), Some("https://byok.example.com/v1"));
+    }
+
+    #[test]
+    fn byok_config_combines_all_overrides_with_retained_server_fields() {
+        let server = LlmConfig {
+            max_tokens: 500,
+            ..LlmConfig::default()
+        };
+        let req = ScrapeRequest {
+            llm_api_key: Some("sk-combo".to_string()),
+            llm_provider: Some("anthropic".to_string()),
+            llm_model: Some("claude".to_string()),
+            base_url: Some("https://combo.example.com".to_string()),
+            ..Default::default()
+        };
+        let cfg = build_byok_llm_config(&req, Some(&server)).unwrap();
+        assert_eq!(cfg.api_key, "sk-combo");
+        assert_eq!(cfg.provider, "anthropic");
+        assert_eq!(cfg.model, "claude");
+        assert_eq!(cfg.base_url.as_deref(), Some("https://combo.example.com"));
+        assert_eq!(cfg.max_tokens, 500, "server field not overridden stays");
+    }
+
+    // ── formats_include_json / formats_include_summary ──────────────────────
+
+    #[test]
+    fn formats_include_json_false_on_empty() {
+        assert!(!formats_include_json(&[]));
+    }
+
+    #[test]
+    fn formats_include_json_true_when_present() {
+        assert!(formats_include_json(&[OutputFormat::Json]));
+    }
+
+    #[test]
+    fn formats_include_summary_false_on_empty() {
+        assert!(!formats_include_summary(&[]));
+    }
+
+    #[test]
+    fn formats_include_summary_true_when_present() {
+        assert!(formats_include_summary(&[OutputFormat::Summary]));
+    }
+
+    #[test]
+    fn formats_include_json_and_summary_are_independent() {
+        let both = [
+            OutputFormat::Markdown,
+            OutputFormat::Json,
+            OutputFormat::Summary,
+        ];
+        assert!(formats_include_json(&both));
+        assert!(formats_include_summary(&both));
+        let markdown_only = [OutputFormat::Markdown];
+        assert!(!formats_include_json(&markdown_only));
+        assert!(!formats_include_summary(&markdown_only));
+    }
+
+    // ── detect_block_interstitial ────────────────────────────────────────────
+
+    #[test]
+    fn detect_interstitial_every_marker_trips_the_generic_message() {
+        let markers = [
+            "just a moment",
+            "attention required",
+            "cf-browser-verification",
+            "cf-challenge",
+            "captcha-delivery.com",
+            "datadome captcha",
+            "px-captcha",
+            "_px3=",
+            "_abck=",
+            "ak-challenge",
+        ];
+        for marker in markers {
+            let html = format!("<html><body>filler text {marker} more filler</body></html>");
+            assert_eq!(
+                detect_block_interstitial(&html),
+                Some("Blocked by anti-bot protection".to_string()),
+                "marker {marker} was not detected"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_interstitial_is_case_insensitive() {
+        assert_eq!(
+            detect_block_interstitial("<html><body>JUST A MOMENT...</body></html>"),
+            Some("Blocked by anti-bot protection".to_string())
+        );
+        assert_eq!(
+            detect_block_interstitial("<html><body>Cf-Browser-Verification</body></html>"),
+            Some("Blocked by anti-bot protection".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_interstitial_none_on_ordinary_content() {
+        let html = "<html><body><article><h1>Weekly digest</h1><p>Nothing scary here, \
+            just a regular newsletter about gardening.</p></article></body></html>";
+        assert_eq!(detect_block_interstitial(html), None);
+    }
+
+    #[test]
+    fn detect_interstitial_skips_pages_over_50kb() {
+        // "Just a moment" is a real Cloudflare marker, but a 50KB+ page can't be
+        // a pure interstitial shell, so the size guard suppresses it.
+        let mut html = "<html><body>".to_string();
+        html.push_str(&"filler ".repeat(8000)); // > 50_000 bytes
+        html.push_str("just a moment</body></html>");
+        assert!(html.len() > 50_000);
+        assert_eq!(detect_block_interstitial(&html), None);
+    }
+
+    #[test]
+    fn detect_interstitial_boundary_at_exactly_50kb_still_scans() {
+        let filler = "a".repeat(50_000 - "just a moment".len());
+        let html = format!("{filler}just a moment");
+        assert_eq!(html.len(), 50_000, "fixture must land exactly on the guard");
+        assert_eq!(
+            detect_block_interstitial(&html),
+            Some("Blocked by anti-bot protection".to_string()),
+            "the guard is `> 50_000`, so exactly 50_000 bytes must still be scanned"
+        );
+    }
+
+    #[test]
+    fn detect_interstitial_boundary_at_50kb_plus_one_is_skipped() {
+        let filler = "a".repeat(50_001 - "just a moment".len());
+        let html = format!("{filler}just a moment");
+        assert_eq!(html.len(), 50_001);
+        assert_eq!(detect_block_interstitial(&html), None);
+    }
+
+    #[test]
+    fn detect_interstitial_multiple_markers_still_returns_the_generic_message() {
+        let html = "<html><body>just a moment, cf-browser-verification, _abck=xyz</body></html>";
+        assert_eq!(
+            detect_block_interstitial(html),
+            Some("Blocked by anti-bot protection".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_interstitial_empty_string() {
+        assert_eq!(detect_block_interstitial(""), None);
+    }
+
+    // ── looks_like_parked_domain (direct) ────────────────────────────────────
+
+    #[test]
+    fn parked_domain_body_at_exactly_the_size_cap_is_still_checked() {
+        // Filler is spaces (not word characters) so it neither breaks the
+        // trailing `\b` after "sale" nor collides with the regex's left guard.
+        let filler = " ".repeat(PARKED_MAX_BODY_BYTES - "arym.com is for sale".len());
+        let md = format!("arym.com is for sale{filler}");
+        assert_eq!(md.len(), PARKED_MAX_BODY_BYTES);
+        assert!(looks_like_parked_domain(&md, "https://arym.com/", None));
+    }
+
+    #[test]
+    fn parked_domain_body_one_byte_over_the_cap_is_rejected() {
+        let filler = "x".repeat(PARKED_MAX_BODY_BYTES - "arym.com is for sale".len() + 1);
+        let md = format!("arym.com is for sale{filler}");
+        assert_eq!(md.len(), PARKED_MAX_BODY_BYTES + 1);
+        assert!(!looks_like_parked_domain(&md, "https://arym.com/", None));
+    }
+
+    #[test]
+    fn parked_domain_no_usable_host_never_matches() {
+        assert!(!looks_like_parked_domain(
+            "arym.com is for sale",
+            "not a url",
+            None
+        ));
+        assert!(!looks_like_parked_domain(
+            "arym.com is for sale",
+            "not a url",
+            Some("also not a url")
+        ));
+    }
+
+    #[test]
+    fn parked_domain_matches_on_final_url_when_requested_is_malformed() {
+        assert!(looks_like_parked_domain(
+            "parked-target.com is for sale",
+            "not a url",
+            Some("https://parked-target.com/")
+        ));
+    }
+
+    // ── redirect_is_material (additional) ────────────────────────────────────
+
+    #[test]
+    fn redirect_material_false_on_malformed_requested_url() {
+        assert!(!redirect_is_material("not a url", "https://example.com/"));
+    }
+
+    #[test]
+    fn redirect_material_false_on_malformed_final_url() {
+        assert!(!redirect_is_material(
+            "https://example.com/page",
+            "not a url"
+        ));
+    }
+
+    #[test]
+    fn redirect_material_false_when_both_urls_are_malformed() {
+        assert!(!redirect_is_material("not a url", "also not a url"));
+    }
+
+    #[test]
+    fn redirect_material_ignores_port_only_change() {
+        assert!(!redirect_is_material(
+            "https://example.com:8080/x",
+            "https://example.com:9090/x"
+        ));
+    }
+
+    #[test]
+    fn redirect_material_ignores_scheme_only_change() {
+        assert!(!redirect_is_material(
+            "http://example.com/x",
+            "https://example.com/x"
+        ));
+    }
+
+    #[test]
+    fn redirect_material_host_comparison_is_case_normalized() {
+        // `url::Url` lowercases the host on parse, so mixed-case input on
+        // either side must still compare equal.
+        assert!(!redirect_is_material(
+            "https://Example.COM/x",
+            "https://example.com/x"
+        ));
+    }
+
+    #[test]
+    fn redirect_material_subdomain_change_counts_as_a_host_change() {
+        assert!(redirect_is_material(
+            "https://www.example.com/x",
+            "https://example.com/x"
+        ));
+    }
+
+    #[test]
+    fn redirect_material_deep_path_collapsing_to_root_with_trailing_slash() {
+        assert!(redirect_is_material(
+            "https://example.com/a/b/c",
+            "https://example.com/"
+        ));
+        // Root-to-root (both empty after trim) is not material.
+        assert!(!redirect_is_material(
+            "https://example.com/",
+            "https://example.com"
+        ));
+    }
+
+    // ── is_cdn_origin_error (additional) ─────────────────────────────────────
+
+    #[test]
+    fn cdn_origin_error_far_outside_the_range() {
+        assert!(!is_cdn_origin_error(0));
+        assert!(!is_cdn_origin_error(u16::MAX));
+    }
+
+    // ── is_empty_truncated_render (additional) ───────────────────────────────
+
+    #[test]
+    fn empty_truncated_render_true_when_markdown_is_one_of_several_formats() {
+        let formats = [
+            OutputFormat::Markdown,
+            OutputFormat::RawHtml,
+            OutputFormat::Links,
+        ];
+        assert!(is_empty_truncated_render(true, &formats, None));
+    }
+
+    #[test]
+    fn empty_truncated_render_false_when_markdown_was_never_requested() {
+        let formats = [OutputFormat::Json, OutputFormat::Links];
+        assert!(!is_empty_truncated_render(true, &formats, None));
+    }
+
+    #[test]
+    fn empty_truncated_render_true_on_empty_string_markdown() {
+        let formats = [OutputFormat::Markdown];
+        assert!(is_empty_truncated_render(true, &formats, Some("")));
+    }
+
+    #[test]
+    fn empty_truncated_render_false_on_a_single_meaningful_character() {
+        let formats = [OutputFormat::Markdown];
+        assert!(!is_empty_truncated_render(true, &formats, Some("x")));
+    }
+
+    // ── escalate_for_quality (additional) ────────────────────────────────────
+
+    #[test]
+    fn escalate_for_quality_false_exactly_at_the_5000_byte_boundary() {
+        let html = "x".repeat(5000);
+        assert!(!escalate_for_quality(
+            false,
+            true,
+            200,
+            &html,
+            Some("text/html")
+        ));
+    }
+
+    #[test]
+    fn escalate_for_quality_true_one_byte_past_the_boundary() {
+        let html = "x".repeat(5001);
+        assert!(escalate_for_quality(
+            false,
+            true,
+            200,
+            &html,
+            Some("text/html")
+        ));
+    }
+
+    #[test]
+    fn escalate_for_quality_false_when_quality_is_not_low() {
+        let html = "x".repeat(6000);
+        assert!(!escalate_for_quality(false, false, 200, &html, None));
+    }
+
+    #[test]
+    fn escalate_for_quality_status_is_irrelevant_for_non_json() {
+        let html = "x".repeat(6000);
+        for status in [200, 403, 429, 500] {
+            assert!(escalate_for_quality(
+                false,
+                true,
+                status,
+                &html,
+                Some("text/plain")
+            ));
+        }
+    }
+
+    // ── derive_target_warning (additional) ───────────────────────────────────
+
+    #[test]
+    fn warning_detects_datadome_perimeterx_and_akamai_markers() {
+        let cases = [
+            "<html><body><script src=\"https://captcha-delivery.com/c.js\"></script></body></html>",
+            "<html><body><div class=\"px-captcha\">verify</div></body></html>",
+            "<html><body>set-cookie: _abck=1234abcd</body></html>",
+        ];
+        for html in cases {
+            let warning = derive_target_warning(&sample_fetch(200, html));
+            assert_eq!(
+                warning.as_deref(),
+                Some("Blocked by anti-bot protection"),
+                "{html}"
+            );
+        }
+    }
+
+    #[test]
+    fn warning_prefers_fetch_warning_over_status_text_when_no_block_present() {
+        let mut fetch = sample_fetch(500, "<html><body>ordinary error page</body></html>");
+        fetch.warning = Some("upstream connection reset".to_string());
+        assert_eq!(
+            derive_target_warning(&fetch).as_deref(),
+            Some("upstream connection reset")
+        );
+    }
+
+    #[test]
+    fn warning_none_on_a_clean_200_with_no_signals() {
+        let fetch = sample_fetch(200, "<html><body>hello world</body></html>");
+        assert_eq!(derive_target_warning(&fetch), None);
+    }
+
+    #[test]
+    fn warning_status_text_covers_every_mapped_code() {
+        for (code, text) in [
+            (401u16, "Unauthorized"),
+            (404, "Not Found"),
+            (405, "Method Not Allowed"),
+            (429, "Too Many Requests"),
+            (500, "Internal Server Error"),
+            (502, "Bad Gateway"),
+            (503, "Service Unavailable"),
+        ] {
+            let warning =
+                derive_target_warning(&sample_fetch(code, "<html><body>plain</body></html>"));
+            assert_eq!(warning, Some(format!("Target returned {code} {text}")));
+        }
+    }
+
+    #[test]
+    fn warning_falls_back_to_generic_error_text_for_unmapped_status() {
+        let warning = derive_target_warning(&sample_fetch(599, "<html><body>plain</body></html>"));
+        assert_eq!(warning.as_deref(), Some("Target returned 599 Error"));
+    }
+
+    // ── classify_block (additional vendor arms) ──────────────────────────────
+
+    #[test]
+    fn classify_block_perimeterx_marker() {
+        let html = "<html><body><script>window._pxAppId = 'PXabc123';</script></body></html>";
+        let b = classify_block(
+            403,
+            Some("text/html"),
+            html,
+            None,
+            false,
+            THRESH,
+            "https://example.com/",
+            None,
+        )
+        .expect("PerimeterX must be flagged");
+        assert_eq!(b.vendor, "perimeterx");
+    }
+
+    #[test]
+    fn classify_block_akamai_marker() {
+        let html =
+            "<html><body>Pardon Our Interruption while we verify you are human</body></html>";
+        let b = classify_block(
+            403,
+            Some("text/html"),
+            html,
+            None,
+            false,
+            THRESH,
+            "https://example.com/",
+            None,
+        )
+        .expect("Akamai must be flagged");
+        assert_eq!(b.vendor, "akamai");
+    }
+
+    #[test]
+    fn classify_block_kasada_marker() {
+        let html = "<html><body><script>KPSDK.scriptStart = KPSDK.now();</script></body></html>";
+        let b = classify_block(
+            403,
+            Some("text/html"),
+            html,
+            None,
+            false,
+            THRESH,
+            "https://example.com/",
+            None,
+        )
+        .expect("Kasada must be flagged");
+        assert_eq!(b.vendor, "kasada");
+    }
+
+    #[test]
+    fn classify_block_sucuri_marker() {
+        let html = "<html><body>Sucuri WebSite Firewall blocked this request</body></html>";
+        let b = classify_block(
+            403,
+            Some("text/html"),
+            html,
+            None,
+            false,
+            THRESH,
+            "https://example.com/",
+            None,
+        )
+        .expect("Sucuri must be flagged");
+        assert_eq!(b.vendor, "sucuri");
+    }
+
+    #[test]
+    fn classify_block_rate_limited_on_status_429() {
+        let b = classify_block(
+            429,
+            Some("text/html"),
+            "<html><body>slow down</body></html>",
+            None,
+            false,
+            THRESH,
+            "https://example.com/",
+            None,
+        )
+        .expect("429 must always be flagged as rate limited");
+        assert_eq!(b.vendor, "rate_limited");
+    }
+
+    #[test]
+    fn classify_block_generic_access_denied_on_403() {
+        let html = "Access Denied. ".repeat(10); // > EMPTY_CONTENT_THRESHOLD, tier2-eligible
+        let b = classify_block(
+            403,
+            Some("text/html"),
+            &html,
+            None,
+            false,
+            THRESH,
+            "https://example.com/",
+            None,
+        )
+        .expect("Access Denied must be flagged");
+        assert_eq!(b.vendor, "generic_block");
+    }
+
+    #[test]
+    fn classify_block_structural_failure_on_missing_body_tag() {
+        let b = classify_block(
+            200,
+            Some("text/html"),
+            "<html><head><title>empty shell</title></head></html>",
+            None,
+            false,
+            THRESH,
+            "https://example.com/",
+            None,
+        )
+        .expect("a body-less shell must be flagged");
+        assert_eq!(b.vendor, "structural_failure");
+    }
+
+    #[test]
+    fn classify_block_cf_strong_markers_each_trip_independently() {
+        for marker in [
+            "cf-challenge-running",
+            "cf-browser-verification",
+            "__cf_chl_managed_tk__",
+        ] {
+            let html = format!("<html><body><script>{marker}</script></body></html>");
+            let b = classify_block(
+                200,
+                Some("text/html"),
+                &html,
+                None,
+                false,
+                THRESH,
+                "https://example.com/",
+                None,
+            )
+            .unwrap_or_else(|| panic!("{marker} must be flagged"));
+            assert_eq!(b.vendor, "cloudflare", "{marker}");
+        }
+    }
+
+    #[test]
+    fn classify_block_cloudflare_arm_wins_over_parked_domain_wording() {
+        // CF_STRONG_MARKERS is checked before the parked-domain regex, so a
+        // page that is BOTH a live CF challenge and happens to name a domain
+        // "for sale" must classify as the challenge, not the parking page.
+        let html = r#"<html><body><script>window._cf_chl_opt={}</script></body></html>"#;
+        let md = "arym.com is for sale";
+        let b = classify_block(
+            200,
+            Some("text/html"),
+            html,
+            Some(md),
+            false,
+            THRESH,
+            "https://arym.com/",
+            None,
+        )
+        .expect("must be flagged");
+        assert_eq!(b.vendor, "cloudflare");
+    }
+
+    #[test]
+    fn classify_block_threshold_zero_short_circuits_before_the_generic_classifier() {
+        // With threshold 0, ANY non-negative markdown length clears the guard,
+        // so a body-less shell that would otherwise be a structural failure is
+        // never even handed to `crw_extract::antibot::classify`.
+        assert!(
+            classify_block(
+                200,
+                Some("text/html"),
+                "<html><head></head></html>",
+                Some(""),
+                false,
+                0,
+                "https://example.com/",
+                None,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn classify_block_pdf_match_is_case_sensitive() {
+        // `content_type.contains("pdf")` is case-sensitive, so an uppercase
+        // media type does NOT take the early PDF exemption. Proven via the
+        // CF_STRONG_MARKERS arm specifically, because it (unlike the generic
+        // antibot classifier further down) never consults content_type at
+        // all, so it isolates just the PDF-exemption guard being skipped.
+        let html = r#"<html><body><script>window._cf_chl_opt={}</script></body></html>"#;
+        let b = classify_block(
+            200,
+            Some("APPLICATION/PDF"),
+            html,
+            None,
+            false,
+            THRESH,
+            "https://example.com/",
+            None,
+        );
+        assert!(
+            b.is_some(),
+            "uppercase PDF content-type must not hit the (case-sensitive) PDF skip"
+        );
+    }
+
+    // ── resolve_request_proxy ────────────────────────────────────────────────
+
+    fn plain_renderer() -> FallbackRenderer {
+        FallbackRenderer::new(
+            &RendererConfig::default(),
+            "crw-test",
+            None,
+            &StealthConfig::default(),
+        )
+        .expect("hermetic renderer construction must not fail")
+    }
+
+    fn proxy_req(url: &str) -> ScrapeRequest {
+        ScrapeRequest {
+            url: url.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_proxy_none_when_nothing_configured() {
+        let renderer = plain_renderer();
+        let req = proxy_req("https://example.com/");
+        let resolved = resolve_request_proxy(&req, &renderer).expect("must not error");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_proxy_single_valid_proxy_is_used() {
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy: Some("http://user:pass@proxy.example.com:8080".to_string()),
+            ..proxy_req("https://example.com/")
+        };
+        let resolved = resolve_request_proxy(&req, &renderer)
+            .expect("must not error")
+            .expect("a proxy was configured");
+        assert_eq!(resolved.raw(), "http://user:pass@proxy.example.com:8080");
+    }
+
+    #[test]
+    fn resolve_proxy_malformed_url_is_invalid_request() {
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy: Some("not a proxy url".to_string()),
+            ..proxy_req("https://example.com/")
+        };
+        match resolve_request_proxy(&req, &renderer) {
+            Err(crw_core::error::CrwError::InvalidRequest(_)) => {}
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_proxy_unsupported_scheme_is_invalid_request() {
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy: Some("ftp://proxy.example.com:21".to_string()),
+            ..proxy_req("https://example.com/")
+        };
+        match resolve_request_proxy(&req, &renderer) {
+            Err(crw_core::error::CrwError::InvalidRequest(_)) => {}
+            other => panic!("expected InvalidRequest for ftp scheme, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_proxy_socks5h_scheme_is_accepted() {
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy: Some("socks5h://proxy.example.com:1080".to_string()),
+            ..proxy_req("https://example.com/")
+        };
+        let resolved = resolve_request_proxy(&req, &renderer).unwrap();
+        assert!(resolved.is_some());
+    }
+
+    #[test]
+    fn resolve_proxy_blank_string_falls_back_to_renderer_default() {
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy: Some("   ".to_string()),
+            ..proxy_req("https://example.com/")
+        };
+        let resolved = resolve_request_proxy(&req, &renderer).expect("must not error");
+        assert!(
+            resolved.is_none(),
+            "a blank proxy must not be treated as BYOP"
+        );
+    }
+
+    #[test]
+    fn resolve_proxy_list_takes_precedence_over_single_proxy() {
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy: Some("http://single.example.com:8080".to_string()),
+            proxy_list: vec![
+                "http://list-a.example.com:8080".to_string(),
+                "http://list-b.example.com:8080".to_string(),
+            ],
+            ..proxy_req("https://example.com/")
+        };
+        let resolved = resolve_request_proxy(&req, &renderer).unwrap().unwrap();
+        assert_ne!(resolved.raw(), "http://single.example.com:8080");
+        assert!(
+            resolved.raw() == "http://list-a.example.com:8080"
+                || resolved.raw() == "http://list-b.example.com:8080"
+        );
+    }
+
+    #[test]
+    fn resolve_proxy_list_with_one_malformed_entry_errors() {
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy_list: vec![
+                "http://good.example.com:8080".to_string(),
+                "not a proxy".to_string(),
+            ],
+            ..proxy_req("https://example.com/")
+        };
+        match resolve_request_proxy(&req, &renderer) {
+            Err(crw_core::error::CrwError::InvalidRequest(_)) => {}
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_proxy_round_robin_picks_the_only_entry_in_a_singleton_pool() {
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy_list: vec!["http://only.example.com:8080".to_string()],
+            proxy_rotation: Some(crw_core::ProxyRotation::RoundRobin),
+            ..proxy_req("https://example.com/")
+        };
+        let resolved = resolve_request_proxy(&req, &renderer).unwrap().unwrap();
+        assert_eq!(resolved.raw(), "http://only.example.com:8080");
+    }
+
+    #[test]
+    fn resolve_proxy_survives_an_unparseable_request_url() {
+        // `req.url` feeds only the sticky-per-host key derivation, which
+        // degrades to `None` on a parse failure — it must not abort proxy
+        // resolution.
+        let renderer = plain_renderer();
+        let req = ScrapeRequest {
+            proxy: Some("http://proxy.example.com:8080".to_string()),
+            ..proxy_req("not a url at all")
+        };
+        let resolved = resolve_request_proxy(&req, &renderer).unwrap();
+        assert!(resolved.is_some());
     }
 }

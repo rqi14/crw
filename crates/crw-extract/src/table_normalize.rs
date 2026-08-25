@@ -802,4 +802,779 @@ mod tests {
         let gated_off = crate::markdown::html_to_markdown_with(html, false);
         assert_eq!(legacy, gated_off);
     }
+
+    #[test]
+    fn flag_off_skips_normalization_on_a_rowspan_table() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody>
+                <tr><td rowspan="2">Alice</td><td>Math</td></tr>
+                <tr><td>Physics</td></tr>
+            </tbody>
+        </table>"#;
+        let normalized = crate::markdown::html_to_markdown_with(html, true);
+        let unnormalized = crate::markdown::html_to_markdown_with(html, false);
+        assert_ne!(
+            normalized, unnormalized,
+            "the flag must actually gate rowspan expansion"
+        );
+    }
+
+    // ── rowspan / colspan combinations ──────────────────────────────────
+
+    #[test]
+    fn rowspan_only_spans_three_rows() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody>
+                <tr><td rowspan="3">Spans3</td><td>r1</td></tr>
+                <tr><td>r2</td></tr>
+                <tr><td>r3</td></tr>
+            </tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let rows: Vec<Vec<String>> = doc
+            .select(&Selector::parse("tbody tr").unwrap())
+            .map(|tr| {
+                tr.select(&Selector::parse("td").unwrap())
+                    .map(|c| c.inner_html())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], vec!["Spans3", "r1"]);
+        assert_eq!(rows[1], vec!["Spans3", "r2"]);
+        assert_eq!(rows[2], vec!["Spans3", "r3"]);
+    }
+
+    #[test]
+    fn colspan_wider_than_declared_header_width_grows_the_grid() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody><tr><td colspan="5">Wide body row</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let th_count = doc.select(&Selector::parse("thead th").unwrap()).count();
+        let td_count = doc.select(&Selector::parse("tbody td").unwrap()).count();
+        assert_eq!((th_count, td_count), (5, 5), "grid must widen to 5: {out}");
+        assert_eq!(
+            out.matches("Wide body row").count(),
+            1,
+            "content must not duplicate: {out}"
+        );
+    }
+
+    #[test]
+    fn header_group_label_colspan_repeats_across_its_own_subcolumns() {
+        let html = r#"<table>
+            <thead>
+                <tr><th colspan="2">Q1</th><th colspan="2">Q2</th></tr>
+                <tr><th>Jan</th><th>Feb</th><th>Mar</th><th>Apr</th></tr>
+            </thead>
+            <tbody><tr><td>10</td><td>20</td><td>30</td><td>40</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        assert!(out.contains("Q1 / Jan"), "{out}");
+        assert!(out.contains("Q1 / Feb"), "{out}");
+        assert!(out.contains("Q2 / Mar"), "{out}");
+        assert!(out.contains("Q2 / Apr"), "{out}");
+    }
+
+    #[test]
+    fn td_colspan_in_middle_of_row_is_not_duplicated() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th><th>C</th><th>D</th></tr></thead>
+            <tbody><tr><td>a</td><td colspan="2">MERGED</td><td>d</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let cells: Vec<String> = doc
+            .select(&Selector::parse("tbody td").unwrap())
+            .map(|c| c.inner_html())
+            .collect();
+        assert_eq!(cells, vec!["a", "MERGED", "", "d"]);
+    }
+
+    #[test]
+    fn rowspan_and_colspan_on_the_same_cell() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th><th>C</th></tr></thead>
+            <tbody>
+                <tr><td rowspan="2" colspan="2">BIG</td><td>c1</td></tr>
+                <tr><td>c2</td></tr>
+            </tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let rows: Vec<Vec<String>> = doc
+            .select(&Selector::parse("tbody tr").unwrap())
+            .map(|tr| {
+                tr.select(&Selector::parse("td").unwrap())
+                    .map(|c| c.inner_html())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rows[0], vec!["BIG", "", "c1"]);
+        assert_eq!(rows[1], vec!["BIG", "", "c2"]);
+    }
+
+    #[test]
+    fn rowspan_spans_from_tbody_into_tfoot() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody><tr><td rowspan="2">SpansIntoFooter</td><td>b1</td></tr></tbody>
+            <tfoot><tr><td>b2</td></tr></tfoot>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let rows: Vec<Vec<String>> = doc
+            .select(&Selector::parse("tbody tr").unwrap())
+            .map(|tr| {
+                tr.select(&Selector::parse("td").unwrap())
+                    .map(|c| c.inner_html())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec!["SpansIntoFooter", "b1"]);
+        assert_eq!(rows[1], vec!["SpansIntoFooter", "b2"]);
+    }
+
+    #[test]
+    fn rowspan_zero_through_full_pipeline_behaves_as_one() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody>
+                <tr><td rowspan="0">z</td><td>1</td></tr>
+                <tr><td>x</td><td>2</td></tr>
+            </tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let rows: Vec<Vec<String>> = doc
+            .select(&Selector::parse("tbody tr").unwrap())
+            .map(|tr| {
+                tr.select(&Selector::parse("td").unwrap())
+                    .map(|c| c.inner_html())
+                    .collect()
+            })
+            .collect();
+        // rowspan="0" is degenerate input → treated as 1 (no downward carry).
+        assert_eq!(rows[0], vec!["z", "1"]);
+        assert_eq!(rows[1], vec!["x", "2"]);
+    }
+
+    // ── nested tables ────────────────────────────────────────────────────
+
+    #[test]
+    fn deeply_nested_three_level_tables_all_survive() {
+        let html = r#"<table>
+            <thead><tr><th>Outer</th></tr></thead>
+            <tbody><tr><td>
+              <table><tr><td>
+                <table><tr><td>innermost, no header</td></tr></table>
+              </td></tr></table>
+            </td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let tables: Vec<_> = doc.select(&Selector::parse("table").unwrap()).collect();
+        assert_eq!(tables.len(), 3, "all three levels must survive: {out}");
+        assert!(out.contains("innermost, no header"));
+    }
+
+    #[test]
+    fn nested_table_with_its_own_header_stays_opaque() {
+        let html = r#"<table>
+            <thead><tr><th>Outer</th></tr></thead>
+            <tbody><tr><td>
+              <table>
+                <thead><tr><th>InnerA</th><th>InnerB</th></tr></thead>
+                <tbody><tr><td rowspan="2">InnerSpan</td><td>x</td></tr><tr><td>y</td></tr></tbody>
+              </table>
+            </td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        // If the nested table had been independently expanded, the rowspan
+        // attribute would be gone (serialize_table never emits span attrs).
+        assert!(
+            out.contains(r#"rowspan="2""#),
+            "nested table must stay untouched, spans included: {out}"
+        );
+    }
+
+    // ── header detection ─────────────────────────────────────────────────
+
+    #[test]
+    fn leading_all_th_rows_without_thead_wrapper_promoted_to_header() {
+        let html = r#"<table>
+            <tbody>
+                <tr><th>Name</th><th>Score</th></tr>
+                <tr><td>Alice</td><td>90</td></tr>
+                <tr><td>Bob</td><td>80</td></tr>
+            </tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let head: Vec<String> = doc
+            .select(&Selector::parse("thead th").unwrap())
+            .map(|c| c.inner_html())
+            .collect();
+        assert_eq!(head, vec!["Name", "Score"]);
+        let body_rows = doc.select(&Selector::parse("tbody tr").unwrap()).count();
+        assert_eq!(body_rows, 2);
+    }
+
+    #[test]
+    fn leading_all_th_two_header_rows_then_data() {
+        let html = r#"<table>
+            <tbody>
+                <tr><th>Region</th><th>2025</th></tr>
+                <tr><th></th><th>Total</th></tr>
+                <tr><td>EU</td><td>100</td></tr>
+            </tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let head: Vec<String> = doc
+            .select(&Selector::parse("thead th").unwrap())
+            .map(|c| c.inner_html())
+            .collect();
+        assert_eq!(head, vec!["Region", "2025 / Total"]);
+        let body_rows = doc.select(&Selector::parse("tbody tr").unwrap()).count();
+        assert_eq!(body_rows, 1);
+    }
+
+    #[test]
+    fn body_first_row_not_all_th_and_no_thead_leaves_table_untouched() {
+        let html = r#"<table>
+            <tbody>
+                <tr><td>Revenue</td><td>100</td></tr>
+                <tr><td>Costs</td><td>50</td></tr>
+            </tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn multi_row_thead_flattens_distinct_values_joined() {
+        let html = r#"<table>
+            <thead>
+                <tr><th>Metric</th></tr>
+                <tr><th>Per Day</th></tr>
+            </thead>
+            <tbody><tr><td>42</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        assert!(out.contains("Metric / Per Day"), "{out}");
+    }
+
+    #[test]
+    fn thead_with_an_empty_row_does_not_panic() {
+        let html = r#"<table>
+            <thead><tr></tr><tr><th>A</th></tr></thead>
+            <tbody><tr><td>1</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        assert!(out.contains("<table"));
+    }
+
+    #[test]
+    fn extract_cells_ignores_non_td_th_children() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><span>ignored</span><th>B</th></tr></thead>
+            <tbody><tr><td>1</td><td>2</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let head_count = doc.select(&Selector::parse("thead th").unwrap()).count();
+        assert_eq!(head_count, 2, "span must not become a header cell: {out}");
+        assert!(!out.contains("ignored"));
+    }
+
+    // ── ragged rows / empty cells ────────────────────────────────────────
+
+    #[test]
+    fn ragged_rows_of_three_different_lengths_all_padded_to_max_width() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th><th>C</th><th>D</th></tr></thead>
+            <tbody>
+                <tr><td>1</td></tr>
+                <tr><td>2</td><td>3</td></tr>
+                <tr><td>4</td><td>5</td><td>6</td><td>7</td></tr>
+            </tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let widths: Vec<usize> = doc
+            .select(&Selector::parse("tbody tr").unwrap())
+            .map(|tr| tr.select(&Selector::parse("td").unwrap()).count())
+            .collect();
+        assert_eq!(widths, vec![4, 4, 4]);
+    }
+
+    #[test]
+    fn empty_cell_is_kept_not_dropped() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody><tr><td></td><td>value</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let cells: Vec<usize> = doc
+            .select(&Selector::parse("tbody tr").unwrap())
+            .map(|tr| tr.select(&Selector::parse("td").unwrap()).count())
+            .collect();
+        assert_eq!(cells, vec![2], "empty first cell must still occupy a slot");
+    }
+
+    #[test]
+    fn all_cells_empty_row_count_preserved() {
+        let html = r#"<table>
+            <thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody>
+                <tr><td></td><td></td></tr>
+                <tr><td></td><td></td></tr>
+            </tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let rows = doc.select(&Selector::parse("tbody tr").unwrap()).count();
+        assert_eq!(rows, 2);
+    }
+
+    // ── layout tables ────────────────────────────────────────────────────
+
+    #[test]
+    fn layout_table_without_any_th_untouched() {
+        let html = r#"<table>
+            <tr><td><img src="logo.png"></td><td><img src="banner.png"></td></tr>
+            <tr><td>Newsletter content here</td><td>&nbsp;</td></tr>
+        </table>"#;
+        let out = normalize_tables(html);
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn single_cell_table_untouched() {
+        let html = "<table><tr><td>Just one cell</td></tr></table>";
+        let out = normalize_tables(html);
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn table_with_only_caption_and_no_rows_untouched() {
+        let html = "<table><caption>Empty</caption></table>";
+        let out = normalize_tables(html);
+        assert_eq!(out, html);
+    }
+
+    // ── malformed / truncated / unicode ──────────────────────────────────
+
+    #[test]
+    fn malformed_unclosed_tr_and_td_tags_do_not_panic() {
+        let html = r#"<table>
+            <thead><tr><th>A<th>B</thead>
+            <tbody><tr><td>1<td>2
+            <tr><td>3
+        </table>"#;
+        let out = normalize_tables(html);
+        assert!(out.contains('1'));
+    }
+
+    #[test]
+    fn truncated_html_mid_table_does_not_panic() {
+        let html = r#"<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>val"#;
+        let _ = normalize_tables(html);
+    }
+
+    #[test]
+    fn unicode_and_rtl_text_in_cells_survives_normalization() {
+        let html = r#"<table>
+            <thead><tr><th>Name</th><th>Value</th></tr></thead>
+            <tbody><tr><td>مرحبا</td><td>日本語 emoji 🎉</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        assert!(out.contains("مرحبا"));
+        assert!(out.contains("日本語"));
+        assert!(out.contains("🎉"));
+    }
+
+    // ── size ceilings ────────────────────────────────────────────────────
+
+    #[test]
+    fn cell_html_over_max_cell_html_bails_out_whole_table() {
+        let huge_cell = "x".repeat(MAX_CELL_HTML + 10);
+        let html = format!(
+            r#"<table><thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody><tr><td>{huge_cell}</td><td>ok</td></tr></tbody></table>"#
+        );
+        let out = normalize_tables(&html);
+        assert_eq!(out, html, "oversized cell must bail the whole table out");
+    }
+
+    #[test]
+    fn wide_table_well_under_cell_ceiling_processes_normally() {
+        let mut html = String::from("<table><thead><tr>");
+        for i in 0..20 {
+            html.push_str(&format!("<th>h{i}</th>"));
+        }
+        html.push_str("</tr></thead><tbody>");
+        for r in 0..200 {
+            html.push_str("<tr>");
+            for c in 0..20 {
+                html.push_str(&format!("<td>{r}-{c}</td>"));
+            }
+            html.push_str("</tr>");
+        }
+        html.push_str("</tbody></table>");
+        let out = normalize_tables(&html);
+        assert!(out.contains("199-19"));
+        assert!(out.contains("0-0"));
+    }
+
+    // ── document-level splice correctness ───────────────────────────────
+
+    #[test]
+    fn normalize_tables_returns_input_unchanged_when_no_tables_present() {
+        let html = "<div><p>no tables here</p></div>";
+        let out = normalize_tables(html);
+        assert_eq!(out, html);
+    }
+
+    #[test]
+    fn normalize_tables_leaves_surrounding_prose_untouched() {
+        let html = r#"<p>BEFORE_MARKER</p>
+        <table><thead><tr><th>A</th></tr></thead>
+        <tbody><tr><td rowspan="2">x</td></tr><tr></tr></tbody></table>
+        <p>AFTER_MARKER</p>"#;
+        let out = normalize_tables(html);
+        assert!(out.contains("BEFORE_MARKER"));
+        assert!(out.contains("AFTER_MARKER"));
+    }
+
+    #[test]
+    fn two_top_level_tables_only_the_data_table_is_rewritten() {
+        let html = r#"<table role="presentation"><tr><td>Layout only</td></tr></table>
+        <table>
+            <thead><tr><th>A</th><th>B</th></tr></thead>
+            <tbody><tr><td rowspan="2">Spans</td><td>x</td></tr><tr><td>y</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        let doc = Html::parse_document(&out);
+        let tables: Vec<_> = doc.select(&Selector::parse("table").unwrap()).collect();
+        assert_eq!(tables.len(), 2);
+        assert!(tables[0].html().contains("Layout only"));
+        assert!(!tables[0].html().contains("<thead>"));
+
+        let rows: Vec<Vec<String>> = tables[1]
+            .select(&Selector::parse("tbody tr").unwrap())
+            .map(|tr| {
+                tr.select(&Selector::parse("td").unwrap())
+                    .map(|c| c.inner_html())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rows[0], vec!["Spans", "x"]);
+        assert_eq!(rows[1], vec!["Spans", "y"]);
+    }
+
+    #[test]
+    fn caption_multi_row_header_and_colspan_combined() {
+        let html = r#"<table>
+            <caption>Sales Report</caption>
+            <thead>
+                <tr><th colspan="2">Q1</th><th colspan="2">Q2</th></tr>
+                <tr><th>Jan</th><th>Feb</th><th>Mar</th><th>Apr</th></tr>
+            </thead>
+            <tbody><tr><td>10</td><td>20</td><td>30</td><td>40</td></tr></tbody>
+        </table>"#;
+        let out = normalize_tables(html);
+        assert!(out.contains("Sales Report"));
+        assert!(out.contains("Q1 / Jan"));
+        assert!(out.contains("Q2 / Apr"));
+        let doc = Html::parse_document(&out);
+        let body_cells: Vec<String> = doc
+            .select(&Selector::parse("tbody td").unwrap())
+            .map(|c| c.inner_html())
+            .collect();
+        assert_eq!(body_cells, vec!["10", "20", "30", "40"]);
+    }
+
+    // ── markdown table cell escaping ─────────────────────────────────────
+
+    #[test]
+    fn markdown_table_cell_with_pipe_character_does_not_break_columns() {
+        let html = r#"<table>
+            <thead><tr><th>Name</th><th>Formula</th></tr></thead>
+            <tbody><tr><td>Pipe</td><td>a|b</td></tr></tbody>
+        </table>"#;
+        let md = crate::markdown::html_to_markdown_with(html, true);
+        // The header row must still show exactly two declared columns
+        // (three delimiter pipes: leading, middle, trailing) — an unescaped
+        // pipe inside a data cell would otherwise be indistinguishable from
+        // a real column delimiter.
+        let header_line = md
+            .lines()
+            .find(|l| l.contains("Name"))
+            .expect("header row missing in markdown output");
+        assert_eq!(header_line.matches('|').count(), 3, "{md}");
+        // The converter neutralises the pipe as the HTML entity `&#124;` rather
+        // than a backslash escape. Either form keeps the column count honest.
+        assert!(
+            md.contains("a&#124;b") || md.contains("a\\|b"),
+            "cell pipe was neither entity-encoded nor backslash-escaped: {md}"
+        );
+    }
+
+    // ── private helper: parse_span ───────────────────────────────────────
+
+    #[test]
+    fn parse_span_valid_number() {
+        assert_eq!(parse_span(Some("3")), 3);
+    }
+
+    #[test]
+    fn parse_span_none_defaults_to_one() {
+        assert_eq!(parse_span(None), 1);
+    }
+
+    #[test]
+    fn parse_span_zero_defaults_to_one() {
+        assert_eq!(parse_span(Some("0")), 1);
+    }
+
+    #[test]
+    fn parse_span_negative_defaults_to_one() {
+        assert_eq!(parse_span(Some("-5")), 1);
+    }
+
+    #[test]
+    fn parse_span_decimal_defaults_to_one() {
+        assert_eq!(parse_span(Some("1.5")), 1);
+    }
+
+    #[test]
+    fn parse_span_non_numeric_defaults_to_one() {
+        assert_eq!(parse_span(Some("abc")), 1);
+    }
+
+    #[test]
+    fn parse_span_overflow_defaults_to_one() {
+        assert_eq!(parse_span(Some("999999999999999999999999999")), 1);
+    }
+
+    #[test]
+    fn parse_span_exactly_max_span_kept() {
+        assert_eq!(parse_span(Some("1000")), 1000);
+    }
+
+    #[test]
+    fn parse_span_above_max_span_clamped() {
+        assert_eq!(parse_span(Some("5000")), 1000);
+    }
+
+    #[test]
+    fn parse_span_trims_whitespace() {
+        assert_eq!(parse_span(Some("  4  ")), 4);
+    }
+
+    // ── private helper: is_nested ────────────────────────────────────────
+
+    #[test]
+    fn is_nested_true_for_table_inside_table() {
+        let html = "<table><tr><td><table><tr><td>inner</td></tr></table></td></tr></table>";
+        let doc = Html::parse_document(html);
+        let tables: Vec<_> = doc.select(&Selector::parse("table").unwrap()).collect();
+        assert_eq!(tables.len(), 2);
+        assert!(!is_nested(tables[0]));
+        assert!(is_nested(tables[1]));
+    }
+
+    #[test]
+    fn is_nested_true_at_two_levels_deep() {
+        let html = "<table><tr><td><table><tr><td><table><tr><td>x</td></tr></table></td></tr></table></td></tr></table>";
+        let doc = Html::parse_document(html);
+        let tables: Vec<_> = doc.select(&Selector::parse("table").unwrap()).collect();
+        assert_eq!(tables.len(), 3);
+        assert!(!is_nested(tables[0]));
+        assert!(is_nested(tables[1]));
+        assert!(is_nested(tables[2]));
+    }
+
+    // ── private helper: flatten_header_rows ─────────────────────────────
+
+    #[test]
+    fn flatten_header_rows_single_row_returned_as_is() {
+        let rows = vec![vec![
+            GridCell {
+                html: "A".into(),
+                is_th: true,
+            },
+            GridCell {
+                html: "B".into(),
+                is_th: true,
+            },
+        ]];
+        let out = flatten_header_rows(&rows);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].html, "A");
+    }
+
+    #[test]
+    fn flatten_header_rows_empty_input_returns_empty() {
+        let rows: Vec<Vec<GridCell>> = vec![];
+        assert!(flatten_header_rows(&rows).is_empty());
+    }
+
+    #[test]
+    fn flatten_header_rows_joins_distinct_values_across_rows() {
+        let rows = vec![
+            vec![GridCell {
+                html: "Group".into(),
+                is_th: true,
+            }],
+            vec![GridCell {
+                html: "Sub".into(),
+                is_th: true,
+            }],
+        ];
+        let out = flatten_header_rows(&rows);
+        assert_eq!(out[0].html, "Group / Sub");
+    }
+
+    #[test]
+    fn flatten_header_rows_dedupes_consecutive_identical_values() {
+        let rows = vec![
+            vec![GridCell {
+                html: "Same".into(),
+                is_th: true,
+            }],
+            vec![GridCell {
+                html: "Same".into(),
+                is_th: true,
+            }],
+        ];
+        let out = flatten_header_rows(&rows);
+        assert_eq!(out[0].html, "Same");
+    }
+
+    // ── private helper: pad_rows_to ─────────────────────────────────────
+
+    #[test]
+    fn pad_rows_to_appends_empty_cells_to_short_rows() {
+        let mut grid = vec![
+            vec![GridCell {
+                html: "a".into(),
+                is_th: false,
+            }],
+            vec![
+                GridCell {
+                    html: "b".into(),
+                    is_th: false,
+                },
+                GridCell {
+                    html: "c".into(),
+                    is_th: false,
+                },
+            ],
+        ];
+        pad_rows_to(&mut grid, 2);
+        assert_eq!(grid[0].len(), 2);
+        assert_eq!(grid[0][1].html, "");
+        assert_eq!(grid[1].len(), 2);
+    }
+
+    // ── private helper: leading_all_th_rows ─────────────────────────────
+
+    #[test]
+    fn leading_all_th_rows_promotes_contiguous_th_rows() {
+        let grid = vec![
+            vec![GridCell {
+                html: "H1".into(),
+                is_th: true,
+            }],
+            vec![GridCell {
+                html: "d1".into(),
+                is_th: false,
+            }],
+        ];
+        let (header, body) = leading_all_th_rows(&grid).expect("expected promotion");
+        assert_eq!(header[0].html, "H1");
+        assert_eq!(body.len(), 1);
+    }
+
+    #[test]
+    fn leading_all_th_rows_returns_none_when_first_row_not_all_th() {
+        let grid = vec![vec![GridCell {
+            html: "d".into(),
+            is_th: false,
+        }]];
+        assert!(leading_all_th_rows(&grid).is_none());
+    }
+
+    #[test]
+    fn leading_all_th_rows_returns_none_when_grid_empty() {
+        let grid: Vec<Vec<GridCell>> = vec![];
+        assert!(leading_all_th_rows(&grid).is_none());
+    }
+
+    // ── private helper: cell_inner_html ──────────────────────────────────
+
+    #[test]
+    fn cell_inner_html_returns_raw_when_no_markers() {
+        let doc = Html::parse_document("<table><tr><td>plain text</td></tr></table>");
+        let cell = doc.select(&Selector::parse("td").unwrap()).next().unwrap();
+        assert_eq!(cell_inner_html(cell), "plain text");
+    }
+
+    #[test]
+    fn cell_inner_html_strips_style_tag() {
+        let doc = Html::parse_document(
+            "<table><tr><td>real<style>.x{color:red}</style></td></tr></table>",
+        );
+        let cell = doc.select(&Selector::parse("td").unwrap()).next().unwrap();
+        let out = cell_inner_html(cell);
+        assert!(out.contains("real"));
+        assert!(!out.contains("<style"));
+    }
+
+    #[test]
+    fn cell_inner_html_strips_html_comment() {
+        let doc = Html::parse_document("<table><tr><td>real<!-- comment --></td></tr></table>");
+        let cell = doc.select(&Selector::parse("td").unwrap()).next().unwrap();
+        let out = cell_inner_html(cell);
+        assert!(out.contains("real"));
+        assert!(!out.contains("comment"));
+    }
+
+    // ── private helper: expand_grid ──────────────────────────────────────
+
+    fn raw_cell(text: &str) -> RawCell {
+        RawCell {
+            html: text.to_string(),
+            is_th: false,
+            rowspan: 1,
+            colspan: 1,
+        }
+    }
+
+    #[test]
+    fn expand_grid_returns_none_over_max_grid_cells_threshold() {
+        let row: Vec<RawCell> = (0..200).map(|i| raw_cell(&format!("c{i}"))).collect();
+        let rows: Vec<Vec<RawCell>> = (0..300).map(|_| row.clone()).collect();
+        assert!(expand_grid(&rows, 0).is_none());
+    }
+
+    #[test]
+    fn expand_grid_stays_some_under_max_grid_cells_threshold() {
+        let row: Vec<RawCell> = (0..10).map(|i| raw_cell(&format!("c{i}"))).collect();
+        let rows: Vec<Vec<RawCell>> = (0..10).map(|_| row.clone()).collect();
+        let grid = expand_grid(&rows, 0).expect("should stay under the cap");
+        assert_eq!(grid.len(), 10);
+        assert_eq!(grid[0].len(), 10);
+    }
 }

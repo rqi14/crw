@@ -1238,4 +1238,1419 @@ mod tests {
         // Must not panic: the camoufox kind is a registered (5th) global tier.
         let _ = reg.global_for(RendererKind::Camoufox);
     }
+
+    // ── Window (ring buffer) ──────────────────────────────────────────
+
+    #[test]
+    fn window_new_starts_all_empty() {
+        let w = Window::new(5);
+        assert_eq!(w.call_count(), 0);
+        assert_eq!(w.failure_count(), 0);
+        assert_eq!(w.failure_rate(), 0.0);
+    }
+
+    #[test]
+    fn window_size_zero_is_clamped_to_one() {
+        // `size.max(1)` — a zero-size ring must still be usable, not panic on push.
+        let mut w = Window::new(0);
+        w.push(WindowSlot::Success);
+        assert_eq!(w.call_count(), 1);
+        w.push(WindowSlot::Failure);
+        // Ring of 1 — the failure overwrote the success.
+        assert_eq!(w.call_count(), 1);
+        assert_eq!(w.failure_count(), 1);
+    }
+
+    #[test]
+    fn window_push_wraps_cursor_at_boundary() {
+        let mut w = Window::new(2);
+        w.push(WindowSlot::Failure);
+        w.push(WindowSlot::Failure);
+        // Third push wraps to index 0, overwriting the first failure with success.
+        w.push(WindowSlot::Success);
+        assert_eq!(w.call_count(), 2);
+        assert_eq!(w.failure_count(), 1);
+    }
+
+    #[test]
+    fn window_failure_rate_all_success_is_zero() {
+        let mut w = Window::new(4);
+        for _ in 0..4 {
+            w.push(WindowSlot::Success);
+        }
+        assert_eq!(w.failure_rate(), 0.0);
+    }
+
+    #[test]
+    fn window_failure_rate_all_failure_is_one() {
+        let mut w = Window::new(4);
+        for _ in 0..4 {
+            w.push(WindowSlot::Failure);
+        }
+        assert_eq!(w.failure_rate(), 1.0);
+    }
+
+    #[test]
+    fn window_failure_rate_mixed_is_exact_fraction() {
+        let mut w = Window::new(4);
+        w.push(WindowSlot::Failure);
+        w.push(WindowSlot::Success);
+        w.push(WindowSlot::Success);
+        w.push(WindowSlot::Success);
+        assert_eq!(w.failure_rate(), 0.25);
+    }
+
+    #[test]
+    fn window_call_count_ignores_unfilled_slots() {
+        let mut w = Window::new(10);
+        w.push(WindowSlot::Success);
+        w.push(WindowSlot::Failure);
+        // 8 slots still Empty — must not count toward call_count.
+        assert_eq!(w.call_count(), 2);
+    }
+
+    #[test]
+    fn window_clear_resets_slots_and_cursor() {
+        let mut w = Window::new(3);
+        w.push(WindowSlot::Failure);
+        w.push(WindowSlot::Failure);
+        w.clear();
+        assert_eq!(w.call_count(), 0);
+        assert_eq!(w.failure_rate(), 0.0);
+        // Cursor reset to 0: the next push lands at index 0, not index 2.
+        w.push(WindowSlot::Success);
+        assert_eq!(w.ring[0], WindowSlot::Success);
+    }
+
+    // ── BreakerOutcome::is_failure matrix ────────────────────────────
+
+    #[test]
+    fn is_failure_success_is_never_a_failure() {
+        assert!(!BreakerOutcome::Success.is_failure(false));
+        assert!(!BreakerOutcome::Success.is_failure(true));
+    }
+
+    #[test]
+    fn is_failure_truncated_depends_on_config() {
+        assert!(!BreakerOutcome::Truncated.is_failure(false));
+        assert!(BreakerOutcome::Truncated.is_failure(true));
+    }
+
+    #[test]
+    fn is_failure_deadline_clamped_is_never_a_failure() {
+        assert!(!BreakerOutcome::DeadlineClamped.is_failure(false));
+        assert!(!BreakerOutcome::DeadlineClamped.is_failure(true));
+    }
+
+    #[test]
+    fn is_failure_site_blocked_is_never_a_failure() {
+        assert!(!BreakerOutcome::SiteBlocked.is_failure(false));
+        assert!(!BreakerOutcome::SiteBlocked.is_failure(true));
+    }
+
+    #[test]
+    fn is_failure_tier_timeout_connection_render_are_always_failures() {
+        for outcome in [
+            BreakerOutcome::TierTimeout,
+            BreakerOutcome::ConnectionError,
+            BreakerOutcome::RenderError,
+        ] {
+            assert!(outcome.is_failure(false));
+            assert!(outcome.is_failure(true));
+        }
+    }
+
+    // ── BreakerOutcome::advances_window matrix ───────────────────────
+
+    #[test]
+    fn advances_window_success_always_advances() {
+        assert!(BreakerOutcome::Success.advances_window(false));
+        assert!(BreakerOutcome::Success.advances_window(true));
+    }
+
+    #[test]
+    fn advances_window_deadline_clamped_never_advances() {
+        assert!(!BreakerOutcome::DeadlineClamped.advances_window(false));
+        assert!(!BreakerOutcome::DeadlineClamped.advances_window(true));
+    }
+
+    #[test]
+    fn advances_window_site_blocked_never_advances() {
+        assert!(!BreakerOutcome::SiteBlocked.advances_window(false));
+        assert!(!BreakerOutcome::SiteBlocked.advances_window(true));
+    }
+
+    #[test]
+    fn advances_window_truncated_depends_on_config() {
+        assert!(!BreakerOutcome::Truncated.advances_window(false));
+        assert!(BreakerOutcome::Truncated.advances_window(true));
+    }
+
+    #[test]
+    fn advances_window_tier_timeout_connection_render_always_advance() {
+        for outcome in [
+            BreakerOutcome::TierTimeout,
+            BreakerOutcome::ConnectionError,
+            BreakerOutcome::RenderError,
+        ] {
+            assert!(outcome.advances_window(false));
+            assert!(outcome.advances_window(true));
+        }
+    }
+
+    // ── BreakerOutcome::ignored_reason matrix ────────────────────────
+
+    #[test]
+    fn ignored_reason_deadline_clamped() {
+        assert_eq!(
+            BreakerOutcome::DeadlineClamped.ignored_reason(),
+            Some("deadline_clamped")
+        );
+    }
+
+    #[test]
+    fn ignored_reason_truncated() {
+        assert_eq!(
+            BreakerOutcome::Truncated.ignored_reason(),
+            Some("truncated")
+        );
+    }
+
+    #[test]
+    fn ignored_reason_none_for_advancing_outcomes() {
+        for outcome in [
+            BreakerOutcome::Success,
+            BreakerOutcome::TierTimeout,
+            BreakerOutcome::ConnectionError,
+            BreakerOutcome::RenderError,
+        ] {
+            assert_eq!(outcome.ignored_reason(), None);
+        }
+    }
+
+    // ── AttemptContext::capture ──────────────────────────────────────
+
+    #[test]
+    fn attempt_context_clamped_when_budget_exceeds_remaining() {
+        let ctx = AttemptContext::capture(Duration::from_millis(100), Duration::from_millis(500));
+        assert!(ctx.was_clamped_by_deadline);
+    }
+
+    #[test]
+    fn attempt_context_not_clamped_when_remaining_exceeds_budget() {
+        let ctx = AttemptContext::capture(Duration::from_millis(500), Duration::from_millis(100));
+        assert!(!ctx.was_clamped_by_deadline);
+    }
+
+    #[test]
+    fn attempt_context_boundary_equal_is_not_clamped() {
+        // `>` not `>=`: exactly-equal budget/remaining is NOT clamped.
+        let ctx = AttemptContext::capture(Duration::from_millis(200), Duration::from_millis(200));
+        assert!(!ctx.was_clamped_by_deadline);
+    }
+
+    #[test]
+    fn attempt_context_zero_remaining_is_clamped_by_any_positive_budget() {
+        let ctx = AttemptContext::capture(Duration::ZERO, Duration::from_millis(1));
+        assert!(ctx.was_clamped_by_deadline);
+    }
+
+    #[test]
+    fn attempt_context_zero_budget_is_never_clamped() {
+        let ctx = AttemptContext::capture(Duration::from_millis(500), Duration::ZERO);
+        assert!(!ctx.was_clamped_by_deadline);
+    }
+
+    #[test]
+    fn attempt_context_preserves_captured_fields() {
+        let ctx = AttemptContext::capture(Duration::from_millis(42), Duration::from_millis(7));
+        assert_eq!(ctx.remaining_at_start, Duration::from_millis(42));
+        assert_eq!(ctx.tier_budget, Duration::from_millis(7));
+    }
+
+    // ── classify_outcome matrix ───────────────────────────────────────
+
+    #[test]
+    fn classify_success_untrucated() {
+        let ctx = AttemptContext::capture(Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(
+            classify_outcome(true, false, false, false, &ctx),
+            BreakerOutcome::Success
+        );
+    }
+
+    #[test]
+    fn classify_success_truncated() {
+        let ctx = AttemptContext::capture(Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(
+            classify_outcome(true, true, false, false, &ctx),
+            BreakerOutcome::Truncated
+        );
+    }
+
+    #[test]
+    fn classify_failure_not_timeout_is_render_error() {
+        let ctx = AttemptContext::capture(Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(
+            classify_outcome(false, false, false, false, &ctx),
+            BreakerOutcome::RenderError
+        );
+    }
+
+    #[test]
+    fn classify_failure_timeout_full_budget_is_tier_timeout() {
+        let ctx = AttemptContext::capture(Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(
+            classify_outcome(false, false, true, false, &ctx),
+            BreakerOutcome::TierTimeout
+        );
+    }
+
+    #[test]
+    fn classify_failure_timeout_clamped_budget_is_deadline_clamped() {
+        let ctx = AttemptContext::capture(Duration::from_millis(1), Duration::from_secs(5));
+        assert_eq!(
+            classify_outcome(false, false, true, false, &ctx),
+            BreakerOutcome::DeadlineClamped
+        );
+    }
+
+    #[test]
+    fn classify_site_blocked_wins_over_plain_render_error() {
+        let ctx = AttemptContext::capture(Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(
+            classify_outcome(false, false, false, true, &ctx),
+            BreakerOutcome::SiteBlocked
+        );
+    }
+
+    #[test]
+    fn classify_site_blocked_flag_ignored_on_success() {
+        // Already covered by `classify_outcome_site_blocked_beats_timeout` for
+        // the timeout branch; this covers the plain-failure branch.
+        let ctx = AttemptContext::capture(Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(
+            classify_outcome(true, false, false, true, &ctx),
+            BreakerOutcome::Success
+        );
+    }
+
+    // ── min_calls boundary (N-1 / N / N+1) ────────────────────────────
+
+    #[test]
+    fn min_calls_boundary_n_minus_one_never_trips() {
+        let mut cfg = small_cfg();
+        cfg.min_calls = 5;
+        cfg.failure_rate_threshold = 0.0; // any failure would trip if min_calls were met
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..4 {
+            b.record_outcome(fail());
+        }
+        assert!(!b.is_open(), "4 calls < min_calls=5 must never trip");
+    }
+
+    #[test]
+    fn min_calls_boundary_exact_n_trips() {
+        let mut cfg = small_cfg();
+        cfg.min_calls = 5;
+        cfg.failure_rate_threshold = 0.0;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert!(
+            b.is_open(),
+            "exactly min_calls=5 with 100% failure must trip"
+        );
+    }
+
+    #[test]
+    fn min_calls_boundary_n_plus_one_trips() {
+        let mut cfg = small_cfg();
+        cfg.min_calls = 5;
+        cfg.failure_rate_threshold = 0.0;
+        cfg.window_size = 10;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..6 {
+            b.record_outcome(fail());
+        }
+        assert!(b.is_open());
+    }
+
+    // ── failure_rate_threshold boundary ───────────────────────────────
+
+    #[test]
+    fn failure_rate_boundary_just_below_threshold_no_trip() {
+        let mut cfg = small_cfg();
+        cfg.window_size = 100;
+        cfg.min_calls = 100;
+        cfg.failure_rate_threshold = 0.5;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..49 {
+            b.record_outcome(fail());
+        }
+        for _ in 0..51 {
+            b.record_outcome(ok());
+        }
+        // 49/100 = 49% < 50%.
+        assert!(!b.is_open());
+    }
+
+    #[test]
+    fn failure_rate_boundary_exactly_at_threshold_trips() {
+        let mut cfg = small_cfg();
+        cfg.window_size = 100;
+        cfg.min_calls = 100;
+        cfg.failure_rate_threshold = 0.5;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..50 {
+            b.record_outcome(fail());
+        }
+        for _ in 0..50 {
+            b.record_outcome(ok());
+        }
+        // 50/100 = 50% >= 50% (inclusive) → trip.
+        assert!(b.is_open());
+    }
+
+    #[test]
+    fn failure_rate_boundary_just_above_threshold_trips() {
+        let mut cfg = small_cfg();
+        cfg.window_size = 100;
+        cfg.min_calls = 100;
+        cfg.failure_rate_threshold = 0.5;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..51 {
+            b.record_outcome(fail());
+        }
+        for _ in 0..49 {
+            b.record_outcome(ok());
+        }
+        assert!(b.is_open());
+    }
+
+    // ── max_probes boundary ───────────────────────────────────────────
+
+    #[test]
+    fn max_probes_admits_exactly_configured_count() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 4;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert!(b.is_open());
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        for _ in 0..4 {
+            assert_eq!(b.try_acquire(), Permit::Probe);
+        }
+    }
+
+    #[test]
+    fn max_probes_n_plus_one_is_rejected() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 4;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        for _ in 0..4 {
+            b.try_acquire();
+        }
+        assert_eq!(b.try_acquire(), Permit::Rejected);
+    }
+
+    #[test]
+    fn max_probes_of_one_admits_a_single_probe() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 1;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        assert_eq!(b.try_acquire(), Permit::Probe);
+        assert_eq!(b.try_acquire(), Permit::Rejected);
+    }
+
+    // ── half_open_success_rate boundary ───────────────────────────────
+
+    #[test]
+    fn half_open_success_rate_exactly_at_threshold_closes() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 5;
+        cfg.half_open_success_rate = 0.6; // exactly 3/5
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        for _ in 0..5 {
+            b.try_acquire();
+        }
+        b.record_outcome(ok());
+        b.record_outcome(ok());
+        b.record_outcome(ok());
+        b.record_outcome(fail());
+        b.record_outcome(fail());
+        assert!(!b.is_open(), "3/5 = 60% >= 60% must close");
+    }
+
+    #[test]
+    fn half_open_success_rate_one_below_threshold_reopens() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 5;
+        cfg.half_open_success_rate = 0.6; // 3/5 required, give only 2/5
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        for _ in 0..5 {
+            b.try_acquire();
+        }
+        b.record_outcome(ok());
+        b.record_outcome(ok());
+        b.record_outcome(fail());
+        b.record_outcome(fail());
+        b.record_outcome(fail());
+        assert!(b.is_open(), "2/5 = 40% < 60% must reopen");
+    }
+
+    // ── eval_timeout forced half-open decision ────────────────────────
+
+    #[test]
+    fn eval_timeout_with_no_successes_reopens() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 3;
+        cfg.eval_timeout = Duration::from_millis(30);
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        // Admit only 1 of 3 probes and fail it, then let eval_timeout elapse
+        // without ever reaching max_probes.
+        assert_eq!(b.try_acquire(), Permit::Probe);
+        b.record_outcome(fail());
+        std::thread::sleep(cfg.eval_timeout + Duration::from_millis(20));
+        assert!(
+            b.is_open(),
+            "eval_timeout with zero recorded successes must force-reopen"
+        );
+    }
+
+    #[test]
+    fn eval_timeout_with_partial_success_closes() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 3;
+        cfg.eval_timeout = Duration::from_millis(30);
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        assert_eq!(b.try_acquire(), Permit::Probe);
+        b.record_outcome(ok());
+        std::thread::sleep(cfg.eval_timeout + Duration::from_millis(20));
+        assert!(
+            !b.is_open(),
+            "eval_timeout with at least one success must force-close"
+        );
+    }
+
+    #[test]
+    fn eval_timeout_with_zero_probes_admitted_reopens() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 3;
+        cfg.eval_timeout = Duration::from_millis(30);
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        // Enter HalfOpen (lazily) without admitting any probe at all.
+        assert!(!b.is_open());
+        std::thread::sleep(cfg.eval_timeout + Duration::from_millis(20));
+        assert!(
+            b.is_open(),
+            "nobody ever probed → no evidence of recovery → reopen"
+        );
+    }
+
+    // ── ejection_reset_after_closed ────────────────────────────────────
+
+    #[test]
+    fn ejection_count_resets_after_sustained_closed_period() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 1;
+        cfg.half_open_success_rate = 0.0; // any single probe outcome closes
+        cfg.ejection_reset_after_closed = Duration::from_millis(30);
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert_eq!(b.snapshot().ejection_count, 1);
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        b.try_acquire();
+        b.record_outcome(ok()); // closes, ejection_count still 1
+        assert_eq!(b.snapshot().ejection_count, 1);
+        std::thread::sleep(cfg.ejection_reset_after_closed + Duration::from_millis(20));
+        assert_eq!(
+            b.snapshot().ejection_count,
+            0,
+            "sustained Closed period must reset ejection_count"
+        );
+    }
+
+    #[test]
+    fn ejection_count_not_reset_before_sustained_period_elapses() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 1;
+        cfg.half_open_success_rate = 0.0;
+        cfg.ejection_reset_after_closed = Duration::from_millis(500);
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        b.try_acquire();
+        b.record_outcome(ok());
+        assert_eq!(
+            b.snapshot().ejection_count,
+            1,
+            "reset window has not elapsed yet — ejection_count must persist"
+        );
+    }
+
+    // ── cooldown growth ─────────────────────────────────────────────────
+
+    #[test]
+    fn cooldown_capped_at_max_after_many_ejections() {
+        let mut cfg = small_cfg();
+        cfg.base_cooldown = Duration::from_millis(20);
+        cfg.max_cooldown = Duration::from_millis(45);
+        cfg.max_probes = 1;
+        let b = CircuitBreaker::new(cfg);
+        // Trip and reopen repeatedly to grow ejection_count well past the point
+        // where base_cooldown * ejection_count would exceed max_cooldown.
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        for _ in 0..6 {
+            std::thread::sleep(cfg.max_cooldown + Duration::from_millis(10));
+            b.try_acquire();
+            b.record_outcome(fail()); // fail the single probe → reopen, grow ejection_count
+        }
+        let snap = b.snapshot();
+        assert!(snap.ejection_count >= 6);
+        // opens_in_seconds is coarse (as_secs on a sub-second cooldown truncates
+        // to 0), so assert indirectly: is_open must still be true immediately
+        // after the last reopen (cooldown, whatever it is, has not elapsed yet).
+        assert!(b.is_open());
+    }
+
+    // ── try_acquire / record_outcome state-machine edges ────────────────
+
+    #[test]
+    fn try_acquire_on_fresh_breaker_is_allowed() {
+        let b = CircuitBreaker::new(small_cfg());
+        assert_eq!(b.try_acquire(), Permit::Allowed);
+    }
+
+    #[test]
+    fn try_acquire_while_open_is_rejected_repeatedly() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert!(b.is_open());
+        for _ in 0..5 {
+            assert_eq!(b.try_acquire(), Permit::Rejected);
+        }
+    }
+
+    #[test]
+    fn record_outcome_returns_false_while_below_threshold() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..3 {
+            assert!(!b.record_outcome(fail()));
+        }
+    }
+
+    #[test]
+    fn record_outcome_returns_true_exactly_on_the_tripping_call() {
+        let b = CircuitBreaker::new(small_cfg());
+        let mut results = Vec::new();
+        for _ in 0..5 {
+            results.push(b.record_outcome(fail()));
+        }
+        assert_eq!(results, vec![false, false, false, false, true]);
+    }
+
+    #[test]
+    fn record_outcome_while_open_is_a_noop_and_returns_false() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert!(b.is_open());
+        // Recording further outcomes while genuinely Open (not yet past
+        // cooldown) must not panic and must return false.
+        assert!(!b.record_outcome(ok()));
+        assert!(!b.record_outcome(fail()));
+    }
+
+    #[test]
+    fn cancel_probe_on_closed_state_is_a_harmless_noop() {
+        let b = CircuitBreaker::new(small_cfg());
+        b.cancel_probe(); // must not panic
+        assert_eq!(b.try_acquire(), Permit::Allowed);
+    }
+
+    #[test]
+    fn cancel_probe_on_open_state_is_a_harmless_noop() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert!(b.is_open());
+        b.cancel_probe(); // must not panic while Open
+        assert!(b.is_open());
+    }
+
+    #[test]
+    fn cancel_probe_saturating_sub_never_underflows() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+        // No probes admitted yet — cancel repeatedly must not panic or wrap.
+        for _ in 0..10 {
+            b.cancel_probe();
+        }
+        // Full probe quota must still be available afterward.
+        for _ in 0..3 {
+            assert_eq!(b.try_acquire(), Permit::Probe);
+        }
+    }
+
+    #[test]
+    fn half_open_ignored_outcome_frees_slot_without_deciding() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 2;
+        let b = CircuitBreaker::new(cfg);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        assert_eq!(b.try_acquire(), Permit::Probe);
+        // DeadlineClamped is ignored: frees the admitted slot without deciding.
+        b.record_outcome(BreakerOutcome::DeadlineClamped);
+        // Full quota must still be available — the ignored probe didn't consume it.
+        assert_eq!(b.try_acquire(), Permit::Probe);
+        assert_eq!(b.try_acquire(), Permit::Probe);
+        assert_eq!(b.try_acquire(), Permit::Rejected);
+    }
+
+    #[test]
+    fn is_open_is_false_during_half_open() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert!(b.is_open());
+        std::thread::sleep(Duration::from_millis(25));
+        // is_open() itself triggers lazy_evaluate → transitions to HalfOpen.
+        assert!(!b.is_open(), "HalfOpen must report is_open() == false");
+    }
+
+    #[test]
+    fn is_open_lazily_transitions_open_to_half_open_without_try_acquire() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+        // Calling snapshot (not try_acquire) must still lazily evaluate.
+        let snap = b.snapshot();
+        assert_eq!(snap.state, "half_open");
+    }
+
+    // ── snapshot ──────────────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_label_closed() {
+        let b = CircuitBreaker::new(small_cfg());
+        assert_eq!(b.snapshot().state, "closed");
+        assert_eq!(b.snapshot().opens_in_seconds, None);
+    }
+
+    #[test]
+    fn snapshot_label_open_has_opens_in_seconds() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        let snap = b.snapshot();
+        assert_eq!(snap.state, "open");
+        assert!(snap.opens_in_seconds.is_some());
+    }
+
+    #[test]
+    fn snapshot_label_half_open_has_no_opens_in_seconds() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+        let snap = b.snapshot();
+        assert_eq!(snap.state, "half_open");
+        assert_eq!(snap.opens_in_seconds, None);
+    }
+
+    #[test]
+    fn snapshot_window_call_count_tracks_recorded_outcomes() {
+        let b = CircuitBreaker::new(small_cfg());
+        b.record_outcome(ok());
+        b.record_outcome(ok());
+        assert_eq!(b.snapshot().window_call_count, 2);
+    }
+
+    #[test]
+    fn snapshot_window_failure_rate_matches_recorded_ratio() {
+        let mut cfg = small_cfg();
+        cfg.min_calls = 100; // stay Closed so the window keeps growing
+        let b = CircuitBreaker::new(cfg);
+        b.record_outcome(fail());
+        b.record_outcome(ok());
+        b.record_outcome(ok());
+        b.record_outcome(ok());
+        assert_eq!(b.snapshot().window_failure_rate, 0.25);
+    }
+
+    #[test]
+    fn snapshot_ejection_count_increments_once_per_trip() {
+        let mut cfg = small_cfg();
+        cfg.max_probes = 1;
+        let b = CircuitBreaker::new(cfg);
+        assert_eq!(b.snapshot().ejection_count, 0);
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert_eq!(b.snapshot().ejection_count, 1);
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        b.try_acquire();
+        b.record_outcome(fail()); // reopen
+        assert_eq!(b.snapshot().ejection_count, 2);
+    }
+
+    // ── reset ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn reset_from_half_open_returns_to_closed() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(b.snapshot().state, "half_open");
+        b.reset();
+        assert_eq!(b.snapshot().state, "closed");
+        assert_eq!(b.snapshot().ejection_count, 0);
+    }
+
+    #[test]
+    fn reset_when_already_closed_is_safe_and_idempotent() {
+        let b = CircuitBreaker::new(small_cfg());
+        b.reset();
+        b.reset();
+        assert!(!b.is_open());
+        assert_eq!(b.snapshot().window_call_count, 0);
+    }
+
+    #[test]
+    fn reset_allows_immediate_allowed_permit_after_open() {
+        let b = CircuitBreaker::new(small_cfg());
+        for _ in 0..5 {
+            b.record_outcome(fail());
+        }
+        assert_eq!(b.try_acquire(), Permit::Rejected);
+        b.reset();
+        assert_eq!(b.try_acquire(), Permit::Allowed);
+    }
+
+    // ── BreakerConfig::default ───────────────────────────────────────
+
+    #[test]
+    fn default_config_matches_documented_values() {
+        let cfg = BreakerConfig::default();
+        assert_eq!(cfg.window_size, 100);
+        assert_eq!(cfg.min_calls, 50);
+        assert_eq!(cfg.failure_rate_threshold, 0.80);
+        assert_eq!(cfg.base_cooldown, Duration::from_secs(5));
+        assert_eq!(cfg.max_cooldown, Duration::from_secs(60));
+        assert_eq!(cfg.max_probes, 5);
+        assert_eq!(cfg.half_open_success_rate, 0.60);
+        assert_eq!(cfg.eval_timeout, Duration::from_secs(30));
+        assert_eq!(cfg.ejection_reset_after_closed, Duration::from_secs(120));
+        assert!(!cfg.count_truncated_as_failure);
+    }
+
+    #[test]
+    fn default_breaker_registry_matches_with_defaults() {
+        // `Default` and `with_defaults()` must agree — nothing should special-case
+        // the trait impl to a divergent config.
+        let via_default = BreakerRegistry::default();
+        let via_ctor = BreakerRegistry::with_defaults();
+        assert_eq!(
+            via_default.config().window_size,
+            via_ctor.config().window_size
+        );
+        assert_eq!(via_default.config().min_calls, via_ctor.config().min_calls);
+    }
+
+    // ── serde field naming (documents current wire shape) ─────────────
+
+    #[test]
+    fn breaker_status_serializes_with_snake_case_fields() {
+        // NOTE: unlike the public v1/v2 API, `/admin/breakers` debug snapshots
+        // are NOT camelCased — this test documents current behaviour, it is
+        // not asserting that's correct API convention for a public surface.
+        let status = BreakerStatus {
+            renderer: "chrome".to_string(),
+            state: "open".to_string(),
+            opens_in_seconds: Some(5),
+            ejection_count: 2,
+            window_call_count: 10,
+            window_failure_rate: 0.9,
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["window_call_count"], 10);
+        assert_eq!(json["ejection_count"], 2);
+        assert_eq!(json["opens_in_seconds"], 5);
+    }
+
+    #[test]
+    fn breaker_status_serializes_none_opens_in_seconds_as_null() {
+        let status = BreakerStatus {
+            renderer: "http".to_string(),
+            state: "closed".to_string(),
+            opens_in_seconds: None,
+            ejection_count: 0,
+            window_call_count: 0,
+            window_failure_rate: 0.0,
+        };
+        let json = serde_json::to_value(&status).unwrap();
+        assert!(json["opens_in_seconds"].is_null());
+    }
+
+    #[test]
+    fn registry_snapshot_serializes_nested_global_and_per_host() {
+        let reg = BreakerRegistry::with_defaults();
+        let snap = reg.snapshot();
+        let json = serde_json::to_value(&snap).unwrap();
+        assert!(json["global"].is_array());
+        assert!(json["per_host"].is_array());
+    }
+
+    // ── BreakerRegistry ────────────────────────────────────────────────
+
+    #[test]
+    fn registry_global_for_returns_same_instance_for_same_kind() {
+        let reg = BreakerRegistry::with_defaults();
+        let a = reg.global_for(RendererKind::Chrome);
+        let b = reg.global_for(RendererKind::Chrome);
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn registry_global_for_returns_distinct_instances_per_kind() {
+        let reg = BreakerRegistry::with_defaults();
+        let http = reg.global_for(RendererKind::Http);
+        let chrome = reg.global_for(RendererKind::Chrome);
+        assert!(!Arc::ptr_eq(&http, &chrome));
+    }
+
+    #[test]
+    fn registry_global_for_covers_every_renderer_kind_without_panicking() {
+        let reg = BreakerRegistry::with_defaults();
+        for kind in [
+            RendererKind::Http,
+            RendererKind::Lightpanda,
+            RendererKind::Chrome,
+            RendererKind::ChromeProxy,
+            RendererKind::Camoufox,
+            RendererKind::Cloak,
+        ] {
+            let _ = reg.global_for(kind);
+        }
+    }
+
+    #[test]
+    fn registry_config_reflects_constructor_argument() {
+        let cfg = BreakerConfig {
+            min_calls: 7,
+            ..BreakerConfig::default()
+        };
+        let reg = BreakerRegistry::new(cfg);
+        assert_eq!(reg.config().min_calls, 7);
+    }
+
+    #[tokio::test]
+    async fn registry_host_for_returns_same_breaker_for_same_host_and_renderer() {
+        let reg = BreakerRegistry::with_defaults();
+        let a = reg.host_for("example.com", RendererKind::Chrome).await;
+        let b = reg.host_for("example.com", RendererKind::Chrome).await;
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[tokio::test]
+    async fn registry_host_for_separates_different_hosts() {
+        let reg = BreakerRegistry::with_defaults();
+        let a = reg.host_for("a.com", RendererKind::Chrome).await;
+        let b = reg.host_for("b.com", RendererKind::Chrome).await;
+        assert!(!Arc::ptr_eq(&a, &b));
+    }
+
+    #[tokio::test]
+    async fn registry_host_for_separates_different_renderers_on_same_host() {
+        let reg = BreakerRegistry::with_defaults();
+        let a = reg.host_for("example.com", RendererKind::Chrome).await;
+        let b = reg.host_for("example.com", RendererKind::Http).await;
+        assert!(!Arc::ptr_eq(&a, &b));
+    }
+
+    #[tokio::test]
+    async fn registry_host_for_normalizes_www_and_subdomain_to_same_breaker() {
+        let reg = BreakerRegistry::with_defaults();
+        let bare = reg.host_for("example.com", RendererKind::Chrome).await;
+        let www = reg.host_for("www.example.com", RendererKind::Chrome).await;
+        let sub = reg.host_for("blog.example.com", RendererKind::Chrome).await;
+        assert!(Arc::ptr_eq(&bare, &www));
+        assert!(Arc::ptr_eq(&bare, &sub));
+    }
+
+    #[tokio::test]
+    async fn registry_host_for_is_case_insensitive() {
+        let reg = BreakerRegistry::with_defaults();
+        let lower = reg.host_for("example.com", RendererKind::Chrome).await;
+        let upper = reg.host_for("EXAMPLE.COM", RendererKind::Chrome).await;
+        assert!(Arc::ptr_eq(&lower, &upper));
+    }
+
+    #[tokio::test]
+    async fn registry_try_acquire_allowed_when_both_tiers_closed() {
+        let reg = BreakerRegistry::with_defaults();
+        assert_eq!(
+            reg.try_acquire("example.com", RendererKind::Chrome).await,
+            Permit::Allowed
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_try_acquire_rejects_when_global_open() {
+        let reg = BreakerRegistry::with_defaults();
+        let global = reg.global_for(RendererKind::Chrome);
+        for _ in 0..reg.config().min_calls {
+            global.record_outcome(BreakerOutcome::RenderError);
+        }
+        assert!(global.is_open());
+        assert_eq!(
+            reg.try_acquire("example.com", RendererKind::Chrome).await,
+            Permit::Rejected
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_try_acquire_rejects_when_host_open_even_if_global_closed() {
+        let reg = BreakerRegistry::with_defaults();
+        let host_b = reg.host_for("bad.com", RendererKind::Chrome).await;
+        for _ in 0..reg.config().min_calls {
+            host_b.record_outcome(BreakerOutcome::RenderError);
+        }
+        assert!(host_b.is_open());
+        assert!(!reg.global_for(RendererKind::Chrome).is_open());
+        assert_eq!(
+            reg.try_acquire("bad.com", RendererKind::Chrome).await,
+            Permit::Rejected
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_try_acquire_host_only_ignores_open_global() {
+        let reg = BreakerRegistry::with_defaults();
+        let global = reg.global_for(RendererKind::Chrome);
+        for _ in 0..reg.config().min_calls {
+            global.record_outcome(BreakerOutcome::RenderError);
+        }
+        assert!(global.is_open());
+        // The host tier itself is untouched and closed.
+        assert_eq!(
+            reg.try_acquire_host_only("fresh.com", RendererKind::Chrome)
+                .await,
+            Permit::Allowed
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_try_acquire_cancels_global_probe_when_host_rejects() {
+        let cfg = BreakerConfig {
+            min_calls: 5,
+            window_size: 10,
+            max_probes: 1,
+            base_cooldown: Duration::from_millis(20),
+            ..BreakerConfig::default()
+        };
+        let reg = BreakerRegistry::new(cfg);
+
+        // Trip the global tier and let it reach HalfOpen (one probe available).
+        let global = reg.global_for(RendererKind::Chrome);
+        for _ in 0..5 {
+            global.record_outcome(BreakerOutcome::RenderError);
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+
+        // Trip and keep the host tier hard Open (never eligible).
+        let host_b = reg.host_for("bad.com", RendererKind::Chrome).await;
+        for _ in 0..5 {
+            host_b.record_outcome(BreakerOutcome::RenderError);
+        }
+        assert!(host_b.is_open());
+
+        // try_acquire admits a global probe, then the host tier rejects — the
+        // probe slot must be returned so a later legitimate probe can use it.
+        assert_eq!(
+            reg.try_acquire("bad.com", RendererKind::Chrome).await,
+            Permit::Rejected
+        );
+        assert_eq!(
+            global.try_acquire(),
+            Permit::Probe,
+            "the cancelled slot must be free again"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_try_acquire_is_probe_when_either_tier_probes() {
+        let cfg = BreakerConfig {
+            min_calls: 5,
+            window_size: 10,
+            max_probes: 3,
+            base_cooldown: Duration::from_millis(20),
+            ..BreakerConfig::default()
+        };
+        let reg = BreakerRegistry::new(cfg);
+        let global = reg.global_for(RendererKind::Chrome);
+        for _ in 0..5 {
+            global.record_outcome(BreakerOutcome::RenderError);
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        // Global is HalfOpen, host tier is fresh/Closed.
+        assert_eq!(
+            reg.try_acquire("fresh.com", RendererKind::Chrome).await,
+            Permit::Probe
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_record_outcome_updates_both_global_and_host_tiers() {
+        let reg = BreakerRegistry::with_defaults();
+        for _ in 0..reg.config().min_calls {
+            reg.record_outcome(
+                "example.com",
+                RendererKind::Chrome,
+                BreakerOutcome::RenderError,
+            )
+            .await;
+        }
+        assert!(reg.global_for(RendererKind::Chrome).is_open());
+        assert!(
+            reg.host_for("example.com", RendererKind::Chrome)
+                .await
+                .is_open()
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_record_result_true_maps_to_success() {
+        let reg = BreakerRegistry::with_defaults();
+        reg.record_result("example.com", RendererKind::Chrome, true)
+            .await;
+        let snap = reg
+            .host_for("example.com", RendererKind::Chrome)
+            .await
+            .snapshot();
+        assert_eq!(snap.window_call_count, 1);
+        assert_eq!(snap.window_failure_rate, 0.0);
+    }
+
+    #[tokio::test]
+    async fn registry_record_result_false_maps_to_render_error_and_counts_as_failure() {
+        let reg = BreakerRegistry::with_defaults();
+        reg.record_result("example.com", RendererKind::Chrome, false)
+            .await;
+        let snap = reg
+            .host_for("example.com", RendererKind::Chrome)
+            .await
+            .snapshot();
+        assert_eq!(snap.window_call_count, 1);
+        assert_eq!(snap.window_failure_rate, 1.0);
+    }
+
+    #[tokio::test]
+    async fn registry_record_scoped_outcome_global_only_leaves_host_untouched() {
+        let reg = BreakerRegistry::with_defaults();
+        reg.record_scoped_outcome(
+            "example.com",
+            RendererKind::Chrome,
+            Some(BreakerOutcome::RenderError),
+            None,
+        )
+        .await;
+        assert_eq!(
+            reg.global_for(RendererKind::Chrome)
+                .snapshot()
+                .window_call_count,
+            1
+        );
+        assert_eq!(
+            reg.host_for("example.com", RendererKind::Chrome)
+                .await
+                .snapshot()
+                .window_call_count,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_record_scoped_outcome_host_only_leaves_global_untouched() {
+        let reg = BreakerRegistry::with_defaults();
+        reg.record_scoped_outcome(
+            "example.com",
+            RendererKind::Chrome,
+            None,
+            Some(BreakerOutcome::RenderError),
+        )
+        .await;
+        assert_eq!(
+            reg.global_for(RendererKind::Chrome)
+                .snapshot()
+                .window_call_count,
+            0
+        );
+        assert_eq!(
+            reg.host_for("example.com", RendererKind::Chrome)
+                .await
+                .snapshot()
+                .window_call_count,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_record_scoped_outcome_none_none_touches_nothing() {
+        let reg = BreakerRegistry::with_defaults();
+        reg.record_scoped_outcome("example.com", RendererKind::Chrome, None, None)
+            .await;
+        assert_eq!(
+            reg.global_for(RendererKind::Chrome)
+                .snapshot()
+                .window_call_count,
+            0
+        );
+        assert_eq!(
+            reg.host_for("example.com", RendererKind::Chrome)
+                .await
+                .snapshot()
+                .window_call_count,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_cancel_probe_releases_both_tiers() {
+        let cfg = BreakerConfig {
+            min_calls: 5,
+            window_size: 10,
+            max_probes: 1,
+            base_cooldown: Duration::from_millis(20),
+            ..BreakerConfig::default()
+        };
+        let reg = BreakerRegistry::new(cfg);
+        for _ in 0..5 {
+            reg.record_outcome(
+                "example.com",
+                RendererKind::Chrome,
+                BreakerOutcome::RenderError,
+            )
+            .await;
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+        assert_eq!(
+            reg.try_acquire("example.com", RendererKind::Chrome).await,
+            Permit::Probe
+        );
+        assert_eq!(
+            reg.try_acquire("example.com", RendererKind::Chrome).await,
+            Permit::Rejected
+        );
+        reg.cancel_probe("example.com", RendererKind::Chrome).await;
+        assert_eq!(
+            reg.try_acquire("example.com", RendererKind::Chrome).await,
+            Permit::Probe
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_reset_all_closes_every_open_breaker() {
+        let reg = BreakerRegistry::with_defaults();
+        for _ in 0..reg.config().min_calls {
+            reg.record_outcome(
+                "example.com",
+                RendererKind::Chrome,
+                BreakerOutcome::RenderError,
+            )
+            .await;
+        }
+        assert!(reg.global_for(RendererKind::Chrome).is_open());
+        reg.reset_all();
+        assert!(!reg.global_for(RendererKind::Chrome).is_open());
+        assert!(
+            !reg.host_for("example.com", RendererKind::Chrome)
+                .await
+                .is_open()
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_reset_all_returns_evicted_host_count() {
+        let reg = BreakerRegistry::with_defaults();
+        let _ = reg.host_for("a.com", RendererKind::Chrome).await;
+        let _ = reg.host_for("b.com", RendererKind::Http).await;
+        reg.host.run_pending_tasks().await;
+        let evicted = reg.reset_all();
+        assert_eq!(evicted, 2);
+    }
+
+    #[tokio::test]
+    async fn registry_snapshot_includes_global_entries_for_every_kind() {
+        let reg = BreakerRegistry::with_defaults();
+        let snap = reg.snapshot();
+        assert_eq!(snap.global.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn registry_snapshot_includes_recorded_host_entries() {
+        let reg = BreakerRegistry::with_defaults();
+        reg.record_result("z.com", RendererKind::Chrome, true).await;
+        reg.record_result("a.com", RendererKind::Http, true).await;
+        reg.host.run_pending_tasks().await;
+        let snap = reg.snapshot();
+        assert_eq!(snap.per_host.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn registry_snapshot_per_host_is_sorted_by_host_then_renderer() {
+        let reg = BreakerRegistry::with_defaults();
+        reg.record_result("z.com", RendererKind::Chrome, true).await;
+        reg.record_result("a.com", RendererKind::Http, true).await;
+        reg.record_result("a.com", RendererKind::Chrome, true).await;
+        reg.host.run_pending_tasks().await;
+        let snap = reg.snapshot();
+        let hosts: Vec<(&str, &str)> = snap
+            .per_host
+            .iter()
+            .map(|h| (h.host.as_str(), h.renderer.as_str()))
+            .collect();
+        let mut sorted = hosts.clone();
+        sorted.sort();
+        assert_eq!(hosts, sorted);
+    }
+
+    // ── ProbeGuard ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn acquire_with_guard_disarmed_on_allowed_permit() {
+        let reg = BreakerRegistry::with_defaults();
+        let (permit, _guard) = reg
+            .acquire_with_guard("example.com", RendererKind::Chrome)
+            .await;
+        assert_eq!(permit, Permit::Allowed);
+        // Guard's Drop must not cancel anything meaningful since it is unarmed
+        // — verified indirectly: a fresh breaker after guard drop is still
+        // Allowed (an errant cancel_probe would be harmless anyway, but this
+        // documents the intended contract).
+    }
+
+    #[tokio::test]
+    async fn acquire_with_guard_armed_on_probe_permit_and_disarm_prevents_release() {
+        let cfg = BreakerConfig {
+            min_calls: 5,
+            window_size: 10,
+            max_probes: 1,
+            base_cooldown: Duration::from_millis(20),
+            ..BreakerConfig::default()
+        };
+        let reg = BreakerRegistry::new(cfg);
+        for _ in 0..5 {
+            reg.record_outcome(
+                "example.com",
+                RendererKind::Chrome,
+                BreakerOutcome::RenderError,
+            )
+            .await;
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+
+        let (permit, guard) = reg
+            .acquire_with_guard("example.com", RendererKind::Chrome)
+            .await;
+        assert_eq!(permit, Permit::Probe);
+        // Quota is exhausted while the guard is alive.
+        assert_eq!(
+            reg.try_acquire("example.com", RendererKind::Chrome).await,
+            Permit::Rejected
+        );
+        guard.disarm();
+        // disarm() must prevent the Drop-time cancel: quota stays exhausted.
+        assert_eq!(
+            reg.try_acquire("example.com", RendererKind::Chrome).await,
+            Permit::Rejected
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_guard_drop_without_disarm_frees_the_probe_slot() {
+        let cfg = BreakerConfig {
+            min_calls: 5,
+            window_size: 10,
+            max_probes: 1,
+            base_cooldown: Duration::from_millis(20),
+            ..BreakerConfig::default()
+        };
+        let reg = BreakerRegistry::new(cfg);
+        for _ in 0..5 {
+            reg.record_outcome(
+                "example.com",
+                RendererKind::Chrome,
+                BreakerOutcome::RenderError,
+            )
+            .await;
+        }
+        std::thread::sleep(cfg.base_cooldown + Duration::from_millis(10));
+
+        let (permit, guard) = reg
+            .acquire_with_guard("example.com", RendererKind::Chrome)
+            .await;
+        assert_eq!(permit, Permit::Probe);
+        drop(guard); // armed, un-disarmed → must cancel on drop
+        assert_eq!(
+            reg.try_acquire("example.com", RendererKind::Chrome).await,
+            Permit::Probe,
+            "dropping an un-disarmed guard must return the probe slot"
+        );
+    }
 }

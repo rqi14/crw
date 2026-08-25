@@ -1120,6 +1120,36 @@ fn decode_html_bytes(bytes: &[u8], header_charset: Option<&str>) -> String {
 mod tests {
     use super::*;
 
+    /// Guards every test below that mutates process-wide env vars
+    /// (`CRW_HTTP_TLS_RELAXED_FALLBACK`, `CRW_HTTP_RATELIMIT_PROXY_URL`,
+    /// `HTTP_PROXY`/etc, `CRW_ALLOW_LOOPBACK_FOR_TESTS`). `cargo test` runs
+    /// tests in the same process on multiple threads, so without this two such
+    /// tests can race and read each other's half-set state. Same pattern as
+    /// `crw-core::config::tests::ENV_LOCK`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clear_proxy_env() {
+        for k in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            unsafe { std::env::remove_var(k) };
+        }
+    }
+
+    async fn spawn_router(router: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
     #[test]
     fn should_arm_proxy_truth_table() {
         use ChallengeHeader::{AwsWaf, CloudflareMitigated};
@@ -1768,5 +1798,1500 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    // ── A. Predicate/pure function coverage ────────────────────────────
+
+    #[test]
+    fn is_retriable_status_boundaries() {
+        assert!(
+            !is_retriable_status(501),
+            "501 Not Implemented is permanent"
+        );
+        assert!(is_retriable_status(502));
+        assert!(is_retriable_status(503));
+        assert!(is_retriable_status(504));
+        assert!(!is_retriable_status(505), "505 HTTP Version is permanent");
+        assert!(!is_retriable_status(500));
+        assert!(!is_retriable_status(200));
+        assert!(
+            !is_retriable_status(429),
+            "429 has its own proxy arm, not this retry"
+        );
+    }
+
+    #[test]
+    fn is_ratelimit_status_only_429() {
+        assert!(is_ratelimit_status(429));
+        assert!(!is_ratelimit_status(420));
+        assert!(!is_ratelimit_status(430));
+        assert!(!is_ratelimit_status(200));
+        assert!(!is_ratelimit_status(503));
+    }
+
+    #[test]
+    fn should_arm_proxy_more_edge_cases() {
+        assert!(!should_arm_proxy(500, None));
+        assert!(!should_arm_proxy(404, None));
+        assert!(!should_arm_proxy(301, None));
+        assert!(
+            should_arm_proxy(429, Some(ChallengeHeader::AwsWaf)),
+            "429 arms on its own even alongside an unrelated challenge header"
+        );
+    }
+
+    /// A read-phase timeout (origin connected, then stalled) must be retried on
+    /// the SAME egress: a different egress cannot make a slow origin faster.
+    #[tokio::test]
+    async fn is_retriable_error_true_only_for_read_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                drop(stream);
+            }
+        });
+        let err = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(300))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.is_timeout() && !err.is_connect());
+        assert!(is_retriable_error(&err), "a read timeout must be retriable");
+    }
+
+    /// A connect-phase timeout is routed to the proxy arm (`is_connection_failure`),
+    /// never to the same-egress retry this predicate guards.
+    #[tokio::test]
+    async fn is_retriable_error_false_for_connect_timeout() {
+        let err = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap()
+            .get("http://192.0.2.1/")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.is_connect() && err.is_timeout());
+        assert!(!is_retriable_error(&err));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn is_retriable_error_false_for_connection_reset() {
+        let url = spawn_resetting_origin();
+        let err = reqwest::Client::new().get(&url).send().await.unwrap_err();
+        assert!(
+            !is_retriable_error(&err),
+            "a reset routes to the proxy arm via is_connection_failure, not here"
+        );
+    }
+
+    /// Guards `is_cert_error` against false positives: a plain connect failure
+    /// (refused or blackholed) must never be misclassified as a TLS cert
+    /// failure, or a broken proxy pool would spuriously trip the relaxed-TLS
+    /// fallback on every host.
+    #[tokio::test]
+    async fn is_cert_error_false_for_plain_connection_errors() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let err = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            !is_cert_error(&err),
+            "a refused connection is not a cert error"
+        );
+
+        let err2 = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap()
+            .get("http://192.0.2.1/")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(!is_cert_error(&err2), "a blackhole is not a cert error");
+    }
+
+    // ── B. challenge_header additional edge cases ───────────────────────
+
+    #[test]
+    fn challenge_header_name_is_case_insensitive() {
+        use ChallengeHeader::CloudflareMitigated;
+        assert_eq!(
+            challenge_header(&header_map(&[("Cf-Mitigated", "challenge")])),
+            Some(CloudflareMitigated),
+            "reqwest's HeaderMap normalizes header names case-insensitively"
+        );
+    }
+
+    #[test]
+    fn challenge_header_cloudflare_checked_before_waf_when_both_present() {
+        use ChallengeHeader::CloudflareMitigated;
+        assert_eq!(
+            challenge_header(&header_map(&[
+                ("cf-mitigated", "challenge"),
+                ("x-amzn-waf-action", "captcha"),
+            ])),
+            Some(CloudflareMitigated),
+            "cf-mitigated is checked first when both headers are present"
+        );
+    }
+
+    #[test]
+    fn challenge_header_waf_wins_when_cf_header_present_but_invalid() {
+        use ChallengeHeader::AwsWaf;
+        assert_eq!(
+            challenge_header(&header_map(&[
+                ("cf-mitigated", "monitor"),
+                ("x-amzn-waf-action", "captcha"),
+            ])),
+            Some(AwsWaf),
+            "an invalid cf-mitigated value must fall through to the WAF check"
+        );
+    }
+
+    #[test]
+    fn challenge_header_empty_value_is_none() {
+        assert_eq!(challenge_header(&header_map(&[("cf-mitigated", "")])), None);
+    }
+
+    #[test]
+    fn challenge_header_whitespace_only_value_is_none() {
+        assert_eq!(
+            challenge_header(&header_map(&[("x-amzn-waf-action", "   ")])),
+            None
+        );
+    }
+
+    #[test]
+    fn challenge_header_value_with_surrounding_whitespace_still_arms() {
+        use ChallengeHeader::CloudflareMitigated;
+        assert_eq!(
+            challenge_header(&header_map(&[("cf-mitigated", " challenge ")])),
+            Some(CloudflareMitigated),
+            "the detector predicates trim() the value themselves"
+        );
+    }
+
+    #[test]
+    fn challenge_header_invalid_utf8_value_is_none() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            reqwest::header::HeaderName::from_static("cf-mitigated"),
+            reqwest::header::HeaderValue::from_bytes(&[0x63, 0x68, 0xFF, 0x6c]).unwrap(),
+        );
+        assert_eq!(
+            challenge_header(&h),
+            None,
+            "a non-UTF-8 header value must not panic and must not match"
+        );
+    }
+
+    // ── C. ChallengeHeader enum ──────────────────────────────────────────
+
+    #[test]
+    fn challenge_header_marker_values() {
+        assert_eq!(
+            ChallengeHeader::CloudflareMitigated.marker(),
+            "cloudflare_mitigated"
+        );
+        assert_eq!(ChallengeHeader::AwsWaf.marker(), "waf_challenge");
+    }
+
+    #[test]
+    fn challenge_header_variant_equality_and_copy() {
+        let a = ChallengeHeader::CloudflareMitigated;
+        let b = a; // Copy, not a move
+        assert_eq!(a, b);
+        assert_ne!(
+            ChallengeHeader::CloudflareMitigated,
+            ChallengeHeader::AwsWaf
+        );
+    }
+
+    // ── D. charset_from_content_type ────────────────────────────────────
+
+    #[test]
+    fn charset_from_content_type_single_quotes() {
+        assert_eq!(
+            charset_from_content_type("text/html;charset='utf-8'").as_deref(),
+            Some("utf-8")
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_whitespace_around_equals() {
+        assert_eq!(
+            charset_from_content_type("text/html; charset = 'ISO-8859-1' ").as_deref(),
+            Some("ISO-8859-1")
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_uppercase_keyword() {
+        assert_eq!(
+            charset_from_content_type("text/html; CHARSET=utf-8").as_deref(),
+            Some("utf-8"),
+            "the keyword lookup is lowercased before matching"
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_preserves_label_case() {
+        assert_eq!(
+            charset_from_content_type("text/html; charset=UTF-8").as_deref(),
+            Some("UTF-8"),
+            "the label itself is sliced from the ORIGINAL string, not the lowercased copy"
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_empty_value_returns_none() {
+        assert_eq!(
+            charset_from_content_type("text/html; charset=").as_deref(),
+            None
+        );
+        assert_eq!(
+            charset_from_content_type("text/html; charset=;").as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_missing_equals_returns_none() {
+        assert_eq!(
+            charset_from_content_type("text/html; charset").as_deref(),
+            None
+        );
+    }
+
+    /// BUG: the lookup is `str::find("charset")`, an unanchored substring
+    /// search — it matches "charset" as a SUFFIX of an unrelated param name
+    /// (e.g. a custom `x-ischarset` param), and then parses whatever follows
+    /// THAT occurrence as if it were the real charset value. Real-world
+    /// Content-Type headers are unlikely to carry such a param, so this is
+    /// low severity, but it is a real latent misparse, not intended
+    /// behaviour. Documented here rather than fixed (tests-only change).
+    #[test]
+    fn charset_from_content_type_substring_match_is_a_known_quirk() {
+        assert_eq!(
+            charset_from_content_type("text/html; x-ischarset=foo; charset=windows-1251")
+                .as_deref(),
+            Some("foo"),
+            "BUG: matches \"charset\" inside \"x-ischarset\" and returns the wrong value"
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_multiple_params_charset_not_first() {
+        assert_eq!(
+            charset_from_content_type("text/html; boundary=xyz; charset=koi8-r").as_deref(),
+            Some("koi8-r")
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_numeric_label() {
+        assert_eq!(
+            charset_from_content_type("text/html; charset=1252").as_deref(),
+            Some("1252")
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_colon_allowed_in_label() {
+        // The allowed-char set explicitly includes ':' (some IANA labels use it).
+        assert_eq!(
+            charset_from_content_type("text/html; charset=x-user:defined").as_deref(),
+            Some("x-user:defined")
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_trailing_whitespace_before_semicolon() {
+        assert_eq!(
+            charset_from_content_type("text/html; charset=utf-8 ; boundary=x").as_deref(),
+            Some("utf-8")
+        );
+    }
+
+    #[test]
+    fn charset_from_content_type_missing_closing_quote_does_not_panic() {
+        // Malformed: an opening quote with no matching close. Must not panic;
+        // the scan just runs to the end of the allowed-char set.
+        assert_eq!(
+            charset_from_content_type("text/html; charset=\"utf-8").as_deref(),
+            Some("utf-8")
+        );
+    }
+
+    // ── E. sniff_meta_charset ────────────────────────────────────────────
+
+    #[test]
+    fn sniff_meta_charset_finds_basic_declaration() {
+        assert_eq!(
+            sniff_meta_charset(b"<html><head><meta charset=\"utf-8\"></head></html>").as_deref(),
+            Some("utf-8")
+        );
+    }
+
+    #[test]
+    fn sniff_meta_charset_http_equiv_variant() {
+        let bytes =
+            br#"<meta http-equiv="Content-Type" content="text/html; charset=windows-1251">"#;
+        assert_eq!(sniff_meta_charset(bytes).as_deref(), Some("windows-1251"));
+    }
+
+    #[test]
+    fn sniff_meta_charset_case_insensitive_keyword() {
+        assert_eq!(
+            sniff_meta_charset(b"<META CHARSET=UTF-8>").as_deref(),
+            Some("utf-8"),
+            "the whole head is lowercased before scanning, so the label comes back lowercase too"
+        );
+    }
+
+    #[test]
+    fn sniff_meta_charset_none_when_absent() {
+        assert_eq!(
+            sniff_meta_charset(b"<html><body>hello</body></html>").as_deref(),
+            None
+        );
+        assert_eq!(sniff_meta_charset(b"").as_deref(), None);
+    }
+
+    #[test]
+    fn sniff_meta_charset_ignores_declaration_past_2kb_window() {
+        let mut bytes = vec![b' '; 2100];
+        bytes.extend_from_slice(b"<meta charset=windows-1254>");
+        assert_eq!(
+            sniff_meta_charset(&bytes),
+            None,
+            "only the first ~2KB is scanned"
+        );
+    }
+
+    #[test]
+    fn sniff_meta_charset_handles_short_buffer_without_panic() {
+        assert_eq!(sniff_meta_charset(b"hi").as_deref(), None);
+        assert_eq!(sniff_meta_charset(b"").as_deref(), None);
+    }
+
+    #[test]
+    fn sniff_meta_charset_handles_invalid_utf8_prefix_without_panic() {
+        let mut bytes = vec![0xFF, 0xFE, 0x00, 0x01];
+        bytes.extend_from_slice(b"<meta charset=utf-8>");
+        assert_eq!(sniff_meta_charset(&bytes).as_deref(), Some("utf-8"));
+    }
+
+    #[test]
+    fn sniff_meta_charset_quoted_double_quotes() {
+        assert_eq!(
+            sniff_meta_charset(br#"<meta charset="big5">"#).as_deref(),
+            Some("big5")
+        );
+    }
+
+    // ── F. decode_html_bytes ─────────────────────────────────────────────
+
+    #[test]
+    fn decode_html_bytes_invalid_utf8_no_hints_uses_lossy_replacement() {
+        let bytes = b"plain \xFF\xFE broken";
+        let out = decode_html_bytes(bytes, None);
+        assert!(out.contains('\u{FFFD}'), "got: {out}");
+        assert!(out.starts_with("plain "));
+    }
+
+    #[test]
+    fn decode_html_bytes_empty_input() {
+        assert_eq!(decode_html_bytes(b"", None), "");
+        assert_eq!(decode_html_bytes(b"", Some("utf-8")), "");
+    }
+
+    #[test]
+    fn decode_html_bytes_unknown_header_and_unknown_meta_falls_back_to_lossy() {
+        let bytes = b"<meta charset=totally-bogus-label><p>\xFF</p>";
+        let out = decode_html_bytes(bytes, Some("also-bogus"));
+        assert!(out.contains('\u{FFFD}'), "got: {out}");
+        assert!(out.contains("<p>"));
+    }
+
+    #[test]
+    fn decode_html_bytes_header_wins_over_conflicting_meta() {
+        // Header says Latin-1 (é = 0xE9), meta claims UTF-8. Header must win.
+        let bytes = b"<meta charset=utf-8><p>caf\xE9</p>";
+        let out = decode_html_bytes(bytes, Some("iso-8859-1"));
+        assert!(out.contains("café"), "got: {out}");
+        assert!(!out.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn decode_html_bytes_long_unicode_roundtrip() {
+        let text = "café ".repeat(5000) + "the end";
+        let out = decode_html_bytes(text.as_bytes(), Some("utf-8"));
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn decode_html_bytes_emoji_roundtrip() {
+        let text = "hello \u{1F600}\u{1F4A9} world";
+        assert_eq!(decode_html_bytes(text.as_bytes(), None), text);
+        assert_eq!(decode_html_bytes(text.as_bytes(), Some("utf-8")), text);
+    }
+
+    #[test]
+    fn decode_html_bytes_windows1252_smart_quotes() {
+        // Windows-1252 curly double-quotes: 0x93 = “, 0x94 = ”.
+        let bytes = b"say \x93hi\x94";
+        let out = decode_html_bytes(bytes, Some("windows-1252"));
+        assert_eq!(out, "say \u{201C}hi\u{201D}");
+        assert!(!out.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn decode_html_bytes_meta_declared_with_single_quotes() {
+        let bytes = b"<meta charset='windows-1254'><p>i\xE7in</p>";
+        let out = decode_html_bytes(bytes, None);
+        assert!(out.contains("için"), "got: {out}");
+        assert!(!out.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn decode_html_bytes_embedded_null_bytes_do_not_panic() {
+        let bytes = b"before\x00after";
+        let out = decode_html_bytes(bytes, Some("utf-8"));
+        assert!(out.contains("before"));
+        assert!(out.contains("after"));
+    }
+
+    // ── G. env/config predicates ─────────────────────────────────────────
+
+    #[test]
+    fn tls_relaxed_fallback_enabled_truth_table() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (val, want) in [
+            ("true", true),
+            ("TRUE", true),
+            ("1", true),
+            ("yes", true),
+            ("YES", true),
+            (" 1 ", true),
+            ("false", false),
+            ("0", false),
+            ("no", false),
+            ("garbage", false),
+            ("", false),
+        ] {
+            unsafe { std::env::set_var("CRW_HTTP_TLS_RELAXED_FALLBACK", val) };
+            assert_eq!(tls_relaxed_fallback_enabled(), want, "val={val:?}");
+        }
+        unsafe { std::env::remove_var("CRW_HTTP_TLS_RELAXED_FALLBACK") };
+        assert!(
+            !tls_relaxed_fallback_enabled(),
+            "unset must default to false"
+        );
+    }
+
+    #[test]
+    fn relaxed_client_built_only_when_env_flag_enabled() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("CRW_HTTP_TLS_RELAXED_FALLBACK") };
+        let f = HttpFetcher::new("ua", None, false);
+        assert!(f.relaxed_client.is_none());
+
+        unsafe { std::env::set_var("CRW_HTTP_TLS_RELAXED_FALLBACK", "1") };
+        let f2 = HttpFetcher::new("ua", None, false);
+        unsafe { std::env::remove_var("CRW_HTTP_TLS_RELAXED_FALLBACK") };
+        assert!(f2.relaxed_client.is_some());
+    }
+
+    #[test]
+    fn relaxed_client_wired_through_with_proxy_constructor() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("CRW_HTTP_TLS_RELAXED_FALLBACK", "1") };
+        let f = HttpFetcher::with_proxy(
+            "ua",
+            "http://gw.example.com:823",
+            false,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        unsafe { std::env::remove_var("CRW_HTTP_TLS_RELAXED_FALLBACK") };
+        assert!(f.relaxed_client.is_some());
+    }
+
+    #[test]
+    fn ratelimit_proxy_url_trims_and_empties_to_none() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("CRW_HTTP_RATELIMIT_PROXY_URL") };
+        assert_eq!(ratelimit_proxy_url(), None);
+
+        unsafe { std::env::set_var("CRW_HTTP_RATELIMIT_PROXY_URL", "   ") };
+        assert_eq!(
+            ratelimit_proxy_url(),
+            None,
+            "whitespace-only must count as unset"
+        );
+
+        unsafe { std::env::set_var("CRW_HTTP_RATELIMIT_PROXY_URL", "  http://gw:823  ") };
+        assert_eq!(ratelimit_proxy_url().as_deref(), Some("http://gw:823"));
+        unsafe { std::env::remove_var("CRW_HTTP_RATELIMIT_PROXY_URL") };
+    }
+
+    #[test]
+    fn has_ratelimit_proxy_false_when_url_malformed() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("CRW_HTTP_RATELIMIT_PROXY_URL", "not a url") };
+        let f = HttpFetcher::new("ua", None, false);
+        unsafe { std::env::remove_var("CRW_HTTP_RATELIMIT_PROXY_URL") };
+        assert!(
+            !f.has_ratelimit_proxy(),
+            "a typo'd proxy URL must not silently claim a working recovery egress"
+        );
+    }
+
+    #[test]
+    fn has_ratelimit_proxy_true_when_url_valid() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("CRW_HTTP_RATELIMIT_PROXY_URL", "http://gw.example.com:823") };
+        let f = HttpFetcher::new("ua", None, false);
+        unsafe { std::env::remove_var("CRW_HTTP_RATELIMIT_PROXY_URL") };
+        assert!(f.has_ratelimit_proxy());
+    }
+
+    #[test]
+    fn has_ratelimit_proxy_wired_through_with_proxy_constructor() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("CRW_HTTP_RATELIMIT_PROXY_URL", "http://gw.example.com:823") };
+        let f = HttpFetcher::with_proxy(
+            "ua",
+            "http://static-proxy.example.com:1",
+            false,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        unsafe { std::env::remove_var("CRW_HTTP_RATELIMIT_PROXY_URL") };
+        assert!(f.has_ratelimit_proxy());
+    }
+
+    #[test]
+    fn env_proxy_configured_truth_table() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_proxy_env();
+        assert!(!env_proxy_configured());
+
+        unsafe { std::env::set_var("HTTP_PROXY", "http://x:1") };
+        assert!(env_proxy_configured());
+        clear_proxy_env();
+
+        unsafe { std::env::set_var("https_proxy", "  ") };
+        assert!(
+            !env_proxy_configured(),
+            "whitespace-only must count as unset"
+        );
+        clear_proxy_env();
+
+        unsafe { std::env::set_var("all_proxy", "socks5://x:1") };
+        assert!(env_proxy_configured());
+        clear_proxy_env();
+    }
+
+    #[test]
+    fn has_static_proxy_true_when_proxy_arg_given_regardless_of_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_proxy_env();
+        let f = HttpFetcher::new("ua", Some("http://user:pass@host:1"), false);
+        assert!(f.has_static_proxy);
+    }
+
+    #[test]
+    fn has_static_proxy_true_when_env_proxy_set_without_explicit_arg() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_proxy_env();
+        unsafe { std::env::set_var("HTTP_PROXY", "http://x:1") };
+        let f = HttpFetcher::new("ua", None, false);
+        clear_proxy_env();
+        assert!(f.has_static_proxy);
+    }
+
+    #[test]
+    fn has_static_proxy_false_with_no_proxy_and_no_env() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_proxy_env();
+        let f = HttpFetcher::new("ua", None, false);
+        assert!(!f.has_static_proxy);
+    }
+
+    #[test]
+    fn with_proxy_always_sets_has_static_proxy_true() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_proxy_env();
+        let f = HttpFetcher::with_proxy(
+            "ua",
+            "http://gw.example.com:823",
+            false,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(f.has_static_proxy);
+    }
+
+    // ── H. build_client / constructors ──────────────────────────────────
+
+    #[test]
+    fn build_client_ok_with_no_proxy() {
+        assert!(build_client("ua", None, std::time::Duration::from_secs(5), false).is_ok());
+    }
+
+    #[test]
+    fn build_client_ok_with_relaxed_tls() {
+        assert!(build_client("ua", None, std::time::Duration::from_secs(5), true).is_ok());
+    }
+
+    #[test]
+    fn build_client_ok_with_valid_proxy_and_credentials() {
+        assert!(
+            build_client(
+                "ua",
+                Some("http://user:pass@gw.example.com:823"),
+                std::time::Duration::from_secs(5),
+                false,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn build_client_err_on_malformed_proxy_url() {
+        let err = build_client(
+            "ua",
+            Some("not a url"),
+            std::time::Duration::from_secs(5),
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CrwError::ConfigError(ref msg) if msg.contains("invalid proxy URL")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn build_client_err_on_empty_proxy_url() {
+        let err =
+            build_client("ua", Some(""), std::time::Duration::from_secs(5), false).unwrap_err();
+        assert!(matches!(err, CrwError::ConfigError(_)));
+    }
+
+    /// `with_timeout` is the INFALLIBLE constructor (see its docs): a bad
+    /// user-agent header value must not panic, and must fall back to a
+    /// default client rather than propagating the build error.
+    #[test]
+    fn with_timeout_falls_back_to_default_client_on_invalid_user_agent() {
+        let f =
+            HttpFetcher::with_timeout("bad\nua", None, false, std::time::Duration::from_secs(5));
+        assert!(!f.has_static_proxy);
+    }
+
+    /// `with_proxy` is the STRICT, fail-closed constructor: the same invalid
+    /// user-agent must surface as a hard error instead.
+    #[test]
+    fn with_proxy_is_fail_closed_on_invalid_user_agent_too() {
+        // `unwrap_err()` needs `T: Debug` (HttpFetcher isn't), so match instead.
+        match HttpFetcher::with_proxy(
+            "bad\nua",
+            "http://gw.example.com:823",
+            false,
+            std::time::Duration::from_secs(5),
+        ) {
+            Err(err) => assert!(matches!(err, CrwError::ConfigError(_))),
+            Ok(_) => panic!("an invalid user-agent must be a hard error via with_proxy"),
+        }
+    }
+
+    // ── I. trait impl metadata ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn trait_impl_reports_http_metadata() {
+        let f = HttpFetcher::new("ua", None, false);
+        assert_eq!(f.name(), "http");
+        assert!(!f.supports_js());
+        assert!(f.is_available().await);
+    }
+
+    // ── J. UA / headers (pure) ───────────────────────────────────────────
+
+    /// Historical bug: a stale Chrome UA in the stealth pool triggered
+    /// "browser outdated" rejections on real sites (fixed v0.18.0 -> v0.18.3).
+    /// The sec-ch-ua client hint is kept in sync with `BUILTIN_UA_POOL` by
+    /// hand (see the doc comment on the const); guard it stays a modern major
+    /// version so a future edit does not silently reintroduce that class.
+    #[test]
+    fn stealth_sec_ch_ua_reports_a_modern_chrome_version() {
+        let major: u32 = STEALTH_SEC_CH_UA
+            .split("Chrome\";v=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("sec-ch-ua must carry a Chrome version")
+            .parse()
+            .expect("Chrome version must be numeric");
+        assert!(
+            major >= 100,
+            "sec-ch-ua Chrome version {major} looks stale/ancient"
+        );
+    }
+
+    #[test]
+    fn stealth_accept_header_includes_html_mime_types() {
+        assert!(STEALTH_ACCEPT.contains("text/html"));
+        assert!(
+            STEALTH_ACCEPT.starts_with("text/html"),
+            "text/html must be the most-preferred type"
+        );
+    }
+
+    // ── K. UA / headers (network) ────────────────────────────────────────
+
+    async fn echo_headers_handler(
+        headers: axum::http::HeaderMap,
+    ) -> impl axum::response::IntoResponse {
+        let mut out = String::new();
+        for (name, value) in headers.iter() {
+            out.push_str(name.as_str());
+            out.push_str(": ");
+            out.push_str(value.to_str().unwrap_or("<non-utf8>"));
+            out.push('\n');
+        }
+        (
+            axum::http::StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            )],
+            out,
+        )
+    }
+
+    #[tokio::test]
+    async fn stealth_headers_are_injected_when_enabled() {
+        let base = spawn_router(
+            axum::Router::new().route("/echo", axum::routing::get(echo_headers_handler)),
+        )
+        .await;
+        let fetcher = HttpFetcher::new("crw-test-ua/1.0", None, true);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/echo"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        let body = res.html.to_lowercase();
+        assert!(body.contains("user-agent: crw-test-ua/1.0"), "got: {body}");
+        assert!(res.html.contains(STEALTH_ACCEPT));
+        assert!(res.html.contains(STEALTH_SEC_CH_UA));
+        assert!(body.contains("sec-fetch-dest: document"));
+        assert!(body.contains("upgrade-insecure-requests: 1"));
+    }
+
+    #[tokio::test]
+    async fn stealth_headers_absent_when_disabled() {
+        let base = spawn_router(
+            axum::Router::new().route("/echo", axum::routing::get(echo_headers_handler)),
+        )
+        .await;
+        let fetcher = HttpFetcher::new("crw-test-ua/1.0", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/echo"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        let body = res.html.to_lowercase();
+        assert!(!body.contains("sec-fetch-dest"));
+        assert!(!res.html.contains(STEALTH_SEC_CH_UA));
+    }
+
+    #[tokio::test]
+    async fn caller_headers_are_forwarded_and_can_add_new_headers() {
+        let base = spawn_router(
+            axum::Router::new().route("/echo", axum::routing::get(echo_headers_handler)),
+        )
+        .await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom-Test".to_string(), "hello-world".to_string());
+        let res = fetcher
+            .fetch(
+                &format!("{base}/echo"),
+                &headers,
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        assert!(
+            res.html
+                .to_lowercase()
+                .contains("x-custom-test: hello-world"),
+            "got: {}",
+            res.html
+        );
+    }
+
+    // ── L. redirects (network) ───────────────────────────────────────────
+
+    async fn redirect_target_handler() -> impl axum::response::IntoResponse {
+        (
+            axum::http::StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            "<html><body>redirect target reached</body></html>",
+        )
+    }
+
+    async fn redirect_once_handler() -> impl axum::response::IntoResponse {
+        axum::response::Redirect::to("/target")
+    }
+
+    async fn redirect_loop_handler() -> impl axum::response::IntoResponse {
+        axum::response::Redirect::to("/loop")
+    }
+
+    async fn clean_200_handler() -> impl axum::response::IntoResponse {
+        (
+            axum::http::StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            "<html><body>clean page</body></html>",
+        )
+    }
+
+    fn redirect_router() -> axum::Router {
+        axum::Router::new()
+            .route("/redirect-once", axum::routing::get(redirect_once_handler))
+            .route("/target", axum::routing::get(redirect_target_handler))
+            .route("/loop", axum::routing::get(redirect_loop_handler))
+            .route("/clean", axum::routing::get(clean_200_handler))
+    }
+
+    /// By default (no `CRW_ALLOW_LOOPBACK_FOR_TESTS` escape hatch), a redirect
+    /// to a loopback host is blocked by `safe_redirect_policy` even when the
+    /// origin itself is also loopback — the SSRF check runs on every redirect
+    /// hop, not just the caller-supplied URL.
+    #[tokio::test]
+    // Holds ENV_LOCK across awaits on purpose: the guard serialises these
+    // tests against each other while they mutate a process-wide env var.
+    #[allow(clippy::await_holding_lock)]
+    async fn redirect_is_blocked_by_default_ssrf_policy() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("CRW_ALLOW_LOOPBACK_FOR_TESTS") };
+        let base = spawn_router(redirect_router()).await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let err = fetcher
+            .fetch(
+                &format!("{base}/redirect-once"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .expect_err("a redirect to a loopback host must be blocked by default");
+        assert!(matches!(err, CrwError::HttpError(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    // Holds ENV_LOCK across awaits on purpose: the guard serialises these
+    // tests against each other while they mutate a process-wide env var.
+    #[allow(clippy::await_holding_lock)]
+    async fn redirect_follows_when_ssrf_escape_hatch_enabled() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("CRW_ALLOW_LOOPBACK_FOR_TESTS", "1") };
+        let base = spawn_router(redirect_router()).await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/redirect-once"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await;
+        unsafe { std::env::remove_var("CRW_ALLOW_LOOPBACK_FOR_TESTS") };
+        let res = res.expect("redirect must be followed once the escape hatch is set");
+        assert_eq!(res.status_code, 200);
+        assert!(
+            res.html.contains("redirect target reached"),
+            "got: {}",
+            res.html
+        );
+        assert!(
+            res.final_url
+                .as_deref()
+                .is_some_and(|u| u.ends_with("/target")),
+            "got final_url={:?}",
+            res.final_url
+        );
+    }
+
+    #[tokio::test]
+    // Holds ENV_LOCK across awaits on purpose: the guard serialises these
+    // tests against each other while they mutate a process-wide env var.
+    #[allow(clippy::await_holding_lock)]
+    async fn redirect_loop_exceeds_max_hops() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("CRW_ALLOW_LOOPBACK_FOR_TESTS", "1") };
+        let base = spawn_router(redirect_router()).await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/loop"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await;
+        unsafe { std::env::remove_var("CRW_ALLOW_LOOPBACK_FOR_TESTS") };
+        assert!(
+            res.is_err(),
+            "an infinite redirect loop must not hang or succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_url_is_none_when_no_redirect_occurred() {
+        let base = spawn_router(redirect_router()).await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/clean"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.final_url, None);
+    }
+
+    // ── M. content-length / body size ───────────────────────────────────
+
+    /// A raw response whose declared Content-Length exceeds MAX_RESPONSE_BYTES
+    /// must be rejected from the HEADER alone, before any body bytes are
+    /// read — the server sends no body at all, so a bug that instead tried
+    /// to download it would hang rather than error fast.
+    #[tokio::test]
+    async fn content_length_over_limit_is_rejected_before_download() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let huge = MAX_RESPONSE_BYTES + 1;
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {huge}\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let url = format!("http://{addr}/");
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let started = std::time::Instant::now();
+        let err = fetcher
+            .fetch(
+                &url,
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .expect_err("an oversized declared Content-Length must be rejected");
+        assert!(
+            matches!(err, CrwError::HttpError(ref msg) if msg.contains("too large")),
+            "got {err:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "must reject from the header alone, not wait to download; took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn content_length_matching_small_body_is_accepted() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                const BODY: &str = "<html><body>tiny</body></html>";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
+                        BODY.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let url = format!("http://{addr}/");
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &url,
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .expect("a normal small response must not be rejected");
+        assert_eq!(res.status_code, 200);
+        assert!(res.html.contains("tiny"));
+    }
+
+    // ── N. content-type dispatch (network) ──────────────────────────────
+
+    async fn pdf_handler() -> impl axum::response::IntoResponse {
+        (
+            axum::http::StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/pdf")],
+            b"%PDF-1.4 fake pdf payload".to_vec(),
+        )
+    }
+
+    #[tokio::test]
+    async fn pdf_content_type_populates_raw_bytes_not_html() {
+        let base =
+            spawn_router(axum::Router::new().route("/doc.pdf", axum::routing::get(pdf_handler)))
+                .await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/doc.pdf"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.html, "");
+        assert_eq!(
+            res.raw_bytes.as_deref(),
+            Some(&b"%PDF-1.4 fake pdf payload"[..])
+        );
+        assert_eq!(res.rendered_with.as_deref(), Some("pdf"));
+        assert_eq!(res.content_type.as_deref(), Some("application/pdf"));
+    }
+
+    #[tokio::test]
+    async fn non_pdf_content_type_sets_rendered_with_http() {
+        let base = spawn_router(redirect_router()).await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/clean"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.rendered_with.as_deref(), Some("http"));
+        assert!(res.raw_bytes.is_none());
+    }
+
+    /// `content_type` is lowercased before the PDF check, so an uppercase
+    /// (or mixed-case) `Content-Type` header must still dispatch to the PDF
+    /// path rather than being decoded as HTML.
+    #[tokio::test]
+    async fn is_pdf_check_is_case_insensitive() {
+        async fn uppercase_pdf_handler() -> impl axum::response::IntoResponse {
+            (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "APPLICATION/PDF")],
+                b"%PDF-1.4 upper".to_vec(),
+            )
+        }
+        let base = spawn_router(
+            axum::Router::new().route("/doc.pdf", axum::routing::get(uppercase_pdf_handler)),
+        )
+        .await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/doc.pdf"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.html, "");
+        assert_eq!(res.raw_bytes.as_deref(), Some(&b"%PDF-1.4 upper"[..]));
+        assert_eq!(res.rendered_with.as_deref(), Some("pdf"));
+    }
+
+    // ── O. challenge warning end-to-end (network) ───────────────────────
+
+    async fn cf_challenge_as_200_handler() -> impl axum::response::IntoResponse {
+        (
+            axum::http::StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (
+                    axum::http::HeaderName::from_static("cf-mitigated"),
+                    "challenge",
+                ),
+            ],
+            "<html><body>are you human?</body></html>",
+        )
+    }
+
+    #[tokio::test]
+    async fn challenge_header_on_final_response_populates_warning_fields() {
+        let base = spawn_router(
+            axum::Router::new().route("/wall", axum::routing::get(cf_challenge_as_200_handler)),
+        )
+        .await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/wall"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.warning.as_deref(), Some("cloudflare_mitigated"));
+        assert_eq!(res.warnings.len(), 1);
+        assert!(res.warnings[0].contains("Cloudflare"));
+    }
+
+    #[tokio::test]
+    async fn clean_response_has_no_warning() {
+        let base = spawn_router(redirect_router()).await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/clean"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.warning, None);
+        assert!(res.warnings.is_empty());
+    }
+
+    /// The AWS-WAF shape end-to-end: a 202 with an empty body still carries a
+    /// distinct warning marker and customer-visible text naming AWS, never
+    /// the Cloudflare one.
+    #[tokio::test]
+    async fn aws_waf_challenge_on_final_response_populates_distinct_warning() {
+        async fn aws_waf_202_handler() -> impl axum::response::IntoResponse {
+            (
+                axum::http::StatusCode::ACCEPTED,
+                [(
+                    axum::http::HeaderName::from_static("x-amzn-waf-action"),
+                    "challenge",
+                )],
+                "",
+            )
+        }
+        let base = spawn_router(
+            axum::Router::new().route("/wall", axum::routing::get(aws_waf_202_handler)),
+        )
+        .await;
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let res = fetcher
+            .fetch(
+                &format!("{base}/wall"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(5_000),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status_code, 202);
+        assert_eq!(res.warning.as_deref(), Some("waf_challenge"));
+        assert_eq!(res.warnings.len(), 1);
+        assert!(res.warnings[0].contains("AWS WAF"));
+        assert!(!res.warnings[0].contains("Cloudflare"));
+    }
+
+    // ── P. deadline ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn deadline_already_expired_returns_error_without_network_attempt() {
+        // Port nothing listens on: if the code somehow attempted the network
+        // instead of failing fast on the expired deadline, this would still
+        // error, but for the wrong reason and slower — the fast-path check is
+        // what this test pins.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let fetcher = HttpFetcher::new("crw-test", None, false);
+        let started = std::time::Instant::now();
+        let err = fetcher
+            .fetch(
+                &format!("http://{addr}/"),
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(0),
+            )
+            .await
+            .expect_err("an already-expired deadline must error immediately");
+        assert!(matches!(err, CrwError::HttpError(ref msg) if msg.contains("deadline expired")));
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+    }
+
+    /// `with_timeout`'s custom `request_timeout` parameter must actually be
+    /// wired into the built client — a short custom timeout must fire even
+    /// when the caller's `Deadline` budget is generous, proving the two are
+    /// independent bounds.
+    #[tokio::test]
+    async fn with_timeout_custom_request_timeout_is_enforced_by_the_client() {
+        async fn slow_handler() -> impl axum::response::IntoResponse {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            (axum::http::StatusCode::OK, "<html>too late</html>")
+        }
+        let base =
+            spawn_router(axum::Router::new().route("/slow", axum::routing::get(slow_handler)))
+                .await;
+        let fetcher = HttpFetcher::with_timeout(
+            "crw-test",
+            None,
+            false,
+            std::time::Duration::from_millis(250),
+        );
+        let started = std::time::Instant::now();
+        let err = fetcher
+            .fetch(
+                &format!("{base}/slow"),
+                &HashMap::new(),
+                None,
+                // A generous 10s Deadline: only the client's own 250ms
+                // request_timeout should be able to cut this short.
+                Deadline::from_request_ms(10_000),
+            )
+            .await
+            .expect_err("the client-level request_timeout must fire before the 3s response");
+        assert!(
+            matches!(err, CrwError::HttpError(_) | CrwError::Timeout(_)),
+            "got {err:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}, the 250ms client timeout did not fire",
+            started.elapsed()
+        );
+    }
+
+    // ── Q. mid-loop 429 / challenge-header rescue ───────────────────────
+
+    fn spawn_429_origin() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                const BODY: &str = "rate limited";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
+                        BODY.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    fn spawn_cf_challenge_origin() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                const BODY: &str = "are you human?";
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\ncf-mitigated: challenge\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{BODY}",
+                        BODY.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    /// Minimal forward-proxy stub (portable, no unix-only socket options):
+    /// reads whatever the client sends and always answers 200 with a marker
+    /// body. Distinct from `spawn_stub_proxy` (which is `#[cfg(unix)]`-only)
+    /// so these mid-loop tests run on every platform.
+    fn spawn_ok_proxy(body: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// End-to-end: an origin that answers 429 (its egress-IP rate limit) is
+    /// retried once through the fallback proxy and the PROXY's response wins.
+    /// This is the mid-loop arm (`should_arm_proxy`) exercised over a real
+    /// HTTP round trip, distinct from the `proxy_first` (latched) tests above.
+    ///
+    /// `has_static_proxy: true` here is a test-only trick to keep the
+    /// process-wide egress latch (`crate::egress::global()`) untouched: that
+    /// write hook is gated on `!has_static_proxy`, and it is a 10-minute-TTL
+    /// singleton keyed by host string ("127.0.0.1") that every other test in
+    /// this file also targets — a real write here would leak into them. The
+    /// field is read nowhere else in the retry state machine, so this does
+    /// not affect the behaviour under test.
+    #[tokio::test]
+    async fn ratelimit_429_arms_proxy_and_rescues_response() {
+        let origin = spawn_429_origin();
+        let proxy = spawn_ok_proxy("served via proxy after 429");
+        let fetcher = HttpFetcher {
+            client: reqwest::Client::new(),
+            relaxed_client: None,
+            has_static_proxy: true,
+            ratelimit_proxy_client: Some(
+                build_client("ua", Some(&proxy), std::time::Duration::from_secs(5), false).unwrap(),
+            ),
+            inject_stealth_headers: false,
+        };
+        let res = fetcher
+            .fetch(
+                &origin,
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(10_000),
+            )
+            .await
+            .expect("429 must be rescued through the armed proxy");
+        assert_eq!(res.status_code, 200);
+        assert!(
+            res.html.contains("served via proxy after 429"),
+            "got: {}",
+            res.html
+        );
+    }
+
+    #[tokio::test]
+    async fn challenge_header_arms_proxy_and_rescues_response() {
+        let origin = spawn_cf_challenge_origin();
+        let proxy = spawn_ok_proxy("clean page via proxy");
+        let fetcher = HttpFetcher {
+            client: reqwest::Client::new(),
+            relaxed_client: None,
+            has_static_proxy: true,
+            ratelimit_proxy_client: Some(
+                build_client("ua", Some(&proxy), std::time::Duration::from_secs(5), false).unwrap(),
+            ),
+            inject_stealth_headers: false,
+        };
+        let res = fetcher
+            .fetch(
+                &origin,
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(10_000),
+            )
+            .await
+            .expect("cf-mitigated challenge must be rescued through the armed proxy");
+        assert_eq!(res.status_code, 200);
+        assert!(
+            res.html.contains("clean page via proxy"),
+            "got: {}",
+            res.html
+        );
+        // The FINAL result is the proxy's clean response, which carries no
+        // cf-mitigated header, so no challenge warning should be stamped.
+        assert!(res.warning.is_none(), "got warning: {:?}", res.warning);
+    }
+
+    /// The 429 mid-loop arm deliberately has NO reserve (unlike `proxy_first`
+    /// and the challenge-header arm — see the `attempt_budget` comment: "the
+    /// 429 arm predates this change and its budget behaviour is deliberately
+    /// left byte-identical"). A hanging proxy after a 429 can therefore eat
+    /// the WHOLE deadline and starve the direct rescue entirely. This pins
+    /// that asymmetry: a short deadline plus a hanging proxy on this specific
+    /// arm produces a Timeout, not a rescued direct response.
+    #[tokio::test]
+    async fn ratelimit_429_arm_has_no_reserve_hanging_proxy_can_starve_direct() {
+        let origin = spawn_429_origin();
+        let p = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let paddr = p.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = p.accept().await {
+                held.push(sock); // hold it open, write nothing
+            }
+        });
+        let fetcher = HttpFetcher {
+            client: reqwest::Client::new(),
+            relaxed_client: None,
+            has_static_proxy: true,
+            ratelimit_proxy_client: Some(
+                build_client(
+                    "ua",
+                    Some(&format!("http://{paddr}")),
+                    std::time::Duration::from_secs(5),
+                    false,
+                )
+                .unwrap(),
+            ),
+            inject_stealth_headers: false,
+        };
+        let err = fetcher
+            .fetch(
+                &origin,
+                &HashMap::new(),
+                None,
+                Deadline::from_request_ms(300),
+            )
+            .await
+            .expect_err("a hanging proxy on the un-reserved 429 arm must exhaust the deadline");
+        assert!(matches!(err, CrwError::Timeout(_)), "got {err:?}");
     }
 }

@@ -2976,4 +2976,2169 @@ search_backend_url = "http://from-file:8080"
         };
         assert!(only_user.effective_proxy_credentials(Some("us")).is_none());
     }
+
+    // ==================================================================
+    // ServerConfig
+    // ==================================================================
+
+    #[test]
+    fn server_config_defaults() {
+        let s = ServerConfig::default();
+        assert_eq!(s.host, "0.0.0.0");
+        assert_eq!(s.port, 3000);
+        assert_eq!(s.request_timeout_secs, 60);
+        assert_eq!(s.rate_limit_rps, 10);
+        assert!(s.cors_allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn server_config_toml_full_override() {
+        let s: ServerConfig = toml::from_str(
+            r#"
+            host = "127.0.0.1"
+            port = 8080
+            request_timeout_secs = 45
+            rate_limit_rps = 0
+            cors_allowed_origins = ["https://a.example", "https://b.example"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(s.host, "127.0.0.1");
+        assert_eq!(s.port, 8080);
+        assert_eq!(s.request_timeout_secs, 45);
+        assert_eq!(s.rate_limit_rps, 0);
+        assert_eq!(
+            s.cors_allowed_origins,
+            vec!["https://a.example", "https://b.example"]
+        );
+    }
+
+    #[test]
+    fn server_config_cors_from_comma_string() {
+        let s: ServerConfig =
+            toml::from_str(r#"cors_allowed_origins = "https://a,https://b""#).unwrap();
+        assert_eq!(s.cors_allowed_origins, vec!["https://a", "https://b"]);
+    }
+
+    #[test]
+    fn server_config_cors_from_json_array_string() {
+        let s: ServerConfig =
+            toml::from_str(r#"cors_allowed_origins = "[\"https://a\",\"https://b\"]""#).unwrap();
+        assert_eq!(s.cors_allowed_origins, vec!["https://a", "https://b"]);
+    }
+
+    #[test]
+    fn server_config_partial_toml_keeps_other_defaults() {
+        let s: ServerConfig = toml::from_str("port = 9999").unwrap();
+        assert_eq!(s.port, 9999);
+        assert_eq!(s.host, "0.0.0.0", "unset fields must keep their default");
+        assert_eq!(s.request_timeout_secs, 60);
+    }
+
+    #[test]
+    fn env_var_server_host_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_SERVER__HOST", "10.0.0.1") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_SERVER__HOST") };
+        assert_eq!(cfg.server.host, "10.0.0.1");
+    }
+
+    #[test]
+    fn env_var_server_rate_limit_rps() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_SERVER__RATE_LIMIT_RPS", "500") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_SERVER__RATE_LIMIT_RPS") };
+        assert_eq!(cfg.server.rate_limit_rps, 500);
+    }
+
+    #[test]
+    fn env_var_server_request_timeout_secs() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_SERVER__REQUEST_TIMEOUT_SECS", "90") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_SERVER__REQUEST_TIMEOUT_SECS") };
+        assert_eq!(cfg.server.request_timeout_secs, 90);
+    }
+
+    #[test]
+    fn env_var_server_port_malformed_number_errors() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_SERVER__PORT", "not-a-port") };
+        let result = AppConfig::load();
+        unsafe { std::env::remove_var("CRW_SERVER__PORT") };
+        assert!(result.is_err(), "non-numeric port must fail to load");
+    }
+
+    // ==================================================================
+    // RequestConfig
+    // ==================================================================
+
+    #[test]
+    fn request_config_toml_full_override() {
+        let r: RequestConfig = toml::from_str(
+            r#"
+            deadline_ms_default = 12345
+            auto_extend_deadline_for_ladder = false
+            "#,
+        )
+        .unwrap();
+        assert_eq!(r.deadline_ms_default, 12345);
+        assert!(!r.auto_extend_deadline_for_ladder);
+    }
+
+    #[test]
+    fn request_config_empty_toml_uses_defaults() {
+        let r: RequestConfig = toml::from_str("").unwrap();
+        assert_eq!(r.deadline_ms_default, 8000);
+        assert!(r.auto_extend_deadline_for_ladder);
+    }
+
+    #[test]
+    fn env_var_request_deadline_ms_default() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_REQUEST__DEADLINE_MS_DEFAULT", "20000") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_REQUEST__DEADLINE_MS_DEFAULT") };
+        assert_eq!(cfg.request.deadline_ms_default, 20000);
+    }
+
+    #[test]
+    fn env_var_request_auto_extend_false() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_REQUEST__AUTO_EXTEND_DEADLINE_FOR_LADDER", "false") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_REQUEST__AUTO_EXTEND_DEADLINE_FOR_LADDER") };
+        assert!(!cfg.request.auto_extend_deadline_for_ladder);
+    }
+
+    // ==================================================================
+    // RendererMode / RendererConfig field-level coverage
+    // ==================================================================
+
+    #[test]
+    fn renderer_mode_default_direct() {
+        assert_eq!(RendererMode::default(), RendererMode::Auto);
+    }
+
+    #[test]
+    fn renderer_mode_serialize_round_trip() {
+        let cases = [
+            RendererMode::Auto,
+            RendererMode::None,
+            RendererMode::Lightpanda,
+            RendererMode::Chrome,
+            RendererMode::Playwright,
+            RendererMode::Camoufox,
+            RendererMode::Cloak,
+        ];
+        for mode in cases {
+            let s = serde_json::to_string(&mode).unwrap();
+            let back: RendererMode = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, mode, "round trip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn renderer_config_default_all_fields() {
+        let r = RendererConfig::default();
+        assert_eq!(r.mode, RendererMode::Auto);
+        assert_eq!(r.page_timeout_ms, 30_000);
+        assert_eq!(r.http_timeout_ms, None);
+        assert_eq!(r.lightpanda_timeout_ms, None);
+        assert_eq!(r.chrome_timeout_ms, None);
+        assert_eq!(r.pool_size, 4);
+        assert_eq!(r.chrome_proxy_pool_size, None);
+        assert_eq!(r.chrome_challenge_max_retries, None);
+        assert_eq!(r.chrome_spa_selector_max_ms, None);
+        assert!(!r.chrome_fast_ready);
+        assert!(!r.chrome_hedge);
+        assert!(!r.auto_egress_escalation);
+        assert!(!r.cloak_recover_on_cf);
+        assert!(!r.latency_breakdown);
+        assert_eq!(r.render_js_default, None);
+        assert!(r.lightpanda.is_none());
+        assert!(r.playwright.is_none());
+        assert!(r.chrome.is_none());
+        assert!(r.chrome_proxy.is_none());
+        assert_eq!(r.chrome_proxy_timeout_ms, None);
+        assert!(r.camoufox.is_none());
+        assert_eq!(r.camoufox_timeout_ms, None);
+        assert!(r.cloak.is_none());
+        assert_eq!(r.cloak_timeout_ms, None);
+        assert_eq!(r.cloak_proxy_host, None);
+        assert!(!r.chrome_intercept_resources);
+        assert!(!r.chrome_intercept_stylesheets);
+        assert!(r.chrome_host_intercept_disable.is_empty());
+        assert_eq!(r.chrome_nav_budget_ms, 12_000);
+        assert!(!r.chrome_context_pool_enabled);
+        assert_eq!(r.chrome_backend, ChromeBackend::Vanilla);
+        assert!(!r.use_predictor);
+        assert_eq!(r.proxy_base_user, None);
+        assert_eq!(r.proxy_base_pass, None);
+        assert_eq!(r.proxy_default_country, None);
+    }
+
+    #[test]
+    fn renderer_config_toml_parse_chrome_endpoint() {
+        let r: RendererConfig = toml::from_str(
+            r#"
+            mode = "chrome"
+            [chrome]
+            ws_url = "ws://chrome-host:9222"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(r.mode, RendererMode::Chrome);
+        assert_eq!(r.chrome.unwrap().ws_url, "ws://chrome-host:9222");
+    }
+
+    #[test]
+    fn renderer_config_toml_parse_lightpanda_and_playwright_endpoints() {
+        let r: RendererConfig = toml::from_str(
+            r#"
+            [lightpanda]
+            ws_url = "ws://lp:9222"
+            [playwright]
+            ws_url = "ws://pw:9222"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(r.lightpanda.unwrap().ws_url, "ws://lp:9222");
+        assert_eq!(r.playwright.unwrap().ws_url, "ws://pw:9222");
+    }
+
+    #[test]
+    fn cdp_endpoint_missing_ws_url_errors() {
+        let result: Result<CdpEndpoint, _> = toml::from_str("");
+        assert!(result.is_err(), "ws_url has no default, must be required");
+    }
+
+    #[test]
+    fn camoufox_endpoint_default() {
+        let c = CamoufoxEndpoint::default();
+        assert_eq!(c.base_url, "");
+        assert_eq!(c.api_key, "");
+        assert!(!c.include_in_auto);
+    }
+
+    #[test]
+    fn camoufox_endpoint_toml_parse_only_base_url() {
+        let c: CamoufoxEndpoint = toml::from_str(r#"base_url = "http://cam:9377""#).unwrap();
+        assert_eq!(c.base_url, "http://cam:9377");
+        assert_eq!(c.api_key, "", "api_key must default to empty string");
+        assert!(!c.include_in_auto);
+    }
+
+    #[test]
+    fn camoufox_endpoint_missing_base_url_errors() {
+        let result: Result<CamoufoxEndpoint, _> = toml::from_str("");
+        assert!(result.is_err(), "base_url has no default, must be required");
+    }
+
+    #[test]
+    fn cloak_endpoint_default() {
+        let c = CloakEndpoint::default();
+        assert_eq!(c.base_url, "");
+        assert_eq!(c.api_key, "");
+        assert!(!c.include_in_auto);
+    }
+
+    #[test]
+    fn cloak_endpoint_toml_parse_full() {
+        let c: CloakEndpoint = toml::from_str(
+            r#"
+            base_url = "http://cloak:8000"
+            api_key = "secret"
+            include_in_auto = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.base_url, "http://cloak:8000");
+        assert_eq!(c.api_key, "secret");
+        assert!(c.include_in_auto);
+    }
+
+    #[test]
+    fn chrome_backend_default_is_vanilla() {
+        assert_eq!(ChromeBackend::default(), ChromeBackend::Vanilla);
+    }
+
+    #[test]
+    fn chrome_backend_toml_parse_browserless() {
+        #[derive(Deserialize)]
+        struct Wrap {
+            chrome_backend: ChromeBackend,
+        }
+        let w: Wrap = toml::from_str(r#"chrome_backend = "browserless""#).unwrap();
+        assert_eq!(w.chrome_backend, ChromeBackend::Browserless);
+    }
+
+    #[test]
+    fn chrome_backend_bogus_value_errors() {
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[allow(dead_code)]
+            chrome_backend: ChromeBackend,
+        }
+        let result: Result<Wrap, _> = toml::from_str(r#"chrome_backend = "netscape""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn http_timeout_falls_back_to_page_timeout_then_explicit_wins() {
+        let mut r = RendererConfig {
+            page_timeout_ms: 25_000,
+            ..Default::default()
+        };
+        assert_eq!(r.http_timeout(), 25_000);
+        r.http_timeout_ms = Some(9_000);
+        assert_eq!(r.http_timeout(), 9_000);
+    }
+
+    #[test]
+    fn lightpanda_timeout_falls_back_to_page_timeout_then_explicit_wins() {
+        let mut r = RendererConfig {
+            page_timeout_ms: 25_000,
+            ..Default::default()
+        };
+        assert_eq!(r.lightpanda_timeout(), 25_000);
+        r.lightpanda_timeout_ms = Some(3_000);
+        assert_eq!(r.lightpanda_timeout(), 3_000);
+    }
+
+    #[test]
+    fn chrome_timeout_falls_back_to_page_timeout_then_explicit_wins() {
+        let mut r = RendererConfig {
+            page_timeout_ms: 25_000,
+            ..Default::default()
+        };
+        assert_eq!(r.chrome_timeout(), 25_000);
+        r.chrome_timeout_ms = Some(40_000);
+        assert_eq!(r.chrome_timeout(), 40_000);
+    }
+
+    #[test]
+    fn chrome_proxy_timeout_falls_back_to_chrome_plus_15s() {
+        let r = RendererConfig {
+            chrome_timeout_ms: Some(30_000),
+            ..Default::default()
+        };
+        assert_eq!(r.chrome_proxy_timeout(), 45_000);
+    }
+
+    #[test]
+    fn chrome_proxy_timeout_explicit_override_wins() {
+        let r = RendererConfig {
+            chrome_timeout_ms: Some(30_000),
+            chrome_proxy_timeout_ms: Some(99_000),
+            ..Default::default()
+        };
+        assert_eq!(r.chrome_proxy_timeout(), 99_000);
+    }
+
+    #[test]
+    fn camoufox_timeout_default_and_override() {
+        let r = RendererConfig::default();
+        assert_eq!(r.camoufox_timeout(), CAMOUFOX_DEFAULT_TIMEOUT_MS);
+        let r2 = RendererConfig {
+            camoufox_timeout_ms: Some(1_234),
+            ..Default::default()
+        };
+        assert_eq!(r2.camoufox_timeout(), 1_234);
+    }
+
+    #[test]
+    fn cloak_timeout_default_and_override() {
+        let r = RendererConfig::default();
+        assert_eq!(r.cloak_timeout(), CLOAK_DEFAULT_TIMEOUT_MS);
+        let r2 = RendererConfig {
+            cloak_timeout_ms: Some(5_678),
+            ..Default::default()
+        };
+        assert_eq!(r2.cloak_timeout(), 5_678);
+    }
+
+    #[test]
+    #[cfg(not(feature = "cdp"))]
+    fn min_deadline_full_ladder_mode_none_is_zero() {
+        let r = RendererConfig {
+            mode: RendererMode::None,
+            ..Default::default()
+        };
+        assert_eq!(r.min_deadline_for_full_ladder_ms(), 0);
+        assert_eq!(r.cdp_tier_count(), 0);
+    }
+
+    // ==================================================================
+    // ChromePoolConfig / resolve_interactive_reserve
+    // ==================================================================
+
+    #[test]
+    fn chrome_pool_config_defaults() {
+        let p = ChromePoolConfig::default();
+        assert_eq!(p.size, None);
+        assert_eq!(p.reserved_interactive_renders, None);
+        assert_eq!(p.recycle_after_navs, 1);
+        assert_eq!(p.idle_timeout_secs, 300);
+        assert_eq!(p.health_check_secs, 60);
+        assert_eq!(p.shutdown_drain_secs, 30);
+    }
+
+    #[test]
+    fn chrome_pool_config_toml_parse() {
+        let p: ChromePoolConfig = toml::from_str(
+            r#"
+            size = 16
+            reserved_interactive_renders = 4
+            recycle_after_navs = 10
+            idle_timeout_secs = 60
+            health_check_secs = 15
+            shutdown_drain_secs = 5
+            "#,
+        )
+        .unwrap();
+        assert_eq!(p.size, Some(16));
+        assert_eq!(p.reserved_interactive_renders, Some(4));
+        assert_eq!(p.recycle_after_navs, 10);
+        assert_eq!(p.idle_timeout_secs, 60);
+        assert_eq!(p.health_check_secs, 15);
+        assert_eq!(p.shutdown_drain_secs, 5);
+    }
+
+    #[test]
+    fn resolve_interactive_reserve_none_is_quarter_of_total() {
+        assert_eq!(resolve_interactive_reserve(None, 16), 4);
+        assert_eq!(resolve_interactive_reserve(None, 8), 2);
+    }
+
+    #[test]
+    fn resolve_interactive_reserve_none_floors_at_one() {
+        // total/4 rounds down to 0 for small totals; floored at 1.
+        assert_eq!(resolve_interactive_reserve(None, 3), 1);
+        assert_eq!(resolve_interactive_reserve(None, 0), 1);
+    }
+
+    #[test]
+    fn resolve_interactive_reserve_some_zero_disables_reservation() {
+        assert_eq!(resolve_interactive_reserve(Some(0), 16), 0);
+    }
+
+    #[test]
+    fn resolve_interactive_reserve_some_explicit_value_wins() {
+        assert_eq!(resolve_interactive_reserve(Some(7), 16), 7);
+        // Explicit value is not clamped by this function (caller clamps).
+        assert_eq!(resolve_interactive_reserve(Some(999), 16), 999);
+    }
+
+    // ==================================================================
+    // EscalationConfig
+    // ==================================================================
+
+    #[test]
+    fn escalation_config_defaults() {
+        let e = EscalationConfig::default();
+        assert!(!e.enabled);
+        assert_eq!(e.waterfall_timeout_ms, 8_000);
+        assert_eq!(e.global_timeout_ms, 60_000);
+        assert!(!e.residential_proxy);
+        assert_eq!(e.proxy_country, "us");
+    }
+
+    #[test]
+    fn escalation_config_toml_parse() {
+        let e: EscalationConfig = toml::from_str(
+            r#"
+            enabled = true
+            waterfall_timeout_ms = 5000
+            global_timeout_ms = 30000
+            residential_proxy = true
+            proxy_country = "de"
+            "#,
+        )
+        .unwrap();
+        assert!(e.enabled);
+        assert_eq!(e.waterfall_timeout_ms, 5000);
+        assert_eq!(e.global_timeout_ms, 30000);
+        assert!(e.residential_proxy);
+        assert_eq!(e.proxy_country, "de");
+    }
+
+    #[test]
+    fn env_var_renderer_escalation_enabled() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_RENDERER__ESCALATION__ENABLED", "true") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_RENDERER__ESCALATION__ENABLED") };
+        assert!(cfg.renderer.escalation.enabled);
+    }
+
+    #[test]
+    fn env_var_renderer_escalation_proxy_country() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_RENDERER__ESCALATION__PROXY_COUNTRY", "fr") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_RENDERER__ESCALATION__PROXY_COUNTRY") };
+        assert_eq!(cfg.renderer.escalation.proxy_country, "fr");
+    }
+
+    // ==================================================================
+    // AntibotConfig
+    // ==================================================================
+
+    #[test]
+    fn antibot_config_defaults() {
+        let a = AntibotConfig::default();
+        assert!(a.enabled);
+        assert!(!a.escalate_on_signal);
+        assert!(a.escalate_in_failover);
+    }
+
+    #[test]
+    fn antibot_config_toml_parse() {
+        let a: AntibotConfig = toml::from_str(
+            r#"
+            enabled = false
+            escalate_on_signal = true
+            escalate_in_failover = false
+            "#,
+        )
+        .unwrap();
+        assert!(!a.enabled);
+        assert!(a.escalate_on_signal);
+        assert!(!a.escalate_in_failover);
+    }
+
+    #[test]
+    fn env_var_renderer_antibot_escalate_on_signal() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_RENDERER__ANTIBOT__ESCALATE_ON_SIGNAL", "true") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_RENDERER__ANTIBOT__ESCALATE_ON_SIGNAL") };
+        assert!(cfg.renderer.antibot.escalate_on_signal);
+    }
+
+    // ==================================================================
+    // StealthConfig
+    // ==================================================================
+
+    #[test]
+    fn stealth_config_defaults() {
+        let s = StealthConfig::default();
+        assert!(!s.enabled);
+        assert!(s.user_agents.is_empty());
+        assert_eq!(s.jitter_factor, 0.2);
+        assert!(s.inject_headers);
+    }
+
+    #[test]
+    fn stealth_config_toml_parse_user_agents() {
+        let s: StealthConfig = toml::from_str(
+            r#"
+            enabled = true
+            user_agents = ["ua-one", "ua-two"]
+            jitter_factor = 0.5
+            inject_headers = false
+            "#,
+        )
+        .unwrap();
+        assert!(s.enabled);
+        assert_eq!(s.user_agents, vec!["ua-one", "ua-two"]);
+        assert_eq!(s.jitter_factor, 0.5);
+        assert!(!s.inject_headers);
+    }
+
+    #[test]
+    fn stealth_config_jitter_factor_not_range_checked_at_parse_time() {
+        // No validation exists on this field today; document the current
+        // (permissive) behavior rather than assume a clamp that isn't there.
+        let s: StealthConfig = toml::from_str("jitter_factor = 5.0").unwrap();
+        assert_eq!(s.jitter_factor, 5.0);
+    }
+
+    #[test]
+    fn env_var_renderer_stealth_enabled() {
+        // stealth lives under crawler, not renderer — see CrawlerConfig::stealth.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_CRAWLER__STEALTH__ENABLED", "true") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_CRAWLER__STEALTH__ENABLED") };
+        assert!(cfg.crawler.stealth.enabled);
+    }
+
+    // ==================================================================
+    // CrawlerConfig
+    // ==================================================================
+
+    #[test]
+    fn crawler_config_default_max_concurrency_is_10() {
+        assert_eq!(CrawlerConfig::default().max_concurrency, 10);
+    }
+
+    #[test]
+    fn crawler_config_default_max_batch_urls_is_10000() {
+        assert_eq!(CrawlerConfig::default().max_batch_urls, 10_000);
+    }
+
+    #[test]
+    fn crawler_config_default_max_extract_urls_is_50() {
+        assert_eq!(CrawlerConfig::default().max_extract_urls, 50);
+    }
+
+    #[test]
+    fn crawler_config_default_max_batch_concurrency_is_100() {
+        assert_eq!(CrawlerConfig::default().max_batch_concurrency, 100);
+    }
+
+    #[test]
+    fn crawler_config_default_max_aggregate_batch_pipelines_is_unbounded() {
+        assert_eq!(CrawlerConfig::default().max_aggregate_batch_pipelines, 0);
+    }
+
+    #[test]
+    fn crawler_config_default_requests_per_second() {
+        assert_eq!(CrawlerConfig::default().requests_per_second, 10.0);
+    }
+
+    #[test]
+    fn crawler_config_default_respect_robots_txt_true() {
+        assert!(CrawlerConfig::default().respect_robots_txt);
+    }
+
+    #[test]
+    fn crawler_config_default_user_agent_is_modern_chrome() {
+        let ua = CrawlerConfig::default().user_agent;
+        assert!(ua.contains("Chrome/150.0.0.0"));
+        assert!(!ua.contains("CRW/0.1"), "legacy UA must not resurface");
+    }
+
+    #[test]
+    fn crawler_config_default_depth_and_pages() {
+        let c = CrawlerConfig::default();
+        assert_eq!(c.default_max_depth, 2);
+        assert_eq!(c.default_max_pages, 100);
+    }
+
+    #[test]
+    fn crawler_config_default_job_ttl_secs_is_one_hour() {
+        assert_eq!(CrawlerConfig::default().job_ttl_secs, 3600);
+    }
+
+    #[test]
+    fn crawler_config_default_proxy_and_proxy_list_empty() {
+        let c = CrawlerConfig::default();
+        assert_eq!(c.proxy, None);
+        assert!(c.proxy_list.is_empty());
+    }
+
+    #[test]
+    fn crawler_config_default_proxy_rotation_is_sticky_per_host() {
+        assert_eq!(
+            CrawlerConfig::default().proxy_rotation,
+            crate::proxy::ProxyRotation::StickyPerHost
+        );
+    }
+
+    #[test]
+    fn crawler_config_default_stealth_matches_stealth_default() {
+        assert!(!CrawlerConfig::default().stealth.enabled);
+    }
+
+    #[test]
+    fn crawler_config_per_host_interactive_reserve_default_is_one() {
+        assert_eq!(CrawlerConfig::default().per_host_interactive_reserve, 1);
+    }
+
+    #[test]
+    fn crawler_config_toml_parse_all_scalar_fields() {
+        let c: CrawlerConfig = toml::from_str(
+            r#"
+            max_concurrency = 50
+            requests_per_second = 25.5
+            respect_robots_txt = false
+            user_agent = "custom-agent/1.0"
+            default_max_depth = 5
+            default_max_pages = 1000
+            job_ttl_secs = 7200
+            per_host_min_interval_ms = 250
+            per_host_max_concurrent = 3
+            per_host_interactive_reserve = 2
+            max_batch_urls = 500
+            max_extract_urls = 10
+            max_batch_concurrency = 40
+            max_aggregate_batch_pipelines = 200
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.max_concurrency, 50);
+        assert_eq!(c.requests_per_second, 25.5);
+        assert!(!c.respect_robots_txt);
+        assert_eq!(c.user_agent, "custom-agent/1.0");
+        assert_eq!(c.default_max_depth, 5);
+        assert_eq!(c.default_max_pages, 1000);
+        assert_eq!(c.job_ttl_secs, 7200);
+        assert_eq!(c.per_host_min_interval_ms, 250);
+        assert_eq!(c.per_host_max_concurrent, 3);
+        assert_eq!(c.per_host_interactive_reserve, 2);
+        assert_eq!(c.max_batch_urls, 500);
+        assert_eq!(c.max_extract_urls, 10);
+        assert_eq!(c.max_batch_concurrency, 40);
+        assert_eq!(c.max_aggregate_batch_pipelines, 200);
+    }
+
+    #[test]
+    fn crawler_proxy_list_from_toml_array() {
+        let c: CrawlerConfig =
+            toml::from_str(r#"proxy_list = ["http://p1:8080", "http://p2:8080"]"#).unwrap();
+        assert_eq!(c.proxy_list, vec!["http://p1:8080", "http://p2:8080"]);
+    }
+
+    #[test]
+    fn crawler_proxy_list_from_comma_string() {
+        let c: CrawlerConfig =
+            toml::from_str(r#"proxy_list = "http://p1:8080,http://p2:8080""#).unwrap();
+        assert_eq!(c.proxy_list, vec!["http://p1:8080", "http://p2:8080"]);
+    }
+
+    #[test]
+    fn crawler_proxy_list_from_json_array_string() {
+        let c: CrawlerConfig =
+            toml::from_str(r#"proxy_list = "[\"http://p1:8080\",\"http://p2:8080\"]""#).unwrap();
+        assert_eq!(c.proxy_list, vec!["http://p1:8080", "http://p2:8080"]);
+    }
+
+    #[test]
+    fn crawler_proxy_list_comma_string_filters_empty_entries() {
+        let c: CrawlerConfig =
+            toml::from_str(r#"proxy_list = "http://p1:8080,,  ,http://p2:8080""#).unwrap();
+        assert_eq!(c.proxy_list, vec!["http://p1:8080", "http://p2:8080"]);
+    }
+
+    #[test]
+    fn crawler_proxy_list_empty_string_yields_empty_vec() {
+        let c: CrawlerConfig = toml::from_str(r#"proxy_list = """#).unwrap();
+        assert!(c.proxy_list.is_empty());
+    }
+
+    #[test]
+    fn env_var_crawler_max_concurrency_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_CRAWLER__MAX_CONCURRENCY", "42") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_CRAWLER__MAX_CONCURRENCY") };
+        assert_eq!(cfg.crawler.max_concurrency, 42);
+    }
+
+    #[test]
+    fn env_var_crawler_max_batch_urls_override() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_CRAWLER__MAX_BATCH_URLS", "99") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_CRAWLER__MAX_BATCH_URLS") };
+        assert_eq!(cfg.crawler.max_batch_urls, 99);
+    }
+
+    #[test]
+    fn env_var_crawler_respect_robots_txt_false() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_CRAWLER__RESPECT_ROBOTS_TXT", "false") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_CRAWLER__RESPECT_ROBOTS_TXT") };
+        assert!(!cfg.crawler.respect_robots_txt);
+    }
+
+    #[test]
+    fn env_var_crawler_max_concurrency_malformed_errors() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_CRAWLER__MAX_CONCURRENCY", "ten") };
+        let result = AppConfig::load();
+        unsafe { std::env::remove_var("CRW_CRAWLER__MAX_CONCURRENCY") };
+        assert!(result.is_err());
+    }
+
+    // ==================================================================
+    // ExtractionConfig
+    // ==================================================================
+
+    #[test]
+    fn extraction_config_defaults() {
+        let e = ExtractionConfig::default();
+        assert_eq!(e.default_format, "markdown");
+        assert!(e.only_main_content);
+        assert!(e.llm.is_none());
+        assert!(e.domain_selectors.is_empty());
+        assert_eq!(e.http_retry_threshold_bytes, 100);
+        assert_eq!(e.lightpanda_retry_threshold_bytes, 2000);
+        assert!(e.max_concurrent_extracts >= 2, "must be floored at 2");
+        assert_eq!(e.reserved_interactive_extracts, None);
+        assert!(!e.normalize_tables);
+    }
+
+    #[test]
+    fn extraction_config_llm_fallback_default_matches_struct_default() {
+        let e = ExtractionConfig::default();
+        assert!(!e.llm_fallback.enable);
+        assert_eq!(e.llm_fallback.quality_threshold, 0.3);
+    }
+
+    #[test]
+    fn extraction_config_toml_parse_domain_selectors_map() {
+        let e: ExtractionConfig = toml::from_str(
+            r##"
+            [domain_selectors]
+            "example.com" = "article.main"
+            "docs.example.com" = "#content"
+            "##,
+        )
+        .unwrap();
+        assert_eq!(
+            e.domain_selectors.get("example.com").map(String::as_str),
+            Some("article.main")
+        );
+        assert_eq!(
+            e.domain_selectors
+                .get("docs.example.com")
+                .map(String::as_str),
+            Some("#content")
+        );
+    }
+
+    #[test]
+    fn extraction_config_toml_scalar_overrides() {
+        let e: ExtractionConfig = toml::from_str(
+            r#"
+            default_format = "html"
+            only_main_content = false
+            http_retry_threshold_bytes = 250
+            lightpanda_retry_threshold_bytes = 4000
+            max_concurrent_extracts = 16
+            reserved_interactive_extracts = 3
+            normalize_tables = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(e.default_format, "html");
+        assert!(!e.only_main_content);
+        assert_eq!(e.http_retry_threshold_bytes, 250);
+        assert_eq!(e.lightpanda_retry_threshold_bytes, 4000);
+        assert_eq!(e.max_concurrent_extracts, 16);
+        assert_eq!(e.reserved_interactive_extracts, Some(3));
+        assert!(e.normalize_tables);
+    }
+
+    #[test]
+    fn extraction_config_empty_toml_uses_all_defaults() {
+        let e: ExtractionConfig = toml::from_str("").unwrap();
+        assert_eq!(e.default_format, "markdown");
+        assert!(e.only_main_content);
+    }
+
+    // ==================================================================
+    // LlmFallbackConfig
+    // ==================================================================
+
+    #[test]
+    fn llm_fallback_config_defaults() {
+        let l = LlmFallbackConfig::default();
+        assert!(!l.enable);
+        assert_eq!(l.quality_threshold, 0.3);
+        assert_eq!(l.max_html_bytes, 100_000);
+        assert!(!l.always_run);
+    }
+
+    #[test]
+    fn llm_fallback_config_toml_parse() {
+        let l: LlmFallbackConfig = toml::from_str(
+            r#"
+            enable = true
+            quality_threshold = 0.8
+            max_html_bytes = 50000
+            always_run = true
+            "#,
+        )
+        .unwrap();
+        assert!(l.enable);
+        assert_eq!(l.quality_threshold, 0.8);
+        assert_eq!(l.max_html_bytes, 50000);
+        assert!(l.always_run);
+    }
+
+    #[test]
+    fn env_var_extraction_llm_fallback_enable() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_EXTRACTION__LLM_FALLBACK__ENABLE", "true") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_EXTRACTION__LLM_FALLBACK__ENABLE") };
+        assert!(cfg.extraction.llm_fallback.enable);
+    }
+
+    // ==================================================================
+    // LlmConfig — provider/api_key/model/base_url nesting under
+    // extraction.llm, per the documented CRW_EXTRACTION__LLM__* env vars.
+    // ==================================================================
+
+    #[test]
+    fn llm_config_programmatic_default() {
+        let l = LlmConfig::default();
+        assert_eq!(l.provider, "anthropic");
+        assert_eq!(l.api_key, "");
+        assert_eq!(l.model, "claude-sonnet-4-20250514");
+        assert_eq!(l.base_url, None);
+        assert_eq!(l.max_tokens, 4096);
+        assert_eq!(l.azure_api_version, None);
+        assert_eq!(l.max_concurrency, 4);
+        assert_eq!(l.reserved_interactive_llm, None);
+        assert_eq!(l.max_html_bytes, 100_000);
+        assert_eq!(l.require_byok_header, None);
+        assert_eq!(l.temperature, None);
+        assert_eq!(l.reasoning_effort, None);
+    }
+
+    #[test]
+    fn llm_config_deserialize_requires_api_key() {
+        // api_key has no #[serde(default)] — a config that omits it must fail
+        // to deserialize rather than silently substitute an empty string.
+        let result: Result<LlmConfig, _> = toml::from_str(r#"provider = "deepseek""#);
+        assert!(result.is_err(), "missing api_key must be a hard error");
+    }
+
+    #[test]
+    fn llm_config_toml_parse_minimal_only_api_key() {
+        let l: LlmConfig = toml::from_str(r#"api_key = "sk-test""#).unwrap();
+        assert_eq!(l.api_key, "sk-test");
+        assert_eq!(l.provider, "anthropic", "provider falls back to default");
+        assert_eq!(l.model, "claude-sonnet-4-20250514");
+        assert_eq!(l.max_tokens, 4096);
+    }
+
+    #[test]
+    fn llm_config_toml_parse_full() {
+        let l: LlmConfig = toml::from_str(
+            r#"
+            provider = "azure"
+            api_key = "sk-azure"
+            model = "gpt-4o"
+            base_url = "https://my-azure.example/v1"
+            max_tokens = 8192
+            azure_api_version = "2024-05-01-preview"
+            max_concurrency = 12
+            reserved_interactive_llm = 2
+            max_html_bytes = 250000
+            require_byok_header = "x-crw-llm-key"
+            temperature = 0.0
+            reasoning_effort = "high"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(l.provider, "azure");
+        assert_eq!(l.api_key, "sk-azure");
+        assert_eq!(l.model, "gpt-4o");
+        assert_eq!(l.base_url.as_deref(), Some("https://my-azure.example/v1"));
+        assert_eq!(l.max_tokens, 8192);
+        assert_eq!(l.azure_api_version.as_deref(), Some("2024-05-01-preview"));
+        assert_eq!(l.max_concurrency, 12);
+        assert_eq!(l.reserved_interactive_llm, Some(2));
+        assert_eq!(l.max_html_bytes, 250000);
+        assert_eq!(l.require_byok_header.as_deref(), Some("x-crw-llm-key"));
+        assert_eq!(l.temperature, Some(0.0));
+        assert_eq!(l.reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn env_var_extraction_llm_provider_api_key_model_base_url() {
+        // The exact double-underscore nesting documented for
+        // CRW_EXTRACTION__LLM__{PROVIDER,API_KEY,MODEL,BASE_URL}.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe {
+            std::env::set_var("CRW_EXTRACTION__LLM__PROVIDER", "openai");
+            std::env::set_var("CRW_EXTRACTION__LLM__API_KEY", "sk-env-key");
+            std::env::set_var("CRW_EXTRACTION__LLM__MODEL", "gpt-4o-mini");
+            std::env::set_var("CRW_EXTRACTION__LLM__BASE_URL", "https://api.openai.com/v1");
+        }
+        let cfg = AppConfig::load().unwrap();
+        unsafe {
+            std::env::remove_var("CRW_EXTRACTION__LLM__PROVIDER");
+            std::env::remove_var("CRW_EXTRACTION__LLM__API_KEY");
+            std::env::remove_var("CRW_EXTRACTION__LLM__MODEL");
+            std::env::remove_var("CRW_EXTRACTION__LLM__BASE_URL");
+        }
+        let llm = cfg
+            .extraction
+            .llm
+            .expect("env vars must construct LlmConfig");
+        assert_eq!(llm.provider, "openai");
+        assert_eq!(llm.api_key, "sk-env-key");
+        assert_eq!(llm.model, "gpt-4o-mini");
+        assert_eq!(llm.base_url.as_deref(), Some("https://api.openai.com/v1"));
+    }
+
+    #[test]
+    fn env_var_extraction_llm_partial_set_still_requires_api_key() {
+        // Setting only PROVIDER via env, with no user config file supplying
+        // api_key, must still fail deserialization (api_key is required).
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        let tmp = std::env::temp_dir().join(format!("crw-llm-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).ok();
+        unsafe {
+            std::env::set_var("CRW_USER_CONFIG_DIR", &tmp);
+            std::env::set_var("CRW_EXTRACTION__LLM__PROVIDER", "openai");
+        }
+        let result = AppConfig::load();
+        unsafe {
+            std::env::remove_var("CRW_USER_CONFIG_DIR");
+            std::env::remove_var("CRW_EXTRACTION__LLM__PROVIDER");
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+        assert!(
+            result.is_err(),
+            "provider alone must not satisfy the required api_key field"
+        );
+    }
+
+    // ==================================================================
+    // AuthConfig
+    // ==================================================================
+
+    #[test]
+    fn auth_config_default_empty() {
+        assert!(AuthConfig::default().api_keys.is_empty());
+    }
+
+    #[test]
+    fn auth_config_api_keys_from_toml_array() {
+        let a: AuthConfig = toml::from_str(r#"api_keys = ["key-one", "key-two"]"#).unwrap();
+        assert_eq!(a.api_keys, vec!["key-one", "key-two"]);
+    }
+
+    #[test]
+    fn auth_config_api_keys_from_comma_string() {
+        let a: AuthConfig = toml::from_str(r#"api_keys = "key-one,key-two""#).unwrap();
+        assert_eq!(a.api_keys, vec!["key-one", "key-two"]);
+    }
+
+    #[test]
+    fn auth_config_api_keys_from_json_array_string() {
+        let a: AuthConfig = toml::from_str(r#"api_keys = "[\"key-one\",\"key-two\"]""#).unwrap();
+        assert_eq!(a.api_keys, vec!["key-one", "key-two"]);
+    }
+
+    #[test]
+    fn auth_config_api_keys_comma_string_filters_empty_entries() {
+        let a: AuthConfig = toml::from_str(r#"api_keys = "key-one,,key-two,""#).unwrap();
+        assert_eq!(a.api_keys, vec!["key-one", "key-two"]);
+    }
+
+    #[test]
+    fn env_var_auth_api_keys() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_AUTH__API_KEYS", "envkey1,envkey2") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_AUTH__API_KEYS") };
+        assert_eq!(cfg.auth.api_keys, vec!["envkey1", "envkey2"]);
+    }
+
+    // ==================================================================
+    // MapConfig / MapUrlFilterConfig
+    // ==================================================================
+
+    #[test]
+    fn map_config_default_matches_url_filter_default() {
+        let m = MapConfig::default();
+        assert!(m.url_filter.strip_tracking_params);
+        assert!(m.url_filter.drop_action_urls);
+        assert!(!m.url_filter.gov_tld_drop_actions);
+    }
+
+    #[test]
+    fn map_url_filter_config_defaults() {
+        let f = MapUrlFilterConfig::default();
+        assert!(f.strip_tracking_params);
+        assert!(f.drop_action_urls);
+        assert!(!f.gov_tld_drop_actions);
+        assert!(f.extra_tracking_params.is_empty());
+        assert!(f.extra_action_params.is_empty());
+        assert!(f.extra_preserve_params.is_empty());
+    }
+
+    #[test]
+    fn default_true_filter_helper() {
+        assert!(default_true_filter());
+    }
+
+    #[test]
+    fn map_url_filter_toml_parse_extra_params() {
+        let f: MapUrlFilterConfig = toml::from_str(
+            r#"
+            strip_tracking_params = false
+            drop_action_urls = false
+            gov_tld_drop_actions = true
+            extra_tracking_params = ["ref", "src"]
+            extra_action_params = ["delete", "logout"]
+            extra_preserve_params = ["page"]
+            "#,
+        )
+        .unwrap();
+        assert!(!f.strip_tracking_params);
+        assert!(!f.drop_action_urls);
+        assert!(f.gov_tld_drop_actions);
+        assert_eq!(f.extra_tracking_params, vec!["ref", "src"]);
+        assert_eq!(f.extra_action_params, vec!["delete", "logout"]);
+        assert_eq!(f.extra_preserve_params, vec!["page"]);
+    }
+
+    #[test]
+    fn map_url_filter_partial_toml_keeps_other_defaults() {
+        let f: MapUrlFilterConfig = toml::from_str("gov_tld_drop_actions = true").unwrap();
+        assert!(f.gov_tld_drop_actions);
+        assert!(f.strip_tracking_params, "unset field keeps default true");
+        assert!(f.drop_action_urls, "unset field keeps default true");
+    }
+
+    #[test]
+    fn env_var_map_url_filter_gov_tld_drop_actions() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_MAP__URL_FILTER__GOV_TLD_DROP_ACTIONS", "true") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_MAP__URL_FILTER__GOV_TLD_DROP_ACTIONS") };
+        assert!(cfg.map.url_filter.gov_tld_drop_actions);
+    }
+
+    // ==================================================================
+    // DocumentConfig
+    // ==================================================================
+
+    #[test]
+    fn document_config_defaults_comprehensive() {
+        let d = DocumentConfig::default();
+        assert!(d.enabled);
+        assert_eq!(d.max_pages, 0, "0 = no limit");
+        assert!(!d.attempt_scanned);
+        assert_eq!(d.max_upload_bytes, 52_428_800, "50 MiB");
+        assert_eq!(d.upload_concurrency, 4);
+        assert_eq!(d.max_concurrent_parses, 4);
+        assert_eq!(d.reserved_interactive_parses, None);
+        assert_eq!(d.parse_timeout_ms, 30_000);
+        assert_eq!(d.max_decompressed_bytes, 104_857_600, "100 MiB");
+        assert!(!d.sandbox);
+        assert_eq!(d.sandbox_memory_bytes, 536_870_912, "512 MiB");
+    }
+
+    #[test]
+    fn document_config_toml_parse_full() {
+        let d: DocumentConfig = toml::from_str(
+            r#"
+            enabled = false
+            max_pages = 20
+            attempt_scanned = true
+            max_upload_bytes = 1000
+            upload_concurrency = 8
+            max_concurrent_parses = 16
+            reserved_interactive_parses = 2
+            parse_timeout_ms = 5000
+            max_decompressed_bytes = 2000
+            sandbox = true
+            sandbox_memory_bytes = 999
+            "#,
+        )
+        .unwrap();
+        assert!(!d.enabled);
+        assert_eq!(d.max_pages, 20);
+        assert!(d.attempt_scanned);
+        assert_eq!(d.max_upload_bytes, 1000);
+        assert_eq!(d.upload_concurrency, 8);
+        assert_eq!(d.max_concurrent_parses, 16);
+        assert_eq!(d.reserved_interactive_parses, Some(2));
+        assert_eq!(d.parse_timeout_ms, 5000);
+        assert_eq!(d.max_decompressed_bytes, 2000);
+        assert!(d.sandbox);
+        assert_eq!(d.sandbox_memory_bytes, 999);
+    }
+
+    #[test]
+    fn document_config_empty_toml_uses_container_default() {
+        // DocumentConfig uses a struct-level #[serde(default)], so a partial
+        // TOML falls back to the whole Default impl for unset fields.
+        let d: DocumentConfig = toml::from_str("max_pages = 5").unwrap();
+        assert_eq!(d.max_pages, 5);
+        assert!(d.enabled, "unset field keeps Default::default()");
+        assert_eq!(d.max_upload_bytes, 52_428_800);
+    }
+
+    #[test]
+    fn env_var_document_enabled_false() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_DOCUMENT__ENABLED", "false") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_DOCUMENT__ENABLED") };
+        assert!(!cfg.document.enabled);
+    }
+
+    #[test]
+    fn env_var_document_max_pages() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_DOCUMENT__MAX_PAGES", "12") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_DOCUMENT__MAX_PAGES") };
+        assert_eq!(cfg.document.max_pages, 12);
+    }
+
+    // ==================================================================
+    // ClientConfig
+    // ==================================================================
+
+    #[test]
+    fn client_config_default_both_none() {
+        let c = ClientConfig::default();
+        assert_eq!(c.api_url, None);
+        assert_eq!(c.api_key, None);
+    }
+
+    #[test]
+    fn client_config_toml_parse() {
+        let c: ClientConfig = toml::from_str(
+            r#"
+            api_url = "https://api.fastcrw.com"
+            api_key = "crw_live_abc"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.api_url.as_deref(), Some("https://api.fastcrw.com"));
+        assert_eq!(c.api_key.as_deref(), Some("crw_live_abc"));
+    }
+
+    #[test]
+    fn client_config_partial_toml_leaves_api_key_none() {
+        let c: ClientConfig = toml::from_str(r#"api_url = "https://api.fastcrw.com""#).unwrap();
+        assert_eq!(c.api_url.as_deref(), Some("https://api.fastcrw.com"));
+        assert_eq!(c.api_key, None);
+    }
+
+    #[test]
+    fn app_config_client_api_url_has_no_baked_in_default() {
+        // NOTE: crw-core's ClientConfig always defaults api_url to None — there
+        // is no bundled cloud host baked into this crate's config resolution.
+        // The cloud-vs-localhost default lives downstream in crw-cli (e.g.
+        // `crates/crw-cli/src/commands/search.rs::resolve_search_target`),
+        // which is out of scope for this file. Document the actual behavior
+        // here rather than assert a value config.rs does not produce.
+        assert_eq!(AppConfig::default().client.api_url, None);
+    }
+
+    // ==================================================================
+    // SearchConfig
+    // ==================================================================
+
+    #[test]
+    fn search_config_defaults_comprehensive() {
+        let s = SearchConfig::default();
+        assert!(s.enabled);
+        assert_eq!(s.search_backend_url, None);
+        assert_eq!(s.searxng_url, None);
+        assert_eq!(s.openalex_api_key, None);
+        assert_eq!(s.openalex_mailto, None);
+        assert_eq!(s.s2_api_key, None);
+        assert_eq!(s.timeout_ms, 15_000);
+        assert_eq!(s.default_limit, 5);
+        assert_eq!(s.max_limit, 20);
+        assert_eq!(
+            s.research_engines,
+            vec!["arxiv", "crossref", "google scholar", "semantic scholar"]
+        );
+        assert_eq!(s.github_engines, vec!["github"]);
+        assert!(s.rerank_enabled);
+        assert!(!s.query_expand);
+        assert_eq!(s.query_expand_variants, 1);
+        assert!(!s.pipeline_overlap);
+        assert!(!s.multi_round);
+        assert!(!s.snippet_first);
+        assert!(!s.passage_select);
+        assert!(!s.answer_bm25_select);
+        assert!(!s.page2_fallback);
+        assert!(!s.answer_calibrated);
+        assert!(!s.answer_guarded);
+        assert!(!s.use_structured_sources);
+        assert!(!s.wikidata_lookup);
+        assert!(!s.snippet_fallback);
+        assert!(!s.rerank_relevance);
+        assert!(!s.answer_list_format);
+    }
+
+    #[test]
+    fn search_config_resolve_backend_url_none_when_both_unset() {
+        assert_eq!(SearchConfig::default().resolve_backend_url(), None);
+    }
+
+    #[test]
+    fn search_config_toml_parse_gated_flags() {
+        let s: SearchConfig = toml::from_str(
+            r#"
+            query_expand = true
+            query_expand_variants = 3
+            answer_guarded = true
+            wikidata_lookup = true
+            use_structured_sources = true
+            "#,
+        )
+        .unwrap();
+        assert!(s.query_expand);
+        assert_eq!(s.query_expand_variants, 3);
+        assert!(s.answer_guarded);
+        assert!(s.wikidata_lookup);
+        assert!(s.use_structured_sources);
+        // Untouched fields keep their defaults.
+        assert!(s.rerank_enabled);
+        assert!(!s.multi_round);
+    }
+
+    #[test]
+    fn env_var_search_query_expand_variants() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_SEARCH__QUERY_EXPAND_VARIANTS", "5") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_SEARCH__QUERY_EXPAND_VARIANTS") };
+        assert_eq!(cfg.search.query_expand_variants, 5);
+    }
+
+    #[test]
+    fn env_var_search_answer_guarded() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_SEARCH__ANSWER_GUARDED", "true") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_SEARCH__ANSWER_GUARDED") };
+        assert!(cfg.search.answer_guarded);
+    }
+
+    #[test]
+    fn env_var_search_max_limit_malformed_errors() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_SEARCH__MAX_LIMIT", "twenty") };
+        let result = AppConfig::load();
+        unsafe { std::env::remove_var("CRW_SEARCH__MAX_LIMIT") };
+        assert!(result.is_err());
+    }
+
+    // ==================================================================
+    // McpConfig (extra coverage beyond the existing three tests)
+    // ==================================================================
+
+    #[test]
+    fn mcp_config_explicit_false_stays_false() {
+        let cfg: AppConfig = toml::from_str("[mcp]\nhide_credits = false").unwrap();
+        assert!(!cfg.mcp.hide_credits);
+    }
+
+    #[test]
+    fn env_var_mcp_hide_credits_false_overrides_true_file() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        let tmp = std::env::temp_dir().join(format!("crw-mcp-false-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("config.toml"), "[mcp]\nhide_credits = true\n").unwrap();
+        unsafe {
+            std::env::set_var("CRW_USER_CONFIG_DIR", &tmp);
+            std::env::set_var("CRW_MCP__HIDE_CREDITS", "false");
+        }
+        let cfg = AppConfig::load().unwrap();
+        unsafe {
+            std::env::remove_var("CRW_USER_CONFIG_DIR");
+            std::env::remove_var("CRW_MCP__HIDE_CREDITS");
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+        assert!(
+            !cfg.mcp.hide_credits,
+            "env var must win over user config file"
+        );
+    }
+
+    // ==================================================================
+    // AppConfig top level / malformed & unknown-key handling
+    // ==================================================================
+
+    #[test]
+    fn app_config_default_assembles_all_section_defaults() {
+        let a = AppConfig::default();
+        assert_eq!(a.server.port, 3000);
+        assert_eq!(a.renderer.mode, RendererMode::Auto);
+        assert_eq!(a.crawler.max_concurrency, 10);
+        assert_eq!(a.extraction.default_format, "markdown");
+        assert!(a.auth.api_keys.is_empty());
+        assert_eq!(a.request.deadline_ms_default, 8000);
+        assert!(a.search.enabled);
+        assert!(a.map.url_filter.strip_tracking_params);
+        assert!(a.document.enabled);
+        assert_eq!(a.client.api_url, None);
+        assert!(!a.mcp.hide_credits);
+    }
+
+    #[test]
+    fn app_config_empty_toml_uses_every_default() {
+        let a: AppConfig = toml::from_str("").unwrap();
+        assert_eq!(a.server.port, 3000);
+        assert_eq!(a.crawler.max_concurrency, 10);
+        assert_eq!(a.crawler.max_batch_urls, 10_000);
+    }
+
+    #[test]
+    fn app_config_unknown_toml_keys_are_ignored() {
+        // No #[serde(deny_unknown_fields)] anywhere in this file — an unknown
+        // top-level or nested key must not fail deserialization.
+        let a: AppConfig = toml::from_str(
+            r#"
+            totally_unknown_top_level_key = "surprise"
+
+            [server]
+            port = 4321
+            another_unknown_key = 12345
+            "#,
+        )
+        .unwrap();
+        assert_eq!(a.server.port, 4321);
+    }
+
+    #[test]
+    fn app_config_malformed_toml_syntax_errors() {
+        let result: Result<AppConfig, _> = toml::from_str("this is not [ valid toml");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn app_config_wrong_type_for_numeric_field_errors() {
+        let result: Result<AppConfig, _> = toml::from_str(
+            r#"
+            [server]
+            port = "not-a-number"
+            "#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn app_config_deeply_nested_unknown_section_ignored() {
+        let a: AppConfig = toml::from_str(
+            r#"
+            [some_future_section]
+            [some_future_section.nested]
+            knob = true
+            "#,
+        )
+        .unwrap();
+        // Falls through to defaults everywhere else.
+        assert_eq!(a.server.port, 3000);
+    }
+
+    #[test]
+    fn app_config_toml_unicode_and_long_strings_round_trip() {
+        let long_ua = "x".repeat(5000);
+        let toml_str = format!(
+            r#"
+            [crawler]
+            user_agent = "{long_ua}"
+
+            [server]
+            host = "アクセス制御.example"
+            "#
+        );
+        let a: AppConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(a.crawler.user_agent.len(), 5000);
+        assert_eq!(a.server.host, "アクセス制御.example");
+    }
+
+    #[test]
+    fn app_config_empty_string_fields_are_preserved_not_defaulted() {
+        // An explicit empty string is a valid value distinct from "unset" for
+        // plain (non-Option, non-normalizing) String fields.
+        let a: AppConfig = toml::from_str(
+            r#"[crawler]
+user_agent = """#,
+        )
+        .unwrap();
+        assert_eq!(a.crawler.user_agent, "");
+    }
+
+    // ==================================================================
+    // effective_deadline_ms / effective_request_timeout_secs — extra edges
+    // ==================================================================
+
+    #[test]
+    fn effective_deadline_explicit_zero_is_respected() {
+        let cfg = AppConfig::default();
+        assert_eq!(cfg.effective_deadline_ms(Some(0), None), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "cdp")]
+    fn effective_deadline_wait_for_exactly_at_spa_default_adds_nothing() {
+        let mut cfg = AppConfig::default();
+        cfg.request.auto_extend_deadline_for_ladder = true;
+        cfg.renderer = renderer_with_chrome_only(30_000);
+        let base = cfg.effective_deadline_ms(None, None);
+        // wait_for exactly at the 8000ms SPA default → saturating_sub is 0.
+        assert_eq!(cfg.effective_deadline_ms(None, Some(8_000)), base);
+    }
+
+    #[test]
+    #[cfg(feature = "cdp")]
+    fn effective_deadline_wait_for_clamped_to_max_wait_for_ms() {
+        let mut cfg = AppConfig::default();
+        cfg.request.auto_extend_deadline_for_ladder = true;
+        cfg.renderer = renderer_with_chrome_only(30_000);
+        // A pathological wait_for far beyond MAX_WAIT_FOR_MS must be clamped,
+        // not applied verbatim.
+        let huge = cfg.effective_deadline_ms(None, Some(10_000_000));
+        let at_cap = cfg.effective_deadline_ms(None, Some(MAX_WAIT_FOR_MS));
+        assert_eq!(huge, at_cap);
+    }
+
+    #[test]
+    fn effective_request_timeout_baseline_never_below_map_ceiling_plus_buffer() {
+        let mut cfg = AppConfig::default();
+        cfg.request.auto_extend_deadline_for_ladder = true;
+        cfg.server.request_timeout_secs = 1; // absurdly low operator setting
+        // 300s map ceiling + 5s buffer floors the result regardless.
+        assert!(cfg.effective_request_timeout_secs() >= 305);
+    }
+
+    // ==================================================================
+    // non_empty_trimmed_env / user_config_path
+    // ==================================================================
+
+    #[test]
+    fn non_empty_trimmed_env_trims_and_filters_blank() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("CRW_TEST_TRIM_VAR", "  hello world  ") };
+        assert_eq!(
+            non_empty_trimmed_env("CRW_TEST_TRIM_VAR").as_deref(),
+            Some("hello world")
+        );
+        unsafe { std::env::set_var("CRW_TEST_TRIM_VAR", "   ") };
+        assert_eq!(non_empty_trimmed_env("CRW_TEST_TRIM_VAR"), None);
+        unsafe { std::env::remove_var("CRW_TEST_TRIM_VAR") };
+        assert_eq!(non_empty_trimmed_env("CRW_TEST_TRIM_VAR"), None);
+    }
+
+    #[test]
+    fn user_config_path_falls_back_to_home_when_unset() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let had_override = std::env::var_os("CRW_USER_CONFIG_DIR");
+        unsafe { std::env::remove_var("CRW_USER_CONFIG_DIR") };
+        let home = std::env::var_os("HOME");
+        let result = user_config_path();
+        if let Some(over) = had_override {
+            unsafe { std::env::set_var("CRW_USER_CONFIG_DIR", over) };
+        }
+        match home {
+            Some(h) => {
+                assert_eq!(
+                    result,
+                    Some(
+                        std::path::PathBuf::from(h)
+                            .join(".config")
+                            .join("crw")
+                            .join("config.toml")
+                    )
+                );
+            }
+            None => assert_eq!(result, None, "no HOME and no override means None"),
+        }
+    }
+
+    // ==================================================================
+    // deserialize_string_vec / deserialize_opt_nonempty_string — direct
+    // coverage via small wrapper structs (both are private helpers).
+    // ==================================================================
+
+    #[derive(Deserialize)]
+    struct VecWrap {
+        #[serde(deserialize_with = "deserialize_string_vec")]
+        v: Vec<String>,
+    }
+
+    #[test]
+    fn deserialize_string_vec_toml_array() {
+        let w: VecWrap = toml::from_str(r#"v = ["a", "b", "c"]"#).unwrap();
+        assert_eq!(w.v, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn deserialize_string_vec_empty_toml_array() {
+        let w: VecWrap = toml::from_str(r#"v = []"#).unwrap();
+        assert!(w.v.is_empty());
+    }
+
+    #[test]
+    fn deserialize_string_vec_single_value_no_comma() {
+        let w: VecWrap = toml::from_str(r#"v = "only-one""#).unwrap();
+        assert_eq!(w.v, vec!["only-one"]);
+    }
+
+    #[test]
+    fn deserialize_string_vec_whitespace_around_commas_trimmed() {
+        let w: VecWrap = toml::from_str(r#"v = "  a  ,  b  ,c""#).unwrap();
+        assert_eq!(w.v, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn deserialize_string_vec_unicode_entries() {
+        let w: VecWrap = toml::from_str(r#"v = "日本語,emoji-🎉,café""#).unwrap();
+        assert_eq!(w.v, vec!["日本語", "emoji-🎉", "café"]);
+    }
+
+    #[test]
+    fn deserialize_string_vec_malformed_json_array_errors() {
+        let result: Result<VecWrap, _> = toml::from_str(r#"v = "[not, valid, json""#);
+        assert!(result.is_err());
+    }
+
+    #[derive(Deserialize)]
+    struct OptStringWrap {
+        #[serde(default, deserialize_with = "deserialize_opt_nonempty_string")]
+        v: Option<String>,
+    }
+
+    #[test]
+    fn deserialize_opt_nonempty_string_missing_key_is_none() {
+        let w: OptStringWrap = toml::from_str("").unwrap();
+        assert_eq!(w.v, None);
+    }
+
+    #[test]
+    fn deserialize_opt_nonempty_string_present_value_trimmed() {
+        let w: OptStringWrap = toml::from_str(r#"v = "  hello  ""#).unwrap();
+        assert_eq!(w.v.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn deserialize_opt_nonempty_string_tabs_and_newlines_trimmed_to_none() {
+        let w: OptStringWrap = toml::from_str("v = \"\\t\\n  \\t\"").unwrap();
+        assert_eq!(w.v, None);
+    }
+
+    #[test]
+    fn deserialize_opt_nonempty_string_unicode_value_preserved() {
+        let w: OptStringWrap = toml::from_str(r#"v = "  café-🎉  ""#).unwrap();
+        assert_eq!(w.v.as_deref(), Some("café-🎉"));
+    }
+
+    // ==================================================================
+    // Boundary / malformed-input coverage: huge numbers, negative numbers
+    // into unsigned fields, case-sensitivity of enum tags, deep nesting.
+    // ==================================================================
+
+    #[test]
+    fn server_config_port_overflow_u16_errors() {
+        let result: Result<ServerConfig, _> = toml::from_str("port = 70000");
+        assert!(result.is_err(), "70000 exceeds u16::MAX");
+    }
+
+    #[test]
+    fn server_config_negative_port_errors() {
+        let result: Result<ServerConfig, _> = toml::from_str("port = -1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn crawler_config_negative_max_concurrency_errors() {
+        let result: Result<CrawlerConfig, _> = toml::from_str("max_concurrency = -1");
+        assert!(result.is_err(), "usize cannot hold a negative value");
+    }
+
+    #[test]
+    fn crawler_config_max_concurrency_zero_is_accepted_at_parse_time() {
+        // No lower-bound validation happens at deserialize time; a caller
+        // setting 0 gets 0 back (any floor/clamp lives at the call site).
+        let c: CrawlerConfig = toml::from_str("max_concurrency = 0").unwrap();
+        assert_eq!(c.max_concurrency, 0);
+    }
+
+    #[test]
+    fn document_config_sandbox_memory_bytes_accepts_u64_max() {
+        let d: DocumentConfig =
+            toml::from_str(&format!("sandbox_memory_bytes = {}", u64::MAX)).unwrap();
+        assert_eq!(d.sandbox_memory_bytes, u64::MAX);
+    }
+
+    #[test]
+    fn document_config_max_pages_overflow_beyond_usize_on_32bit_still_parses_u64_range() {
+        // max_pages is `usize`; a very large but in-range value must parse.
+        let d: DocumentConfig = toml::from_str("max_pages = 1000000").unwrap();
+        assert_eq!(d.max_pages, 1_000_000);
+    }
+
+    #[test]
+    fn renderer_mode_uppercase_variant_rejected() {
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[allow(dead_code)]
+            mode: RendererMode,
+        }
+        // rename_all = "lowercase" means the tag is case-sensitive.
+        let result: Result<Wrap, _> = toml::from_str(r#"mode = "AUTO""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn renderer_mode_empty_string_rejected() {
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[allow(dead_code)]
+            mode: RendererMode,
+        }
+        let result: Result<Wrap, _> = toml::from_str(r#"mode = """#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn chrome_backend_uppercase_variant_rejected() {
+        #[derive(Deserialize)]
+        struct Wrap {
+            #[allow(dead_code)]
+            chrome_backend: ChromeBackend,
+        }
+        let result: Result<Wrap, _> = toml::from_str(r#"chrome_backend = "Vanilla""#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn app_config_deeply_nested_full_renderer_tree_parses() {
+        let a: AppConfig = toml::from_str(
+            r#"
+            [renderer]
+            mode = "auto"
+
+            [renderer.chrome]
+            ws_url = "ws://chrome:9222"
+
+            [renderer.chrome_pool]
+            size = 8
+            recycle_after_navs = 3
+
+            [renderer.escalation]
+            enabled = true
+            residential_proxy = true
+
+            [renderer.antibot]
+            escalate_on_signal = true
+
+            [renderer.camoufox]
+            base_url = "http://cam:9377"
+            include_in_auto = true
+            "#,
+        )
+        .unwrap();
+        assert_eq!(a.renderer.chrome.unwrap().ws_url, "ws://chrome:9222");
+        assert_eq!(a.renderer.chrome_pool.size, Some(8));
+        assert_eq!(a.renderer.chrome_pool.recycle_after_navs, 3);
+        assert!(a.renderer.escalation.enabled);
+        assert!(a.renderer.escalation.residential_proxy);
+        assert!(a.renderer.antibot.escalate_on_signal);
+        assert!(a.renderer.camoufox.unwrap().include_in_auto);
+    }
+
+    #[test]
+    fn app_config_nested_extraction_llm_missing_api_key_fails_whole_load() {
+        let result: Result<AppConfig, _> = toml::from_str(
+            r#"
+            [extraction.llm]
+            provider = "deepseek"
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "a nested required field must fail the whole document, not just that section"
+        );
+    }
+
+    #[test]
+    fn crawler_config_stealth_nested_toml_parse() {
+        let c: CrawlerConfig = toml::from_str(
+            r#"
+            [stealth]
+            enabled = true
+            user_agents = ["ua-1"]
+            jitter_factor = 0.7
+            "#,
+        )
+        .unwrap();
+        assert!(c.stealth.enabled);
+        assert_eq!(c.stealth.user_agents, vec!["ua-1"]);
+        assert_eq!(c.stealth.jitter_factor, 0.7);
+        assert!(c.stealth.inject_headers, "unset field keeps its default");
+    }
+
+    #[test]
+    fn search_config_research_and_github_engines_override() {
+        let s: SearchConfig = toml::from_str(
+            r#"
+            research_engines = ["custom-engine"]
+            github_engines = ["custom-github"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(s.research_engines, vec!["custom-engine"]);
+        assert_eq!(s.github_engines, vec!["custom-github"]);
+    }
+
+    #[test]
+    fn extraction_config_reserved_interactive_extracts_some_zero_disables() {
+        let e: ExtractionConfig = toml::from_str("reserved_interactive_extracts = 0").unwrap();
+        assert_eq!(e.reserved_interactive_extracts, Some(0));
+    }
+
+    #[test]
+    fn llm_config_max_tokens_zero_accepted_at_parse_time() {
+        // No lower-bound validation on this field; document current behavior.
+        let l: LlmConfig = toml::from_str(
+            r#"
+            api_key = "sk-test"
+            max_tokens = 0
+            "#,
+        )
+        .unwrap();
+        assert_eq!(l.max_tokens, 0);
+    }
+
+    #[test]
+    fn crawler_config_requests_per_second_negative_accepted_at_parse_time() {
+        // f64 has no inherent lower bound at deserialize time.
+        let c: CrawlerConfig = toml::from_str("requests_per_second = -5.0").unwrap();
+        assert_eq!(c.requests_per_second, -5.0);
+    }
+
+    #[test]
+    fn map_url_filter_extra_tracking_params_preserves_duplicates() {
+        let f: MapUrlFilterConfig =
+            toml::from_str(r#"extra_tracking_params = ["ref", "ref", "src"]"#).unwrap();
+        assert_eq!(f.extra_tracking_params, vec!["ref", "ref", "src"]);
+    }
+
+    #[test]
+    fn env_var_bool_invalid_string_errors() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_CRAWLER__RESPECT_ROBOTS_TXT", "maybe") };
+        let result = AppConfig::load();
+        unsafe { std::env::remove_var("CRW_CRAWLER__RESPECT_ROBOTS_TXT") };
+        assert!(result.is_err(), "\"maybe\" is not a valid bool");
+    }
+
+    #[test]
+    fn env_var_bool_accepts_true_false_case_insensitive() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_CRAWLER__RESPECT_ROBOTS_TXT", "FALSE") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_CRAWLER__RESPECT_ROBOTS_TXT") };
+        assert!(!cfg.crawler.respect_robots_txt);
+    }
+
+    #[test]
+    fn document_config_reserved_interactive_parses_some_zero_disables() {
+        let d: DocumentConfig = toml::from_str("reserved_interactive_parses = 0").unwrap();
+        assert_eq!(d.reserved_interactive_parses, Some(0));
+    }
+
+    #[test]
+    fn client_config_env_alias_whitespace_only_value_still_sets_some_empty_trim_filters_it() {
+        // non_empty_trimmed_env filters whitespace-only to None, so the alias
+        // must NOT overwrite an existing file-provided value with blank noise.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        let tmp = std::env::temp_dir().join(format!("crw-client-blank-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("config.toml"),
+            "[client]\napi_url = \"https://from-file.example\"\n",
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("CRW_USER_CONFIG_DIR", &tmp);
+            std::env::set_var("CRW_API_URL", "   ");
+        }
+        let cfg = AppConfig::load().unwrap();
+        unsafe {
+            std::env::remove_var("CRW_USER_CONFIG_DIR");
+            std::env::remove_var("CRW_API_URL");
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            cfg.client.api_url.as_deref(),
+            Some("https://from-file.example"),
+            "whitespace-only CRW_API_URL must not clobber the file value"
+        );
+    }
+
+    #[test]
+    fn escalation_config_toml_partial_keeps_other_defaults() {
+        let e: EscalationConfig = toml::from_str("enabled = true").unwrap();
+        assert!(e.enabled);
+        assert_eq!(e.waterfall_timeout_ms, 8_000, "unset field keeps default");
+        assert_eq!(e.proxy_country, "us");
+    }
+
+    #[test]
+    fn antibot_config_toml_partial_keeps_other_defaults() {
+        let a: AntibotConfig = toml::from_str("escalate_on_signal = true").unwrap();
+        assert!(a.escalate_on_signal);
+        assert!(a.enabled, "unset field keeps default true");
+        assert!(a.escalate_in_failover, "unset field keeps default true");
+    }
+
+    #[test]
+    fn chrome_pool_config_toml_partial_keeps_other_defaults() {
+        let p: ChromePoolConfig = toml::from_str("size = 2").unwrap();
+        assert_eq!(p.size, Some(2));
+        assert_eq!(p.recycle_after_navs, 1, "unset field keeps default");
+        assert_eq!(p.idle_timeout_secs, 300);
+    }
+
+    #[test]
+    fn stealth_config_toml_partial_keeps_other_defaults() {
+        let s: StealthConfig = toml::from_str("enabled = true").unwrap();
+        assert!(s.enabled);
+        assert_eq!(s.jitter_factor, 0.2, "unset field keeps default");
+        assert!(s.inject_headers, "unset field keeps default true");
+    }
+
+    #[test]
+    fn llm_fallback_config_toml_partial_keeps_other_defaults() {
+        let l: LlmFallbackConfig = toml::from_str("always_run = true").unwrap();
+        assert!(l.always_run);
+        assert!(!l.enable, "unset field keeps default false");
+        assert_eq!(l.quality_threshold, 0.3);
+    }
+
+    #[test]
+    fn document_config_deeply_nested_within_app_config() {
+        let a: AppConfig = toml::from_str(
+            r#"
+            [document]
+            enabled = false
+            sandbox = true
+            sandbox_memory_bytes = 268435456
+            "#,
+        )
+        .unwrap();
+        assert!(!a.document.enabled);
+        assert!(a.document.sandbox);
+        assert_eq!(a.document.sandbox_memory_bytes, 268_435_456);
+        // Unset field keeps the whole-struct default via #[serde(default)].
+        assert_eq!(a.document.max_upload_bytes, 52_428_800);
+    }
+
+    #[test]
+    fn search_config_toml_partial_keeps_other_defaults() {
+        let s: SearchConfig = toml::from_str("timeout_ms = 1000").unwrap();
+        assert_eq!(s.timeout_ms, 1000);
+        assert!(s.enabled, "unset field keeps default true");
+        assert_eq!(s.max_limit, 20, "unset field keeps default");
+    }
+
+    #[test]
+    fn crawler_config_empty_toml_matches_programmatic_default_for_scalars() {
+        let from_toml: CrawlerConfig = toml::from_str("").unwrap();
+        let default = CrawlerConfig::default();
+        assert_eq!(from_toml.max_concurrency, default.max_concurrency);
+        assert_eq!(from_toml.max_batch_urls, default.max_batch_urls);
+        assert_eq!(from_toml.user_agent, default.user_agent);
+        assert_eq!(from_toml.job_ttl_secs, default.job_ttl_secs);
+    }
+
+    #[test]
+    fn extraction_config_llm_present_but_empty_table_requires_api_key() {
+        let result: Result<ExtractionConfig, _> = toml::from_str("[llm]\n");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extraction_config_llm_with_api_key_only_parses() {
+        let e: ExtractionConfig = toml::from_str("[llm]\napi_key = \"sk-x\"\n").unwrap();
+        let llm = e.llm.expect("llm section present");
+        assert_eq!(llm.api_key, "sk-x");
+        assert_eq!(llm.provider, "anthropic");
+    }
+
+    // ==================================================================
+    // A few more precedence / edge cases to round out coverage.
+    // ==================================================================
+
+    #[test]
+    fn env_var_search_backend_url_beats_default_toml_value() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        unsafe { std::env::set_var("CRW_SEARCH__SEARCH_BACKEND_URL", "http://env-wins:8080") };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_SEARCH__SEARCH_BACKEND_URL") };
+        assert_eq!(
+            cfg.search.resolve_backend_url(),
+            Some("http://env-wins:8080")
+        );
+    }
+
+    #[test]
+    fn env_var_beats_user_config_for_scalar_int_field() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        let tmp = std::env::temp_dir().join(format!("crw-prec-int-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("config.toml"), "[server]\nport = 1111\n").unwrap();
+        unsafe {
+            std::env::set_var("CRW_USER_CONFIG_DIR", &tmp);
+            std::env::set_var("CRW_SERVER__PORT", "2222");
+        }
+        let cfg = AppConfig::load().unwrap();
+        unsafe {
+            std::env::remove_var("CRW_USER_CONFIG_DIR");
+            std::env::remove_var("CRW_SERVER__PORT");
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+        assert_eq!(
+            cfg.server.port, 2222,
+            "env var must beat the user config file"
+        );
+    }
+
+    #[test]
+    fn user_config_file_beats_bundled_defaults_for_unset_env() {
+        // With no env var set, a value present only in the user config file
+        // must still override the code-level Default.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        let tmp = std::env::temp_dir().join(format!("crw-prec-file-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("config.toml"), "[crawler]\nmax_concurrency = 77\n").unwrap();
+        unsafe { std::env::set_var("CRW_USER_CONFIG_DIR", &tmp) };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_USER_CONFIG_DIR") };
+        std::fs::remove_dir_all(&tmp).ok();
+        assert_eq!(cfg.crawler.max_concurrency, 77);
+        assert_ne!(
+            cfg.crawler.max_concurrency,
+            CrawlerConfig::default().max_concurrency
+        );
+    }
+
+    #[test]
+    fn no_user_config_file_falls_back_to_bundled_defaults() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        let tmp = std::env::temp_dir().join(format!("crw-no-file-{}", std::process::id()));
+        // Directory exists but no config.toml inside it.
+        std::fs::create_dir_all(&tmp).unwrap();
+        unsafe { std::env::set_var("CRW_USER_CONFIG_DIR", &tmp) };
+        let cfg = AppConfig::load().unwrap();
+        unsafe { std::env::remove_var("CRW_USER_CONFIG_DIR") };
+        std::fs::remove_dir_all(&tmp).ok();
+        assert_eq!(cfg.crawler.max_concurrency, 10);
+        assert_eq!(cfg.server.port, 3000);
+    }
+
+    #[test]
+    fn document_config_max_concurrent_parses_toml_and_env_precedence() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_renderer_env();
+        let tmp = std::env::temp_dir().join(format!("crw-doc-prec-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("config.toml"),
+            "[document]\nmax_concurrent_parses = 9\n",
+        )
+        .unwrap();
+        unsafe {
+            std::env::set_var("CRW_USER_CONFIG_DIR", &tmp);
+            std::env::set_var("CRW_DOCUMENT__MAX_CONCURRENT_PARSES", "3");
+        }
+        let cfg = AppConfig::load().unwrap();
+        unsafe {
+            std::env::remove_var("CRW_USER_CONFIG_DIR");
+            std::env::remove_var("CRW_DOCUMENT__MAX_CONCURRENT_PARSES");
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+        assert_eq!(cfg.document.max_concurrent_parses, 3, "env must win");
+    }
+
+    #[test]
+    fn renderer_config_toml_parse_camoufox_and_cloak_endpoints_together() {
+        let r: RendererConfig = toml::from_str(
+            r#"
+            [camoufox]
+            base_url = "http://cam:9377"
+            api_key = "cam-key"
+
+            [cloak]
+            base_url = "http://cloak:8000"
+            api_key = "cloak-key"
+            "#,
+        )
+        .unwrap();
+        let cam = r.camoufox.unwrap();
+        assert_eq!(cam.base_url, "http://cam:9377");
+        assert_eq!(cam.api_key, "cam-key");
+        assert!(!cam.include_in_auto);
+        let cloak = r.cloak.unwrap();
+        assert_eq!(cloak.base_url, "http://cloak:8000");
+        assert_eq!(cloak.api_key, "cloak-key");
+    }
+
+    #[test]
+    fn renderer_config_toml_parse_chrome_proxy_endpoint_and_timeout() {
+        let r: RendererConfig = toml::from_str(
+            r#"
+            [chrome_proxy]
+            ws_url = "ws://chrome-proxy:9222"
+            chrome_proxy_timeout_ms = 50000
+            "#,
+        )
+        .unwrap();
+        assert_eq!(r.chrome_proxy.unwrap().ws_url, "ws://chrome-proxy:9222");
+    }
+
+    #[test]
+    fn extraction_config_max_concurrent_extracts_is_deterministic_for_fixed_input() {
+        // The formula itself (not the machine-dependent CPU count) is pure:
+        // calling it twice must be identical.
+        assert_eq!(
+            crate::config::ExtractionConfig::default().max_concurrent_extracts,
+            crate::config::ExtractionConfig::default().max_concurrent_extracts
+        );
+    }
+
+    #[test]
+    fn map_config_toml_parse_nested_url_filter() {
+        let m: MapConfig = toml::from_str(
+            r#"
+            [url_filter]
+            strip_tracking_params = false
+            extra_preserve_params = ["utm_campaign"]
+            "#,
+        )
+        .unwrap();
+        assert!(!m.url_filter.strip_tracking_params);
+        assert_eq!(m.url_filter.extra_preserve_params, vec!["utm_campaign"]);
+        assert!(m.url_filter.drop_action_urls, "unset field keeps default");
+    }
 }

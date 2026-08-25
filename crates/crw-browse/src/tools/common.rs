@@ -581,4 +581,414 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidArgs);
         assert!(err.message.contains("ref"));
     }
+
+    // -- additional clamp_timeout / clamp_max_nodes boundaries --------------
+
+    #[test]
+    fn clamp_timeout_zero_is_preserved_uncapped() {
+        let (d, clamped) = clamp_timeout(Some(0), Duration::from_secs(10));
+        assert_eq!(d, Duration::from_millis(0));
+        assert!(!clamped);
+    }
+
+    #[test]
+    fn clamp_timeout_one_over_cap_is_clamped() {
+        let (d, clamped) = clamp_timeout(Some(MAX_TIMEOUT_MS + 1), Duration::from_secs(10));
+        assert_eq!(d, Duration::from_millis(MAX_TIMEOUT_MS));
+        assert!(clamped);
+    }
+
+    #[test]
+    fn clamp_timeout_none_at_exact_cap_default_is_not_clamped() {
+        let default = Duration::from_millis(MAX_TIMEOUT_MS);
+        let (d, clamped) = clamp_timeout(None, default);
+        assert_eq!(d, default);
+        assert!(!clamped);
+    }
+
+    #[test]
+    fn clamp_max_nodes_zero_is_preserved_uncapped() {
+        let (n, clamped) = clamp_max_nodes(Some(0));
+        assert_eq!(n, 0);
+        assert!(!clamped);
+    }
+
+    #[test]
+    fn clamp_max_nodes_one_over_cap_is_clamped() {
+        let (n, clamped) = clamp_max_nodes(Some(MAX_TREE_NODES + 1));
+        assert_eq!(n, MAX_TREE_NODES);
+        assert!(clamped);
+    }
+
+    #[test]
+    fn default_tree_nodes_is_1500() {
+        // Documents the R3-dogfood-derived default (bumped from 500). A
+        // silent regression here would shrink every unclamped `tree` call.
+        assert_eq!(DEFAULT_TREE_NODES, 1_500);
+    }
+
+    // -- no_session_err / no_target_err --------------------------------------
+
+    #[test]
+    fn no_session_err_shape() {
+        let err = no_session_err();
+        assert_eq!(err.code, ErrorCode::SessionClosed);
+        assert_eq!(err.retry, Some(RetryHint::NewSession));
+        assert!(err.message.contains("goto"));
+    }
+
+    #[test]
+    fn no_target_err_shape() {
+        let err = no_target_err();
+        assert_eq!(err.code, ErrorCode::SessionClosed);
+        assert_eq!(err.retry, Some(RetryHint::NewSession));
+        assert!(err.message.contains("goto"));
+    }
+
+    #[test]
+    fn no_session_and_no_target_err_messages_differ() {
+        // Both share a code/retry shape but the message must distinguish
+        // "never had a session" from "session exists, never attached" —
+        // otherwise the two distinct call sites collapse into one string
+        // and debugging which branch fired requires re-reading the code.
+        assert_ne!(no_session_err().message, no_target_err().message);
+    }
+
+    // -- ok_result / err_result -----------------------------------------------
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .first()
+            .and_then(|c| c.as_text().map(|t| t.text.clone()))
+            .expect("expected text content block")
+    }
+
+    #[derive(serde::Serialize)]
+    struct DummyData {
+        n: u32,
+    }
+
+    #[test]
+    fn ok_result_is_not_flagged_as_error() {
+        let resp = ToolResponse::new("s1", None, DummyData { n: 1 });
+        let result = ok_result(&resp);
+        assert_eq!(result.is_error, Some(false));
+        let json: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["data"]["n"], 1);
+    }
+
+    #[test]
+    fn err_result_is_flagged_as_error() {
+        let err = ErrorResponse::new(ErrorCode::InvalidArgs, "bad input");
+        let result = err_result(&err);
+        assert_eq!(result.is_error, Some(true));
+        let json: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["code"], "INVALID_ARGS");
+        assert_eq!(json["message"], "bad input");
+    }
+
+    // -- map_resolve_node_error: broader phrase coverage ---------------------
+
+    #[test]
+    fn resolve_node_error_stale_match_is_case_insensitive() {
+        let err =
+            map_resolve_node_error("@e9", "NODE WITH GIVEN ID Does Not Belong To The Document");
+        assert_eq!(err.code, ErrorCode::NodeStale);
+    }
+
+    #[test]
+    fn resolve_node_error_context_error_is_not_misclassified_as_stale() {
+        // A destroyed execution context is a different failure mode than a
+        // detached DOM node — it must stay CDP_ERROR so the caller doesn't
+        // get told "re-snapshot" when re-snapshotting won't help.
+        let err = map_resolve_node_error("@e9", "Cannot find context with specified id");
+        assert_eq!(err.code, ErrorCode::CdpError);
+    }
+
+    #[test]
+    fn resolve_node_error_stale_message_preserves_ref_id() {
+        let err = map_resolve_node_error("@e123", "no node with given id");
+        assert!(err.message.contains("@e123"));
+    }
+
+    // -- validate_selector_or_ref: documents current whitespace behavior ----
+
+    #[test]
+    fn validate_selector_or_ref_accepts_whitespace_only_selector() {
+        // The function only checks `.is_empty()`, not `.trim().is_empty()` —
+        // a whitespace-only selector passes validation here and would fail
+        // later as an invalid CSS selector at the CDP layer. Documenting the
+        // current (permissive) behavior rather than assuming it's a bug.
+        assert!(validate_selector_or_ref(Some("   "), None).is_none());
+    }
+
+    #[test]
+    fn validate_selector_or_ref_accepts_whitespace_only_ref() {
+        assert!(validate_selector_or_ref(None, Some("   ")).is_none());
+    }
+
+    #[test]
+    fn validate_selector_or_ref_accepts_unicode_selector() {
+        // `:contains()` isn't real CSS, but validate_selector_or_ref does no
+        // CSS parsing — any non-empty string is a well-formed input to it.
+        assert!(validate_selector_or_ref(Some("button:has-text(\"確認\")"), None).is_none());
+    }
+
+    #[test]
+    fn validate_selector_or_ref_accepts_ref_without_at_prefix() {
+        // validate_selector_or_ref doesn't validate the `@e<N>` shape itself
+        // — that's `resolve_ref`'s job via `parse_ref_index`. A malformed
+        // ref like "e5" (missing `@`) passes this gate and fails later with
+        // NODE_UNKNOWN, not here.
+        assert!(validate_selector_or_ref(None, Some("e5")).is_none());
+    }
+
+    // -- more clamp_timeout / clamp_max_nodes parameter space ---------------
+
+    #[test]
+    fn clamp_timeout_u64_max_is_clamped() {
+        let (d, clamped) = clamp_timeout(Some(u64::MAX), Duration::from_secs(10));
+        assert_eq!(d, Duration::from_millis(MAX_TIMEOUT_MS));
+        assert!(clamped);
+    }
+
+    #[test]
+    fn clamp_timeout_smallest_nonzero_value_is_preserved() {
+        let (d, clamped) = clamp_timeout(Some(1), Duration::from_secs(10));
+        assert_eq!(d, Duration::from_millis(1));
+        assert!(!clamped);
+    }
+
+    #[test]
+    fn clamp_timeout_none_zero_default_is_preserved() {
+        let (d, clamped) = clamp_timeout(None, Duration::from_millis(0));
+        assert_eq!(d, Duration::from_millis(0));
+        assert!(!clamped);
+    }
+
+    #[test]
+    fn clamp_timeout_none_default_one_over_cap_is_floored() {
+        let (d, clamped) = clamp_timeout(None, Duration::from_millis(MAX_TIMEOUT_MS + 1));
+        assert_eq!(d, Duration::from_millis(MAX_TIMEOUT_MS));
+        // `None` never sets the `clamped` flag — the caller didn't ask for a
+        // value, so there's nothing to warn them about being adjusted.
+        assert!(!clamped);
+    }
+
+    #[test]
+    fn clamp_max_nodes_smallest_nonzero_value_is_preserved() {
+        let (n, clamped) = clamp_max_nodes(Some(1));
+        assert_eq!(n, 1);
+        assert!(!clamped);
+    }
+
+    #[test]
+    fn clamp_max_nodes_u32_max_is_clamped_to_cap() {
+        let (n, clamped) = clamp_max_nodes(Some(u32::MAX));
+        assert_eq!(n, MAX_TREE_NODES);
+        assert!(clamped);
+    }
+
+    // -- map_resolve_node_error: one phrase per test for clear failure output
+
+    #[test]
+    fn resolve_node_error_does_not_belong_to_document_is_stale() {
+        let err = map_resolve_node_error("@e1", "Node does not belong to the document");
+        assert_eq!(err.code, ErrorCode::NodeStale);
+        assert_eq!(err.retry, Some(RetryHint::Snapshot));
+    }
+
+    #[test]
+    fn resolve_node_error_could_not_find_node_is_stale() {
+        let err = map_resolve_node_error("@e1", "Could not find node with given id");
+        assert_eq!(err.code, ErrorCode::NodeStale);
+    }
+
+    #[test]
+    fn resolve_node_error_no_node_with_given_id_is_stale() {
+        let err = map_resolve_node_error("@e1", "No node with given id");
+        assert_eq!(err.code, ErrorCode::NodeStale);
+    }
+
+    #[test]
+    fn resolve_node_error_websocket_closed_is_cdp_error() {
+        let err = map_resolve_node_error("@e1", "WebSocket connection closed unexpectedly");
+        assert_eq!(err.code, ErrorCode::CdpError);
+        // Non-stale errors carry no retry hint from this mapper.
+        assert_eq!(err.retry, None);
+    }
+
+    #[test]
+    fn resolve_node_error_timeout_is_cdp_error() {
+        let err = map_resolve_node_error("@e1", "timeout waiting for CDP response");
+        assert_eq!(err.code, ErrorCode::CdpError);
+    }
+
+    #[test]
+    fn resolve_node_error_out_of_memory_is_cdp_error() {
+        let err = map_resolve_node_error("@e1", "Internal error: out of memory");
+        assert_eq!(err.code, ErrorCode::CdpError);
+    }
+
+    #[test]
+    fn resolve_node_error_empty_message_is_cdp_error() {
+        let err = map_resolve_node_error("@e1", "");
+        assert_eq!(err.code, ErrorCode::CdpError);
+    }
+
+    #[test]
+    fn resolve_node_error_cdp_message_includes_original_text() {
+        let err = map_resolve_node_error("@e1", "some transport failure");
+        assert!(err.message.contains("some transport failure"));
+        assert!(err.message.contains("DOM.resolveNode failed"));
+    }
+
+    // -- ok_result / err_result: envelope fidelity ---------------------------
+
+    #[test]
+    fn ok_result_round_trips_warnings_and_title() {
+        let resp = ToolResponse::new("s1", Some("https://example.com".into()), DummyData { n: 9 })
+            .with_title("Example")
+            .with_navigated(true)
+            .with_elapsed_ms(42)
+            .with_warning("clamped");
+        let result = ok_result(&resp);
+        let json: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(json["title"], "Example");
+        assert_eq!(json["navigated"], true);
+        assert_eq!(json["elapsed_ms"], 42);
+        assert_eq!(json["warnings"][0], "clamped");
+    }
+
+    #[test]
+    fn err_result_carries_retry_hint() {
+        let err = ErrorResponse::new(ErrorCode::Timeout, "took too long")
+            .with_retry(RetryHint::BackoffMs(500));
+        let result = err_result(&err);
+        let json: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(json["retry"]["backoff_ms"], 500);
+    }
+
+    #[test]
+    fn err_result_omits_absent_optional_fields() {
+        let err = ErrorResponse::new(ErrorCode::NotFound, "missing");
+        let result = err_result(&err);
+        let json: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let obj = json.as_object().unwrap();
+        assert!(!obj.contains_key("retry"));
+        assert!(!obj.contains_key("stale_anchor"));
+        assert!(!obj.contains_key("allowed_pattern"));
+        assert!(!obj.contains_key("partial_count"));
+    }
+
+    // -- shared limits: regression guards on public contract constants ------
+    // Each of these numbers is depended on by other tools/docs; a silent
+    // change here would be a breaking behavior change nobody asked for.
+
+    #[test]
+    fn const_max_timeout_ms_is_120_seconds() {
+        assert_eq!(MAX_TIMEOUT_MS, 120_000);
+    }
+
+    #[test]
+    fn const_max_tree_nodes_is_5000() {
+        assert_eq!(MAX_TREE_NODES, 5_000);
+    }
+
+    #[test]
+    fn const_max_url_len_is_2048() {
+        assert_eq!(MAX_URL_LEN, 2048);
+    }
+
+    #[test]
+    fn const_allowed_goto_schemes_is_http_and_https_only() {
+        assert_eq!(ALLOWED_GOTO_SCHEMES, &["http", "https"]);
+    }
+
+    #[test]
+    fn const_max_page_text_len_is_50000() {
+        assert_eq!(MAX_PAGE_TEXT_LEN, 50_000);
+    }
+
+    #[test]
+    fn const_max_type_text_len_is_4096() {
+        assert_eq!(MAX_TYPE_TEXT_LEN, 4_096);
+    }
+
+    #[test]
+    fn const_max_html_len_is_200000() {
+        assert_eq!(MAX_HTML_LEN, 200_000);
+    }
+
+    // -- map_resolve_node_error: substring matching must not be over-broad --
+
+    #[test]
+    fn resolve_node_error_stale_phrase_embedded_in_longer_message() {
+        let err = map_resolve_node_error(
+            "@e7",
+            "DOM.resolveNode: no node with given id 42 in this frame",
+        );
+        assert_eq!(err.code, ErrorCode::NodeStale);
+    }
+
+    #[test]
+    fn resolve_node_error_similar_but_non_matching_phrase_stays_cdp_error() {
+        // Contains "Node" and "id" individually, but not any of the four
+        // recognised stale phrases — must not false-positive into NODE_STALE.
+        let err = map_resolve_node_error("@e7", "Node ID out of range for this document");
+        assert_eq!(err.code, ErrorCode::CdpError);
+    }
+
+    // -- validate_selector_or_ref: length has no cap in this function -------
+
+    #[test]
+    fn validate_selector_or_ref_accepts_very_long_selector() {
+        let long = "a".repeat(5_000);
+        assert!(validate_selector_or_ref(Some(&long), None).is_none());
+    }
+
+    // -- ok_result / err_result: content-block shape and generic payloads ---
+
+    #[test]
+    fn ok_result_produces_exactly_one_text_content_block() {
+        let resp = ToolResponse::new("s1", None, DummyData { n: 1 });
+        let result = ok_result(&resp);
+        assert_eq!(result.content.len(), 1);
+        assert!(result.content[0].as_text().is_some());
+    }
+
+    #[test]
+    fn err_result_produces_exactly_one_text_content_block() {
+        let err = ErrorResponse::new(ErrorCode::Internal, "boom");
+        let result = err_result(&err);
+        assert_eq!(result.content.len(), 1);
+        assert!(result.content[0].as_text().is_some());
+    }
+
+    #[test]
+    fn ok_result_passes_through_arbitrary_vec_payload() {
+        let resp = ToolResponse::new("s1", None, vec![1, 2, 3]);
+        let result = ok_result(&resp);
+        let json: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(json["data"], serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn ok_result_url_none_is_omitted_from_json() {
+        let resp = ToolResponse::new("s1", None, DummyData { n: 1 });
+        let result = ok_result(&resp);
+        let json: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("url"));
+    }
+
+    #[test]
+    fn ok_result_url_some_is_present_in_json() {
+        let resp = ToolResponse::new("s1", Some("https://a.example/".into()), DummyData { n: 1 });
+        let result = ok_result(&resp);
+        let json: Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(json["url"], "https://a.example/");
+    }
 }

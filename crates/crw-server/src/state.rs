@@ -1158,4 +1158,507 @@ mod tests {
         );
         assert!(state.extract_jobs.read().await.is_empty());
     }
+
+    // ── validate_renderer_pin / validate_crawl_renderer ──
+
+    fn crawl_request(
+        url: &str,
+        renderer: Option<RequestedRenderer>,
+        render_js: Option<bool>,
+    ) -> CrawlRequest {
+        CrawlRequest {
+            url: url.to_string(),
+            max_depth: None,
+            max_pages: None,
+            formats: vec![crw_core::types::OutputFormat::Markdown],
+            only_main_content: true,
+            json_schema: None,
+            render_js,
+            wait_for: None,
+            renderer,
+            country: None,
+            proxy_list: Vec::new(),
+            proxy_rotation: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_renderer_pin_auto_or_absent_is_always_ok() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        assert!(validate_renderer_pin(Some(RequestedRenderer::Auto), None, &state).is_ok());
+        assert!(validate_renderer_pin(None, Some(true), &state).is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_renderer_pin_unavailable_renderer_is_rejected_with_name_and_list() {
+        // Default config builds no CDP tier (no ws_url configured), so the pool
+        // is always empty here regardless of build features.
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let err = validate_renderer_pin(Some(RequestedRenderer::Chrome), None, &state).unwrap_err();
+        match err {
+            CrwError::InvalidRequest(msg) => {
+                assert!(
+                    msg.contains("renderer 'chrome' not available"),
+                    "message was: {msg}"
+                );
+                assert!(
+                    msg.contains("configured renderers: []"),
+                    "message was: {msg}"
+                );
+            }
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_renderer_pin_skipped_when_render_js_explicitly_false() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        // Explicit renderJs:false takes the HTTP-only path and never consults
+        // the (unavailable) JS renderer pool.
+        assert!(
+            validate_renderer_pin(Some(RequestedRenderer::Chrome), Some(false), &state).is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_renderer_pin_forces_js_true_when_request_omits_render_js() {
+        // "Pinned implies JS": a server default of render_js_default=false must
+        // not let an omitted renderJs silently skip validation.
+        let config: AppConfig = toml::from_str("[renderer]\nrender_js_default = false\n").unwrap();
+        let state = AppState::new(config).unwrap();
+        let err = validate_renderer_pin(Some(RequestedRenderer::Chrome), None, &state).unwrap_err();
+        assert!(matches!(err, CrwError::InvalidRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn validate_crawl_renderer_delegates_and_surfaces_the_pinned_name() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let req = crawl_request(
+            "https://example.com",
+            Some(RequestedRenderer::Lightpanda),
+            None,
+        );
+        let err = validate_crawl_renderer(&req, &state).unwrap_err();
+        match err {
+            CrwError::InvalidRequest(msg) => assert!(msg.contains("lightpanda")),
+            other => panic!("expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_crawl_renderer_ok_when_no_renderer_pinned() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let req = crawl_request("https://example.com", None, None);
+        assert!(validate_crawl_renderer(&req, &state).is_ok());
+    }
+
+    // ── ExtractStatus ──
+
+    #[test]
+    fn extract_status_as_str_matches_wire_values() {
+        assert_eq!(ExtractStatus::Processing.as_str(), "processing");
+        assert_eq!(ExtractStatus::Cancelling.as_str(), "cancelling");
+        assert_eq!(ExtractStatus::Completed.as_str(), "completed");
+        assert_eq!(ExtractStatus::Failed.as_str(), "failed");
+        assert_eq!(ExtractStatus::Cancelled.as_str(), "cancelled");
+    }
+
+    #[test]
+    fn extract_status_is_terminal_only_for_completed_failed_cancelled() {
+        assert!(!ExtractStatus::Processing.is_terminal());
+        assert!(!ExtractStatus::Cancelling.is_terminal());
+        assert!(ExtractStatus::Completed.is_terminal());
+        assert!(ExtractStatus::Failed.is_terminal());
+        assert!(ExtractStatus::Cancelled.is_terminal());
+    }
+
+    // ── ExtractRecord::is_expired ──
+
+    #[test]
+    fn extract_record_is_expired_false_within_ttl() {
+        let rec = completed_record(Instant::now());
+        assert!(!rec.is_expired(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn extract_record_is_expired_true_once_ttl_elapsed() {
+        let rec = completed_record(Instant::now() - Duration::from_secs(10));
+        assert!(rec.is_expired(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn extract_record_is_expired_true_at_zero_ttl() {
+        let rec = completed_record(Instant::now());
+        assert!(rec.is_expired(Duration::ZERO));
+    }
+
+    // ── ExtractRecord state machine (finish_cancellation / complete_from_outcomes / finish_processing) ──
+
+    fn record_with_statuses(statuses: &[ExtractStatus]) -> ExtractRecord {
+        ExtractRecord {
+            status: ExtractStatus::Processing,
+            data: None,
+            per_url: statuses
+                .iter()
+                .enumerate()
+                .map(|(index, &status)| UrlResult {
+                    url: format!("https://example.com/{index}"),
+                    status,
+                    data: (status == ExtractStatus::Completed).then(|| json!({"index": index})),
+                    error: (status == ExtractStatus::Failed).then(|| format!("error-{index}")),
+                    llm_usage: None,
+                    basis: None,
+                    basis_warnings: Vec::new(),
+                    llm_input_hash: None,
+                })
+                .collect(),
+            tokens_used: 0,
+            credits_used: 0,
+            error: None,
+            created_at: Instant::now(),
+            expires_at: SystemTime::now() + Duration::from_secs(3_600),
+            claimed_index: None,
+        }
+    }
+
+    #[test]
+    fn finish_cancellation_noop_when_status_is_not_cancelling() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Processing]);
+        rec.finish_cancellation();
+        assert_eq!(rec.status, ExtractStatus::Processing);
+        assert_eq!(rec.per_url[0].status, ExtractStatus::Processing);
+    }
+
+    #[test]
+    fn finish_cancellation_noop_while_a_url_is_still_claimed() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Processing]);
+        rec.status = ExtractStatus::Cancelling;
+        rec.claimed_index = Some(0);
+        rec.finish_cancellation();
+        // Barrier not crossed yet: nothing may settle while a slot is claimed.
+        assert_eq!(rec.status, ExtractStatus::Cancelling);
+        assert_eq!(rec.per_url[0].status, ExtractStatus::Processing);
+    }
+
+    #[test]
+    fn finish_cancellation_cancels_remaining_processing_urls_and_clears_their_fields() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Completed, ExtractStatus::Processing]);
+        rec.status = ExtractStatus::Cancelling;
+        rec.finish_cancellation();
+        assert_eq!(rec.status, ExtractStatus::Cancelled);
+        assert_eq!(
+            rec.per_url[0].status,
+            ExtractStatus::Completed,
+            "already-terminal URL must be left untouched"
+        );
+        assert_eq!(rec.per_url[1].status, ExtractStatus::Cancelled);
+        assert!(rec.per_url[1].data.is_none());
+        assert!(rec.per_url[1].error.is_none());
+    }
+
+    #[test]
+    fn finish_cancellation_settles_completed_when_nothing_was_actually_in_flight() {
+        // Every URL had already finished before the cancel landed: reporting
+        // "cancelled" would contradict real per-URL results that all succeeded.
+        let mut rec = record_with_statuses(&[ExtractStatus::Completed, ExtractStatus::Failed]);
+        rec.status = ExtractStatus::Cancelling;
+        rec.finish_cancellation();
+        assert_eq!(rec.status, ExtractStatus::Completed);
+    }
+
+    #[test]
+    fn finish_cancellation_settles_failed_when_every_finished_url_failed() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Failed, ExtractStatus::Failed]);
+        rec.status = ExtractStatus::Cancelling;
+        rec.finish_cancellation();
+        assert_eq!(rec.status, ExtractStatus::Failed);
+    }
+
+    #[test]
+    fn finish_processing_completes_and_seeds_empty_data_when_data_was_none() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Completed, ExtractStatus::Failed]);
+        rec.data = None;
+        rec.finish_processing();
+        assert_eq!(rec.status, ExtractStatus::Completed);
+        assert_eq!(rec.data, Some(json!({})));
+    }
+
+    #[test]
+    fn finish_processing_fails_and_picks_the_last_error_in_original_order() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Failed, ExtractStatus::Failed]);
+        rec.per_url[0].error = Some("first".into());
+        rec.per_url[1].error = Some("second".into());
+        rec.finish_processing();
+        assert_eq!(rec.status, ExtractStatus::Failed);
+        assert_eq!(rec.error.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn finish_processing_reports_no_error_when_all_failed_urls_carried_none() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Failed]);
+        rec.per_url[0].error = None;
+        rec.finish_processing();
+        assert_eq!(rec.status, ExtractStatus::Failed);
+        assert_eq!(rec.error, None);
+    }
+
+    #[test]
+    fn finish_processing_credits_floor_is_one_when_nothing_was_measured() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Failed]);
+        rec.credits_used = 0;
+        rec.finish_processing();
+        assert_eq!(rec.credits_used, 1);
+    }
+
+    #[test]
+    fn finish_processing_preserves_measured_credits_above_the_floor() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Completed]);
+        rec.credits_used = 5;
+        rec.finish_processing();
+        assert_eq!(rec.credits_used, 5);
+    }
+
+    #[test]
+    fn finish_processing_is_a_noop_once_already_terminal() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Completed]);
+        rec.status = ExtractStatus::Completed;
+        rec.error = Some("must not change".into());
+        rec.finish_processing();
+        assert_eq!(rec.status, ExtractStatus::Completed);
+        assert_eq!(rec.error.as_deref(), Some("must not change"));
+    }
+
+    #[test]
+    fn finish_processing_delegates_to_finish_cancellation_when_status_is_cancelling() {
+        let mut rec = record_with_statuses(&[ExtractStatus::Processing]);
+        rec.status = ExtractStatus::Cancelling;
+        rec.finish_processing();
+        assert_eq!(rec.status, ExtractStatus::Cancelled);
+        assert_eq!(rec.per_url[0].status, ExtractStatus::Cancelled);
+    }
+
+    // ── AppState::new ──
+
+    #[tokio::test]
+    async fn app_state_new_default_crawl_semaphore_has_max_concurrent_crawls_permits() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let permits = state
+            .crawl_semaphore
+            .acquire_many(MAX_CONCURRENT_CRAWLS as u32)
+            .await
+            .unwrap();
+        assert_eq!(state.crawl_semaphore.available_permits(), 0);
+        drop(permits);
+        assert_eq!(
+            state.crawl_semaphore.available_permits(),
+            MAX_CONCURRENT_CRAWLS
+        );
+    }
+
+    #[tokio::test]
+    async fn app_state_new_batch_pipeline_sem_is_none_when_aggregate_cap_is_zero() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        assert!(state.batch_pipeline_sem.is_none());
+    }
+
+    #[tokio::test]
+    async fn app_state_new_batch_pipeline_sem_carries_the_configured_permit_count() {
+        let config: AppConfig =
+            toml::from_str("[crawler]\nmax_aggregate_batch_pipelines = 7\n").unwrap();
+        let state = AppState::new(config).unwrap();
+        let sem = state
+            .batch_pipeline_sem
+            .expect("expected a bounded semaphore");
+        assert_eq!(sem.available_permits(), 7);
+    }
+
+    #[tokio::test]
+    async fn app_state_new_searxng_is_none_when_no_backend_url_is_configured() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        assert!(state.searxng.is_none());
+    }
+
+    #[tokio::test]
+    async fn app_state_new_searxng_is_some_once_a_backend_url_is_configured() {
+        let config: AppConfig =
+            toml::from_str("[search]\nsearch_backend_url = \"http://searxng:8080\"\n").unwrap();
+        let state = AppState::new(config).unwrap();
+        assert!(state.searxng.is_some());
+    }
+
+    #[tokio::test]
+    async fn app_state_new_url_filter_is_always_configured() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        assert!(state.url_filter.is_some());
+    }
+
+    #[test]
+    fn app_state_new_rejects_a_malformed_proxy_url() {
+        let config: AppConfig =
+            toml::from_str("[crawler]\nproxy = \"htp://not-a-scheme\"\n").unwrap();
+        let err = match AppState::new(config) {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, CrwError::ConfigError(_)));
+    }
+
+    // ── start_batch_job / start_extract_job (network-free paths only) ──
+
+    #[tokio::test]
+    async fn start_batch_job_with_no_urls_completes_immediately_without_fetching() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let template = ScrapeRequest {
+            url: String::new(),
+            ..Default::default()
+        };
+        let id = state.start_batch_job(Vec::new(), template, None).await;
+
+        let mut settled = None;
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+            let jobs = state.crawl_jobs.read().await;
+            let st = jobs.get(&id).unwrap().rx.borrow().clone();
+            if st.status != CrawlStatus::InProgress {
+                settled = Some(st);
+                break;
+            }
+        }
+        let job = settled.expect("empty batch job did not settle");
+        assert_eq!(job.status, CrawlStatus::Completed);
+        assert_eq!(job.total, 0);
+        assert_eq!(job.completed, 0);
+        assert!(job.data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn start_extract_job_with_all_preflight_errors_finalizes_without_any_fetch() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let entries = vec![
+            PreparedUrl {
+                url: "not-a-url".into(),
+                preflight_error: Some("invalid URL".into()),
+            },
+            PreparedUrl {
+                url: "javascript:alert(1)".into(),
+                preflight_error: Some("blocked scheme".into()),
+            },
+        ];
+        let id = state
+            .start_extract_job(entries, ScrapeRequest::default())
+            .await;
+
+        let mut record = None;
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+            let rec = state.get_extract_job(id).await.unwrap();
+            if rec.status.is_terminal() {
+                record = Some(rec);
+                break;
+            }
+        }
+        let record = record.expect("all-preflight-failed extract job did not finalize");
+        assert_eq!(record.status, ExtractStatus::Failed);
+        assert_eq!(record.error.as_deref(), Some("blocked scheme"));
+        assert_eq!(
+            record.credits_used, 1,
+            "one-credit floor on an all-failed job"
+        );
+        // Original request order is preserved and neither entry was fetched.
+        assert_eq!(record.per_url.len(), 2);
+        assert_eq!(record.per_url[0].url, "not-a-url");
+        assert_eq!(record.per_url[0].error.as_deref(), Some("invalid URL"));
+        assert_eq!(record.per_url[1].url, "javascript:alert(1)");
+        assert_eq!(record.per_url[1].error.as_deref(), Some("blocked scheme"));
+    }
+
+    // ── cancel_extract_job / get_extract_job ──
+
+    #[tokio::test]
+    async fn cancel_extract_job_errors_not_found_for_a_missing_id() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let err = state.cancel_extract_job(Uuid::new_v4()).await.unwrap_err();
+        assert!(matches!(err, CrwError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn cancel_extract_job_removes_and_errors_on_an_expired_job() {
+        let config: AppConfig = toml::from_str("[crawler]\njob_ttl_secs = 1\n").unwrap();
+        let state = AppState::new(config).unwrap();
+        let id = Uuid::new_v4();
+        state.extract_jobs.write().await.insert(
+            id,
+            completed_record(Instant::now() - Duration::from_secs(5)),
+        );
+
+        let err = state.cancel_extract_job(id).await.unwrap_err();
+        assert!(matches!(err, CrwError::NotFound(_)));
+        assert!(!state.extract_jobs.read().await.contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn cancel_extract_job_moves_processing_to_cancelled_when_no_url_is_claimed() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let id = Uuid::new_v4();
+        let mut rec = record_with_statuses(&[ExtractStatus::Completed, ExtractStatus::Processing]);
+        rec.status = ExtractStatus::Processing;
+        state.extract_jobs.write().await.insert(id, rec);
+
+        let cancelled = state.cancel_extract_job(id).await.unwrap();
+        assert_eq!(cancelled.status, ExtractStatus::Cancelled);
+        assert_eq!(cancelled.per_url[1].status, ExtractStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn cancel_extract_job_is_idempotent_on_a_second_call() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let id = Uuid::new_v4();
+        state
+            .extract_jobs
+            .write()
+            .await
+            .insert(id, completed_record(Instant::now()));
+
+        let first = state.cancel_extract_job(id).await.unwrap();
+        let second = state.cancel_extract_job(id).await.unwrap();
+        assert_eq!(first.status, second.status);
+        assert_eq!(first.credits_used, second.credits_used);
+    }
+
+    #[tokio::test]
+    async fn get_extract_job_errors_not_found_for_a_missing_id() {
+        let config: AppConfig = toml::from_str("").unwrap();
+        let state = AppState::new(config).unwrap();
+        let err = state.get_extract_job(Uuid::new_v4()).await.unwrap_err();
+        assert!(matches!(err, CrwError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn get_extract_job_removes_and_errors_on_an_expired_job() {
+        let config: AppConfig = toml::from_str("[crawler]\njob_ttl_secs = 1\n").unwrap();
+        let state = AppState::new(config).unwrap();
+        let id = Uuid::new_v4();
+        state.extract_jobs.write().await.insert(
+            id,
+            completed_record(Instant::now() - Duration::from_secs(5)),
+        );
+
+        let err = state.get_extract_job(id).await.unwrap_err();
+        assert!(matches!(err, CrwError::NotFound(_)));
+        assert!(!state.extract_jobs.read().await.contains_key(&id));
+    }
 }

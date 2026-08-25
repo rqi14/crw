@@ -339,6 +339,7 @@ pub async fn cancel_extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crw_core::config::AppConfig;
 
     // The stdio/CLI MCP proxies ship the raw `/v1/extract` start body verbatim as
     // `structuredContent`, so this serialized shape must satisfy the advertised
@@ -360,5 +361,372 @@ mod tests {
             .map(|e| e.to_string())
             .collect();
         assert!(errors.is_empty(), "start body vs schema: {errors:#?}");
+    }
+
+    // ── prepare_extract: validation, SSRF preflight, template build ────────
+    //
+    // No real network happens here: `validate_safe_url_resolved` never resolves
+    // DNS for a literal IP host, so a public-IP URL like `http://8.8.8.8/x`
+    // exercises the "valid URL" branch fully hermetically, and a loopback/
+    // private-range literal is rejected by the IP-range check alone.
+
+    fn state_with_llm() -> AppState {
+        let config: AppConfig = toml::from_str("[extraction.llm]\napi_key = \"k\"\n").unwrap();
+        AppState::new(config).expect("AppState::new failed")
+    }
+
+    fn state_no_llm() -> AppState {
+        let config: AppConfig = toml::from_str("").unwrap();
+        AppState::new(config).expect("AppState::new failed")
+    }
+
+    fn state_with_byok_header_guard() -> AppState {
+        let config: AppConfig =
+            toml::from_str("[extraction.llm]\napi_key = \"k\"\nrequire_byok_header = \"X-Key\"\n")
+                .unwrap();
+        AppState::new(config).expect("AppState::new failed")
+    }
+
+    fn bare_req(urls: Vec<&str>) -> ExtractRequest {
+        ExtractRequest {
+            urls: urls.into_iter().map(String::from).collect(),
+            prompt: None,
+            schema: None,
+            llm_api_key: None,
+            llm_provider: None,
+            llm_model: None,
+            base_url: None,
+            basis: None,
+        }
+    }
+
+    const PUBLIC_IP_URL: &str = "http://8.8.8.8/page";
+
+    fn err_msg(e: CrwError) -> String {
+        e.to_string()
+    }
+
+    #[tokio::test]
+    async fn empty_urls_rejected_with_a_specific_message() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec![]);
+        req.prompt = Some("summarize".to_string());
+        let err = match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, CrwError::InvalidRequest(_)));
+        assert!(err_msg(err).contains("`urls` is required and must be non-empty"));
+    }
+
+    #[tokio::test]
+    async fn too_many_urls_rejected_with_the_cap_in_the_message() {
+        let state = state_with_llm();
+        let cap = state.config.crawler.max_extract_urls;
+        let mut req = bare_req(vec![PUBLIC_IP_URL; cap + 1]);
+        req.prompt = Some("go".to_string());
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("too many urls"));
+        assert!(err.contains(&cap.to_string()));
+    }
+
+    #[tokio::test]
+    async fn no_prompt_and_no_schema_is_rejected() {
+        let state = state_with_llm();
+        let req = bare_req(vec![PUBLIC_IP_URL]);
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("nothing to extract"));
+        assert!(err.contains("prompt"));
+        assert!(err.contains("schema"));
+    }
+
+    #[tokio::test]
+    async fn whitespace_only_prompt_counts_as_absent() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("   \n\t  ".to_string());
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("nothing to extract"));
+    }
+
+    #[tokio::test]
+    async fn prompt_only_succeeds_without_a_schema() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("extract the author".to_string());
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert_eq!(prepared.valid_count, 1);
+        assert_eq!(prepared.template.formats, vec![OutputFormat::Json]);
+        assert_eq!(
+            prepared
+                .template
+                .extract
+                .as_ref()
+                .unwrap()
+                .prompt
+                .as_deref(),
+            Some("extract the author")
+        );
+        assert!(prepared.template.json_schema.is_none());
+    }
+
+    #[tokio::test]
+    async fn schema_only_succeeds_without_a_prompt() {
+        let state = state_with_llm();
+        let schema = serde_json::json!({"type": "object"});
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.schema = Some(schema.clone());
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert_eq!(prepared.template.json_schema, Some(schema));
+        assert!(prepared.template.extract.as_ref().unwrap().prompt.is_none());
+    }
+
+    #[tokio::test]
+    async fn basis_without_a_schema_is_rejected_with_a_clear_message() {
+        // The priority case: a client that asks for per-field attribution but
+        // sends no jsonSchema must get a specific, actionable 400 — not a
+        // generic parse failure and not a silent no-op.
+        let state = state_with_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        req.basis = Some(true);
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("`basis`"));
+        assert!(err.contains("requires a `schema`"));
+    }
+
+    #[tokio::test]
+    async fn basis_with_a_schema_succeeds() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.schema = Some(serde_json::json!({"type": "object"}));
+        req.basis = Some(true);
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert!(prepared.template.basis);
+    }
+
+    #[tokio::test]
+    async fn basis_explicit_false_does_not_require_a_schema() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        req.basis = Some(false);
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert!(!prepared.template.basis);
+    }
+
+    #[tokio::test]
+    async fn base_url_is_rejected_outright() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        req.base_url = Some("https://evil.example/v1".to_string());
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("`baseUrl` is not supported"));
+    }
+
+    #[tokio::test]
+    async fn byok_header_guard_rejects_a_request_without_an_llm_api_key() {
+        let state = state_with_byok_header_guard();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("BYOK header guard active"));
+    }
+
+    #[tokio::test]
+    async fn byok_header_guard_allows_a_request_carrying_an_llm_api_key() {
+        let state = state_with_byok_header_guard();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        req.llm_api_key = Some("caller-key".to_string());
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert_eq!(prepared.valid_count, 1);
+    }
+
+    #[tokio::test]
+    async fn no_server_llm_and_no_byok_key_is_rejected() {
+        let state = state_no_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("extraction requires an LLM"));
+    }
+
+    #[tokio::test]
+    async fn no_server_llm_but_a_byok_key_succeeds() {
+        let state = state_no_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        req.llm_api_key = Some("byok".to_string());
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert_eq!(prepared.valid_count, 1);
+        assert_eq!(prepared.template.llm_api_key.as_deref(), Some("byok"));
+    }
+
+    #[tokio::test]
+    async fn a_syntactically_invalid_url_fails_preflight_with_no_valid_urls() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec!["not a url at all"]);
+        req.prompt = Some("go".to_string());
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("no valid URLs"));
+    }
+
+    #[tokio::test]
+    async fn a_loopback_url_fails_preflight_with_no_valid_urls() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec!["http://127.0.0.1/admin"]);
+        req.prompt = Some("go".to_string());
+        let err = err_msg(match prepare_extract(&state, req).await {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        });
+        assert!(err.contains("no valid URLs"));
+    }
+
+    #[tokio::test]
+    async fn mixed_valid_and_blocked_urls_keeps_only_the_valid_one_and_preserves_order() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec!["http://127.0.0.1/blocked", PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert_eq!(prepared.valid_count, 1);
+        assert_eq!(prepared.entries.len(), 2);
+        assert!(prepared.entries[0].preflight_error.is_some());
+        assert_eq!(prepared.entries[0].url, "http://127.0.0.1/blocked");
+        assert!(prepared.entries[1].preflight_error.is_none());
+        assert_eq!(prepared.entries[1].url, PUBLIC_IP_URL);
+    }
+
+    #[tokio::test]
+    async fn template_always_requests_json_format_regardless_of_input() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert_eq!(prepared.template.formats, vec![OutputFormat::Json]);
+    }
+
+    #[tokio::test]
+    async fn llm_provider_and_model_thread_through_to_the_template() {
+        let state = state_with_llm();
+        let mut req = bare_req(vec![PUBLIC_IP_URL]);
+        req.prompt = Some("go".to_string());
+        req.llm_provider = Some("openai".to_string());
+        req.llm_model = Some("gpt-4o".to_string());
+        let prepared = prepare_extract(&state, req).await.unwrap();
+        assert_eq!(prepared.template.llm_provider.as_deref(), Some("openai"));
+        assert_eq!(prepared.template.llm_model.as_deref(), Some("gpt-4o"));
+    }
+
+    // ── response shapes: camelCase field pinning ────────────────────────────
+
+    #[test]
+    fn extract_url_result_serializes_camel_case_and_omits_none() {
+        let result = ExtractUrlResult {
+            url: "https://x".to_string(),
+            status: "completed".to_string(),
+            data: None,
+            error: None,
+            llm_usage: None,
+            basis: None,
+            basis_warnings: Vec::new(),
+            llm_input_hash: None,
+        };
+        let v = serde_json::to_value(&result).unwrap();
+        assert_eq!(v["url"], "https://x");
+        assert_eq!(v["status"], "completed");
+        for key in ["data", "error", "llmUsage", "basis", "llmInputHash"] {
+            assert!(v.get(key).is_none(), "expected `{key}` omitted");
+        }
+        // empty Vec also omitted (skip_serializing_if = "Vec::is_empty")
+        assert!(v.get("basisWarnings").is_none());
+    }
+
+    #[test]
+    fn extract_status_response_success_is_false_only_when_failed() {
+        for (status, expect_success) in [
+            (ExtractStatus::Processing, true),
+            (ExtractStatus::Completed, true),
+            (ExtractStatus::Cancelling, true),
+            (ExtractStatus::Failed, false),
+        ] {
+            let rec = ExtractRecord {
+                status,
+                data: None,
+                per_url: vec![],
+                tokens_used: 0,
+                credits_used: 0,
+                error: None,
+                created_at: std::time::Instant::now(),
+                expires_at: std::time::SystemTime::now(),
+                claimed_index: None,
+            };
+            let resp = serialize_extract_status(Uuid::nil(), rec);
+            assert_eq!(resp.success, expect_success, "status={status:?}");
+        }
+    }
+
+    #[test]
+    fn extract_status_response_omits_empty_results_array() {
+        let rec = ExtractRecord {
+            status: ExtractStatus::Processing,
+            data: None,
+            per_url: vec![],
+            tokens_used: 0,
+            credits_used: 0,
+            error: None,
+            created_at: std::time::Instant::now(),
+            expires_at: std::time::SystemTime::now(),
+            claimed_index: None,
+        };
+        let resp = serialize_extract_status(Uuid::nil(), rec);
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v.get("results").is_none());
+        assert!(v.get("error").is_none());
+    }
+
+    #[test]
+    fn extract_status_response_credits_and_tokens_pass_through() {
+        let rec = ExtractRecord {
+            status: ExtractStatus::Completed,
+            data: None,
+            per_url: vec![],
+            tokens_used: 42,
+            credits_used: 7,
+            error: None,
+            created_at: std::time::Instant::now(),
+            expires_at: std::time::SystemTime::now(),
+            claimed_index: None,
+        };
+        let resp = serialize_extract_status(Uuid::nil(), rec);
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["creditsUsed"], 7);
+        assert_eq!(v["tokensUsed"], 42);
     }
 }

@@ -3646,6 +3646,7 @@ mod tests {
         lightpanda_safe_ua, outbound_block_label, screenshot_clip, split_caller_headers,
     };
     use std::collections::HashMap;
+    use std::time::Duration;
 
     #[test]
     fn challenge_reserve_follows_the_configured_retry_count() {
@@ -4049,6 +4050,1014 @@ mod tests {
         assert_eq!(
             screenshot_clip(1280.0, 40000.0, 15000.0),
             Some((1280.0, 15000.0))
+        );
+    }
+
+    #[test]
+    fn screenshot_clip_exactly_at_cap_is_not_clipped() {
+        // `>` not `>=`: a page exactly as tall as the cap is left alone.
+        assert_eq!(screenshot_clip(1280.0, 15000.0, 15000.0), None);
+    }
+
+    #[test]
+    fn screenshot_clip_one_px_over_cap_clips() {
+        assert_eq!(
+            screenshot_clip(1280.0, 15000.1, 15000.0),
+            Some((1280.0, 15000.0))
+        );
+    }
+
+    #[test]
+    fn screenshot_clip_zero_height_page_is_not_clipped() {
+        assert_eq!(screenshot_clip(1280.0, 0.0, 15000.0), None);
+    }
+
+    #[test]
+    fn screenshot_clip_zero_cap_clips_any_positive_height() {
+        assert_eq!(screenshot_clip(1280.0, 1.0, 0.0), Some((1280.0, 0.0)));
+    }
+
+    #[test]
+    fn screenshot_clip_preserves_width_unchanged() {
+        // Width is passed through verbatim; only height is capped.
+        assert_eq!(
+            screenshot_clip(3840.0, 99_999.0, 15_000.0),
+            Some((3840.0, 15_000.0))
+        );
+    }
+
+    // --- screenshot_max_height_px: env-var override ---------------------------
+    //
+    // The function reads `CRW_RENDERER__SCREENSHOT_MAX_HEIGHT_PX` fresh on every
+    // call (no caching), so these tests share one process-wide env var and must
+    // not run concurrently with each other. Serialize with a dedicated mutex.
+    use super::{SCREENSHOT_MAX_HEIGHT_PX, screenshot_max_height_px};
+    static SCREENSHOT_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    const SCREENSHOT_ENV_VAR: &str = "CRW_RENDERER__SCREENSHOT_MAX_HEIGHT_PX";
+
+    #[test]
+    fn screenshot_max_height_unset_uses_default() {
+        let _g = SCREENSHOT_ENV_GUARD.lock().unwrap();
+        // SAFETY: serialized by SCREENSHOT_ENV_GUARD above; no other test in
+        // this file touches this var without holding the same lock.
+        unsafe { std::env::remove_var(SCREENSHOT_ENV_VAR) };
+        assert_eq!(screenshot_max_height_px(), SCREENSHOT_MAX_HEIGHT_PX);
+    }
+
+    #[test]
+    fn screenshot_max_height_valid_override_wins() {
+        let _g = SCREENSHOT_ENV_GUARD.lock().unwrap();
+        unsafe { std::env::set_var(SCREENSHOT_ENV_VAR, "8000") };
+        assert_eq!(screenshot_max_height_px(), 8000.0);
+        unsafe { std::env::remove_var(SCREENSHOT_ENV_VAR) };
+    }
+
+    #[test]
+    fn screenshot_max_height_trims_whitespace() {
+        let _g = SCREENSHOT_ENV_GUARD.lock().unwrap();
+        unsafe { std::env::set_var(SCREENSHOT_ENV_VAR, "  12345.5  ") };
+        assert_eq!(screenshot_max_height_px(), 12345.5);
+        unsafe { std::env::remove_var(SCREENSHOT_ENV_VAR) };
+    }
+
+    #[test]
+    fn screenshot_max_height_zero_falls_back_to_default() {
+        // `filter(|v| *v > 0.0)` rejects 0 — a zero cap would clip every page.
+        let _g = SCREENSHOT_ENV_GUARD.lock().unwrap();
+        unsafe { std::env::set_var(SCREENSHOT_ENV_VAR, "0") };
+        assert_eq!(screenshot_max_height_px(), SCREENSHOT_MAX_HEIGHT_PX);
+        unsafe { std::env::remove_var(SCREENSHOT_ENV_VAR) };
+    }
+
+    #[test]
+    fn screenshot_max_height_negative_falls_back_to_default() {
+        let _g = SCREENSHOT_ENV_GUARD.lock().unwrap();
+        unsafe { std::env::set_var(SCREENSHOT_ENV_VAR, "-500") };
+        assert_eq!(screenshot_max_height_px(), SCREENSHOT_MAX_HEIGHT_PX);
+        unsafe { std::env::remove_var(SCREENSHOT_ENV_VAR) };
+    }
+
+    #[test]
+    fn screenshot_max_height_unparseable_falls_back_to_default() {
+        let _g = SCREENSHOT_ENV_GUARD.lock().unwrap();
+        unsafe { std::env::set_var(SCREENSHOT_ENV_VAR, "not-a-number") };
+        assert_eq!(screenshot_max_height_px(), SCREENSHOT_MAX_HEIGHT_PX);
+        unsafe { std::env::remove_var(SCREENSHOT_ENV_VAR) };
+    }
+
+    #[test]
+    fn screenshot_max_height_empty_string_falls_back_to_default() {
+        let _g = SCREENSHOT_ENV_GUARD.lock().unwrap();
+        unsafe { std::env::set_var(SCREENSHOT_ENV_VAR, "") };
+        assert_eq!(screenshot_max_height_px(), SCREENSHOT_MAX_HEIGHT_PX);
+        unsafe { std::env::remove_var(SCREENSHOT_ENV_VAR) };
+    }
+
+    // --- challenge_retry_budget: more boundaries -------------------------------
+
+    #[test]
+    fn challenge_retry_budget_large_retry_count_does_not_overflow() {
+        use super::{CHALLENGE_POLL_INTERVAL_MS, challenge_retry_budget};
+        // u32::MAX retries * a u64 interval must not panic (debug build would
+        // abort on integer overflow); the multiplication promotes to u64 first.
+        let budget = challenge_retry_budget(u32::MAX);
+        assert_eq!(
+            budget,
+            Duration::from_millis(CHALLENGE_POLL_INTERVAL_MS * u64::from(u32::MAX))
+        );
+    }
+
+    #[test]
+    fn challenge_retry_budget_two_retries() {
+        use super::{CHALLENGE_POLL_INTERVAL_MS, challenge_retry_budget};
+        assert_eq!(
+            challenge_retry_budget(2),
+            Duration::from_millis(CHALLENGE_POLL_INTERVAL_MS * 2)
+        );
+    }
+
+    // --- is_content_stable: more boundaries ------------------------------------
+
+    #[test]
+    fn content_stable_exactly_at_tolerance_boundary() {
+        // prev=10_000 → tolerance = max(500, 500) = 500. Exactly 500 is `<=`, so
+        // it must still count as stable.
+        assert!(is_content_stable(10_000, 10_500, true));
+        assert!(is_content_stable(10_000, 9_500, true));
+    }
+
+    #[test]
+    fn content_stable_one_byte_past_tolerance_is_unstable() {
+        assert!(!is_content_stable(10_000, 10_501, true));
+        assert!(!is_content_stable(10_000, 9_499, true));
+    }
+
+    #[test]
+    fn content_stable_tiny_page_499_delta_still_within_500_floor() {
+        // prev=100 → tolerance = max(5, 500) = 500, so a 499-byte swing on a
+        // tiny page still reads as stable (the floor exists precisely so small
+        // pages aren't judged unstable on noise).
+        assert!(is_content_stable(100, 599, true));
+    }
+
+    #[test]
+    fn content_stable_tiny_page_501_delta_exceeds_floor() {
+        assert!(!is_content_stable(100, 601, true));
+    }
+
+    #[test]
+    fn content_stable_huge_lengths_do_not_overflow() {
+        // `abs_diff` avoids the classic `curr - prev` underflow panic on a
+        // shrink; also exercise near-u64::MAX lengths.
+        let prev = u64::MAX - 1000;
+        let curr = u64::MAX - 1500;
+        assert!(is_content_stable(prev, curr, true));
+    }
+
+    // --- is_spa_text_ready: more boundaries -------------------------------------
+
+    #[test]
+    fn spa_text_ready_i64_min_is_not_ready() {
+        assert!(!is_spa_text_ready(i64::MIN));
+    }
+
+    #[test]
+    fn spa_text_ready_i64_max_is_ready() {
+        assert!(is_spa_text_ready(i64::MAX));
+    }
+
+    #[test]
+    fn spa_text_ready_one_above_threshold() {
+        assert!(is_spa_text_ready(SPA_BODY_TEXT_MIN_CHARS as i64 + 1));
+    }
+
+    // --- NetworkActivityTracker::is_settled (networkAlmostIdle) ----------------
+
+    #[test]
+    fn tracker_settled_allows_up_to_max_inflight() {
+        let t = NetworkActivityTracker::new();
+        t.record_request_start();
+        t.record_request_start();
+        // 2 in flight, max_inflight=2 → settled (once quiet period passes).
+        assert!(t.is_settled(0, 2));
+    }
+
+    #[test]
+    fn tracker_not_settled_above_max_inflight() {
+        let t = NetworkActivityTracker::new();
+        t.record_request_start();
+        t.record_request_start();
+        t.record_request_start();
+        // 3 in flight > max_inflight=2 → not settled regardless of quiet period.
+        assert!(!t.is_settled(0, 2));
+    }
+
+    #[test]
+    fn tracker_not_settled_during_quiet_period_even_under_max_inflight() {
+        let t = NetworkActivityTracker::new();
+        t.record_request_start();
+        t.record_request_end();
+        assert!(!t.is_settled(10_000, 2));
+    }
+
+    #[test]
+    fn tracker_settled_with_zero_inflight_and_zero_quiet() {
+        let t = NetworkActivityTracker::new();
+        assert!(t.is_settled(0, 0));
+        assert!(t.is_settled(0, super::ALMOST_IDLE_MAX_INFLIGHT));
+    }
+
+    #[test]
+    fn tracker_negative_inflight_counts_as_settled() {
+        let t = NetworkActivityTracker::new();
+        t.record_request_end();
+        assert!(t.is_settled(0, 0));
+    }
+
+    // --- rewrite_ws_host: CDP discovered-URL rewriting --------------------------
+
+    use super::rewrite_ws_host;
+
+    #[test]
+    fn rewrite_ws_host_replaces_discovered_host_with_configured() {
+        assert_eq!(
+            rewrite_ws_host(
+                "ws://127.0.0.1:9222/devtools/browser/abc-123",
+                "ws://chrome:9222/"
+            ),
+            "ws://chrome:9222/devtools/browser/abc-123"
+        );
+    }
+
+    #[test]
+    fn rewrite_ws_host_preserves_wss_scheme_from_configured() {
+        assert_eq!(
+            rewrite_ws_host(
+                "ws://127.0.0.1:9222/devtools/browser/xyz",
+                "wss://secure.example/"
+            ),
+            "wss://secure.example/devtools/browser/xyz"
+        );
+    }
+
+    #[test]
+    fn rewrite_ws_host_defaults_to_root_path_when_discovered_has_none() {
+        assert_eq!(
+            rewrite_ws_host("ws://127.0.0.1:9222", "ws://chrome:9222/"),
+            "ws://chrome:9222/"
+        );
+    }
+
+    #[test]
+    fn rewrite_ws_host_works_without_trailing_slash_on_configured() {
+        assert_eq!(
+            rewrite_ws_host(
+                "ws://127.0.0.1:9222/devtools/browser/abc",
+                "ws://chrome:9222"
+            ),
+            "ws://chrome:9222/devtools/browser/abc"
+        );
+    }
+
+    #[test]
+    fn rewrite_ws_host_ignores_configured_path_keeps_only_host_port() {
+        // Only host:port from `configured` is kept — any path on it (e.g. a
+        // stale cached devtools path) must not leak into the rewritten URL.
+        assert_eq!(
+            rewrite_ws_host(
+                "ws://127.0.0.1:9222/devtools/browser/new-id",
+                "ws://chrome:9222/devtools/browser/old-stale-id"
+            ),
+            "ws://chrome:9222/devtools/browser/new-id"
+        );
+    }
+
+    // --- classify_connect_outcome: error-arm coverage ---------------------------
+    //
+    // The `Ok(_)` arm needs a live `CdpConnection`, which this hermetic suite
+    // cannot construct (RULES: no real Chrome). Only the `Err` arms are covered.
+
+    use super::classify_connect_outcome;
+
+    #[test]
+    fn classify_connect_outcome_timeout_is_ws_handshake_timeout() {
+        assert_eq!(
+            classify_connect_outcome(&Err(CrwError::Timeout(5000))),
+            "ws_handshake_timeout"
+        );
+    }
+
+    #[test]
+    fn classify_connect_outcome_discovery_failure_is_version_probe_fail() {
+        assert_eq!(
+            classify_connect_outcome(&Err(CrwError::RendererError(
+                "CDP discovery failed: connection refused".into()
+            ))),
+            "version_probe_fail"
+        );
+    }
+
+    #[test]
+    fn classify_connect_outcome_other_renderer_error_is_ws_dial_fail() {
+        // A RendererError NOT mentioning "CDP discovery" (e.g. the WS dial
+        // itself failing) falls through to the generic bucket.
+        assert_eq!(
+            classify_connect_outcome(&Err(CrwError::RendererError("connection refused".into()))),
+            "ws_dial_fail"
+        );
+    }
+
+    #[test]
+    fn classify_connect_outcome_unrelated_error_variant_is_ws_dial_fail() {
+        assert_eq!(
+            classify_connect_outcome(&Err(CrwError::NotFound("x".into()))),
+            "ws_dial_fail"
+        );
+    }
+
+    // --- is_challenge_page ------------------------------------------------------
+
+    use super::is_challenge_page;
+
+    #[test]
+    fn challenge_page_detects_cloudflare_just_a_moment() {
+        assert!(is_challenge_page(
+            "<html><body>Just a moment...</body></html>"
+        ));
+    }
+
+    #[test]
+    fn challenge_page_detects_cf_browser_verification_marker() {
+        assert!(is_challenge_page(
+            "<div id=\"cf-browser-verification\">checking</div>"
+        ));
+    }
+
+    #[test]
+    fn challenge_page_detects_challenge_platform_marker() {
+        assert!(is_challenge_page("loading challenge-platform assets"));
+    }
+
+    #[test]
+    fn challenge_page_detects_attention_required() {
+        assert!(is_challenge_page("<title>Attention Required!</title>"));
+    }
+
+    #[test]
+    fn challenge_page_requires_both_words_for_generic_challenge_cloudflare_combo() {
+        // "challenge" alone (no "cloudflare") must NOT trip the detector —
+        // otherwise any page mentioning a coding challenge would false-positive.
+        assert!(!is_challenge_page(
+            "<p>Take our coding challenge to join!</p>"
+        ));
+        assert!(is_challenge_page("<p>cloudflare challenge in progress</p>"));
+    }
+
+    #[test]
+    fn challenge_page_is_case_insensitive() {
+        assert!(is_challenge_page("JUST A MOMENT..."));
+        assert!(is_challenge_page("CF-CHALLENGE-RUNNING"));
+    }
+
+    #[test]
+    fn challenge_page_ordinary_html_is_not_a_challenge() {
+        assert!(!is_challenge_page(
+            "<html><body><h1>Welcome</h1><p>Normal content.</p></body></html>"
+        ));
+    }
+
+    #[test]
+    fn challenge_page_over_50kb_is_never_flagged() {
+        // Real challenge shells are small; a >50KB document containing the
+        // phrase incidentally (e.g. in a blog post about Cloudflare) must not
+        // be misclassified and short-circuit an otherwise-successful render.
+        let mut html = "just a moment".to_string();
+        html.push_str(&"x".repeat(60_000));
+        assert!(!is_challenge_page(&html));
+    }
+
+    #[test]
+    fn challenge_page_empty_string_is_not_a_challenge() {
+        assert!(!is_challenge_page(""));
+    }
+
+    // --- detect_navigation_error -------------------------------------------------
+
+    use super::detect_navigation_error;
+
+    #[test]
+    fn navigation_error_extracts_reason_after_colon() {
+        let html = "<html>NavigationError: reason: net::ERR_NAME_NOT_RESOLVED</html>";
+        assert_eq!(
+            detect_navigation_error(html),
+            Some("net::err_name_not_resolved".to_string())
+        );
+    }
+
+    #[test]
+    fn navigation_error_stops_reason_at_tag_boundary() {
+        let html = "<p>navigation failed</p><p>reason: timeout</p><footer>x</footer>";
+        assert_eq!(detect_navigation_error(html), Some("timeout".to_string()));
+    }
+
+    #[test]
+    fn navigation_error_stops_reason_at_newline() {
+        let html = "navigation failed\nreason: dns error\nmore text";
+        assert_eq!(detect_navigation_error(html), Some("dns error".to_string()));
+    }
+
+    #[test]
+    fn navigation_error_without_reason_marker_returns_unknown() {
+        let html = "this page had a navigation failed situation";
+        assert_eq!(detect_navigation_error(html), Some("unknown".to_string()));
+    }
+
+    #[test]
+    fn navigation_error_is_case_insensitive() {
+        assert_eq!(
+            detect_navigation_error("NAVIGATIONERROR occurred"),
+            Some("unknown".to_string())
+        );
+    }
+
+    #[test]
+    fn navigation_error_ordinary_page_returns_none() {
+        assert_eq!(
+            detect_navigation_error("<html><body>Hello world</body></html>"),
+            None
+        );
+    }
+
+    #[test]
+    fn navigation_error_over_2000_bytes_returns_none() {
+        // Real Chrome/LightPanda error shells are tiny; a long real page that
+        // happens to contain the phrase must not be misdetected.
+        let mut html = "x".repeat(2001);
+        html.push_str("navigation failed");
+        assert_eq!(detect_navigation_error(&html), None);
+    }
+
+    #[test]
+    fn navigation_error_at_exactly_2000_bytes_is_still_checked() {
+        // Boundary: `> 2000` bails, so exactly 2000 bytes still runs the check.
+        let mut html = "navigation failed reason: short".to_string();
+        while html.len() < 2000 {
+            html.push('x');
+        }
+        assert_eq!(html.len(), 2000);
+        assert!(detect_navigation_error(&html).is_some());
+    }
+
+    #[test]
+    fn navigation_error_empty_string_returns_none() {
+        assert_eq!(detect_navigation_error(""), None);
+    }
+
+    // --- CdpRenderer::intercept_active_for --------------------------------------
+
+    #[test]
+    fn intercept_inactive_when_interception_disabled() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1);
+        // intercept_enabled defaults to false; must be false for any URL.
+        assert!(!r.intercept_active_for("https://example.com/"));
+    }
+
+    #[test]
+    fn intercept_active_when_enabled_with_empty_host_disable_list() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1).with_interception(
+            true,
+            crate::blocklist::Blocklist::defaults(),
+            Vec::new(),
+        );
+        assert!(r.intercept_active_for("https://example.com/"));
+    }
+
+    #[test]
+    fn intercept_inactive_for_host_on_the_disable_list() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1).with_interception(
+            true,
+            crate::blocklist::Blocklist::defaults(),
+            vec!["example.com".to_string()],
+        );
+        assert!(!r.intercept_active_for("https://sub.example.com/page"));
+        assert!(!r.intercept_active_for("http://example.com/"));
+    }
+
+    #[test]
+    fn intercept_active_for_host_not_on_the_disable_list() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1).with_interception(
+            true,
+            crate::blocklist::Blocklist::defaults(),
+            vec!["example.com".to_string()],
+        );
+        assert!(r.intercept_active_for("https://other.test/"));
+    }
+
+    #[test]
+    fn intercept_host_disable_match_is_case_insensitive() {
+        // `with_interception` lowercases the disable list up front; the
+        // comparison side must lowercase the parsed host to match it.
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1).with_interception(
+            true,
+            crate::blocklist::Blocklist::defaults(),
+            vec!["EXAMPLE.com".to_string()],
+        );
+        assert!(!r.intercept_active_for("https://example.com/"));
+    }
+
+    #[test]
+    fn intercept_active_on_unparseable_url_even_with_disable_list() {
+        // `url::Url::parse` failing fails OPEN here (`Err(_) => return true`):
+        // an unparseable URL can't be matched against the disable list, so
+        // interception stays on rather than silently skipping protection.
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1).with_interception(
+            true,
+            crate::blocklist::Blocklist::defaults(),
+            vec!["example.com".to_string()],
+        );
+        assert!(r.intercept_active_for("not a url at all"));
+    }
+
+    // --- CdpRenderer builder field assignment -----------------------------------
+
+    #[test]
+    fn with_nav_budget_overrides_the_default_page_timeout_budget() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1);
+        assert_eq!(r.nav_budget, Duration::from_millis(1000));
+        let r = r.with_nav_budget(4242);
+        assert_eq!(r.nav_budget, Duration::from_millis(4242));
+    }
+
+    #[test]
+    fn with_spa_selector_max_overrides_the_default() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1);
+        assert_eq!(
+            r.spa_selector_max,
+            Duration::from_millis(super::SPA_SELECTOR_MAX_MS)
+        );
+        let r = r.with_spa_selector_max(3000);
+        assert_eq!(r.spa_selector_max, Duration::from_millis(3000));
+    }
+
+    #[test]
+    fn with_challenge_retries_overrides_the_default_and_allows_zero() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1).with_challenge_retries(0);
+        assert_eq!(r.challenge_max_retries, 0);
+    }
+
+    #[test]
+    fn with_fast_ready_toggles_the_flag() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1);
+        assert!(!r.fast_ready);
+        let r = r.with_fast_ready(true);
+        assert!(r.fast_ready);
+        let r = r.with_fast_ready(false);
+        assert!(!r.fast_ready);
+    }
+
+    #[test]
+    fn with_proxy_auth_base_stores_creds_and_default_country() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1);
+        assert!(r.proxy_auth_base.is_none());
+        assert!(r.default_country.is_none());
+        let r = r.with_proxy_auth_base(
+            "diuser".to_string(),
+            "dipass".to_string(),
+            Some("de".to_string()),
+        );
+        assert_eq!(
+            r.proxy_auth_base,
+            Some(("diuser".to_string(), "dipass".to_string()))
+        );
+        assert_eq!(r.default_country, Some("de".to_string()));
+    }
+
+    #[test]
+    fn with_proxy_auth_base_accepts_no_default_country() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 1).with_proxy_auth_base(
+            "u".to_string(),
+            "p".to_string(),
+            None,
+        );
+        assert!(r.default_country.is_none());
+        assert!(r.proxy_auth_base.is_some());
+    }
+
+    #[test]
+    fn new_clamps_zero_pool_size_to_at_least_one() {
+        // `pool_size.max(1)` — a misconfigured 0 must not create a
+        // zero-permit semaphore that would deadlock every fetch.
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 0);
+        assert_eq!(r.conn_semaphore.available_permits(), 1);
+    }
+
+    #[test]
+    fn new_pool_field_starts_empty() {
+        let r = CdpRenderer::new("chrome", "ws://x/", 1000, 4);
+        assert!(r.pool().is_none());
+    }
+
+    // --- CdpRenderer::should_retry_with_default_country -------------------------
+    //
+    // Exercises the full 3-condition gate via the real `REQUEST_COUNTRY` /
+    // `REQUEST_PROXY` task-locals, scoped per test so nothing leaks across
+    // async tasks.
+
+    #[tokio::test]
+    async fn retry_country_false_when_no_proxy_auth_base_configured() {
+        let r = CdpRenderer::new("chrome_proxy", "ws://x/", 1000, 1);
+        assert!(r.proxy_auth_base.is_none());
+        assert!(!r.should_retry_with_default_country());
+    }
+
+    #[tokio::test]
+    async fn retry_country_false_when_byop_proxy_is_active() {
+        let r = CdpRenderer::new("chrome_proxy", "ws://x/", 1000, 1).with_proxy_auth_base(
+            "u".to_string(),
+            "p".to_string(),
+            Some("us".to_string()),
+        );
+        let entry =
+            std::sync::Arc::new(crw_core::ProxyEntry::parse("http://h.example:8080").unwrap());
+        let result = crate::REQUEST_PROXY
+            .scope(Some(entry), async {
+                crate::REQUEST_COUNTRY
+                    .scope(Some("de".to_string()), async {
+                        r.should_retry_with_default_country()
+                    })
+                    .await
+            })
+            .await;
+        // A per-request BYOP proxy takes precedence; its CONNECT failure is not
+        // a "dead country exit" and retrying would be pointless.
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn retry_country_false_when_no_country_was_requested() {
+        let r = CdpRenderer::new("chrome_proxy", "ws://x/", 1000, 1).with_proxy_auth_base(
+            "u".to_string(),
+            "p".to_string(),
+            Some("us".to_string()),
+        );
+        let result = crate::REQUEST_PROXY
+            .scope(None, async {
+                crate::REQUEST_COUNTRY
+                    .scope(None, async { r.should_retry_with_default_country() })
+                    .await
+            })
+            .await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn retry_country_false_when_requested_matches_default() {
+        let r = CdpRenderer::new("chrome_proxy", "ws://x/", 1000, 1).with_proxy_auth_base(
+            "u".to_string(),
+            "p".to_string(),
+            Some("us".to_string()),
+        );
+        let result = crate::REQUEST_PROXY
+            .scope(None, async {
+                crate::REQUEST_COUNTRY
+                    .scope(Some("us".to_string()), async {
+                        r.should_retry_with_default_country()
+                    })
+                    .await
+            })
+            .await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn retry_country_true_when_requested_differs_from_default() {
+        let r = CdpRenderer::new("chrome_proxy", "ws://x/", 1000, 1).with_proxy_auth_base(
+            "u".to_string(),
+            "p".to_string(),
+            Some("us".to_string()),
+        );
+        let result = crate::REQUEST_PROXY
+            .scope(None, async {
+                crate::REQUEST_COUNTRY
+                    .scope(Some("de".to_string()), async {
+                        r.should_retry_with_default_country()
+                    })
+                    .await
+            })
+            .await;
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn retry_country_normalizes_case_and_whitespace_before_comparing() {
+        let r = CdpRenderer::new("chrome_proxy", "ws://x/", 1000, 1).with_proxy_auth_base(
+            "u".to_string(),
+            "p".to_string(),
+            Some("us".to_string()),
+        );
+        let result = crate::REQUEST_PROXY
+            .scope(None, async {
+                crate::REQUEST_COUNTRY
+                    .scope(Some("  US  ".to_string()), async {
+                        r.should_retry_with_default_country()
+                    })
+                    .await
+            })
+            .await;
+        // "  US  " normalizes to "us", same as the default → no retry.
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn retry_country_invalid_requested_country_is_treated_as_none() {
+        let r = CdpRenderer::new("chrome_proxy", "ws://x/", 1000, 1).with_proxy_auth_base(
+            "u".to_string(),
+            "p".to_string(),
+            Some("us".to_string()),
+        );
+        let result = crate::REQUEST_PROXY
+            .scope(None, async {
+                // "usa" is 3 chars — fails the 2-alpha normalization, so this
+                // must behave exactly like no country was requested.
+                crate::REQUEST_COUNTRY
+                    .scope(Some("usa".to_string()), async {
+                        r.should_retry_with_default_country()
+                    })
+                    .await
+            })
+            .await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn retry_country_true_when_no_default_country_configured() {
+        let r = CdpRenderer::new("chrome_proxy", "ws://x/", 1000, 1).with_proxy_auth_base(
+            "u".to_string(),
+            "p".to_string(),
+            None,
+        );
+        let result = crate::REQUEST_PROXY
+            .scope(None, async {
+                crate::REQUEST_COUNTRY
+                    .scope(Some("fr".to_string()), async {
+                        r.should_retry_with_default_country()
+                    })
+                    .await
+            })
+            .await;
+        // Some("fr") != None (default) → still counts as a difference.
+        assert!(result);
+    }
+
+    // --- is_browserless_direct_ws: additional coverage --------------------------
+
+    #[test]
+    fn browserless_named_path_matches_as_substring_anywhere() {
+        assert!(is_browserless_direct_ws(
+            "wss://x.example/prefix/chromium/suffix"
+        ));
+    }
+
+    #[test]
+    fn browserless_plain_url_with_query_but_no_token_is_not_direct_ws() {
+        assert!(!is_browserless_direct_ws(
+            "wss://lightpanda.example/ws?debug=1"
+        ));
+    }
+
+    #[test]
+    fn browserless_hostname_that_merely_starts_with_a_browser_name_is_a_false_positive() {
+        // BUG (pre-existing, not introduced here, left unfixed per RULES.md #2):
+        // `is_browserless_direct_ws` checks `url.contains("/chromium")` etc. on
+        // the WHOLE url string, not just the path. A hostname like
+        // "chromium.example.com" produces "//chromium.example.com" right after
+        // the scheme, which contains the substring "/chromium" — so an ordinary
+        // `/json/version`-serving endpoint on such a host is misclassified as a
+        // direct-WS (browserless-style) endpoint and its discovery step is
+        // skipped. Asserting current behaviour, not endorsing it.
+        assert!(is_browserless_direct_ws("wss://chromium.example.com/ws"));
+    }
+
+    #[test]
+    fn browserless_empty_string_is_not_direct_ws() {
+        assert!(!is_browserless_direct_ws(""));
+    }
+
+    // --- is_capturable_mime: additional coverage --------------------------------
+
+    #[test]
+    fn capturable_mime_is_case_insensitive() {
+        assert!(is_capturable_mime("APPLICATION/JSON"));
+        assert!(is_capturable_mime("Application/Ld+Json"));
+    }
+
+    #[test]
+    fn capturable_mime_trims_surrounding_whitespace_around_params() {
+        assert!(is_capturable_mime("application/json ; charset=utf-8"));
+    }
+
+    #[test]
+    fn capturable_mime_multiple_semicolons_only_uses_first_segment() {
+        assert!(is_capturable_mime(
+            "application/json; charset=utf-8; boundary=x"
+        ));
+    }
+
+    #[test]
+    fn capturable_mime_whitespace_only_is_rejected() {
+        assert!(!is_capturable_mime("   "));
+    }
+
+    // --- build_auth_response: additional coverage -------------------------------
+
+    #[test]
+    fn auth_response_escapes_special_characters_in_credentials() {
+        // Credentials can legitimately contain characters JSON must escape
+        // (quotes, backslashes); the payload must round-trip through
+        // serde_json without corrupting them.
+        let v = build_auth_response("req-4", Some(("us\"er", "p\\ass")));
+        assert_eq!(v["authChallengeResponse"]["username"], "us\"er");
+        assert_eq!(v["authChallengeResponse"]["password"], "p\\ass");
+        let s = serde_json::to_string(&v).unwrap();
+        let round_tripped: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(round_tripped, v);
+    }
+
+    #[test]
+    fn auth_response_handles_empty_credential_strings() {
+        let v = build_auth_response("req-5", Some(("", "")));
+        assert_eq!(v["authChallengeResponse"]["username"], "");
+        assert_eq!(v["authChallengeResponse"]["password"], "");
+    }
+
+    #[test]
+    fn auth_response_handles_unicode_credentials() {
+        let v = build_auth_response("req-6", Some(("üser__cr.tr", "şifre")));
+        assert_eq!(v["authChallengeResponse"]["username"], "üser__cr.tr");
+        assert_eq!(v["authChallengeResponse"]["password"], "şifre");
+    }
+
+    #[test]
+    fn auth_response_preserves_request_id_verbatim() {
+        let v = build_auth_response("weird/id:with-chars_123", None);
+        assert_eq!(v["requestId"], "weird/id:with-chars_123");
+    }
+
+    #[test]
+    fn auth_response_empty_request_id_still_builds_a_payload() {
+        let v = build_auth_response("", None);
+        assert_eq!(v["requestId"], "");
+        assert_eq!(v["authChallengeResponse"]["response"], "CancelAuth");
+    }
+
+    // --- is_proxy_tunnel_error: additional coverage -----------------------------
+
+    #[test]
+    fn proxy_tunnel_error_matches_when_message_has_extra_context_around_it() {
+        assert!(is_proxy_tunnel_error(&CrwError::RendererError(
+            "Page.navigate error at https://x/: net::ERR_TUNNEL_CONNECTION_FAILED (retry 2/3)"
+                .into()
+        )));
+    }
+
+    #[test]
+    fn proxy_tunnel_error_ignores_other_crw_error_variants() {
+        assert!(!is_proxy_tunnel_error(&CrwError::HttpError(
+            "net::ERR_TUNNEL_CONNECTION_FAILED".into()
+        )));
+        assert!(!is_proxy_tunnel_error(&CrwError::TargetUnreachable(
+            "net::ERR_TUNNEL_CONNECTION_FAILED".into()
+        )));
+        assert!(!is_proxy_tunnel_error(&CrwError::NotFound("x".into())));
+        assert!(!is_proxy_tunnel_error(&CrwError::RateLimited));
+    }
+
+    #[test]
+    fn proxy_tunnel_error_empty_message_does_not_match() {
+        assert!(!is_proxy_tunnel_error(&CrwError::RendererError(
+            String::new()
+        )));
+    }
+
+    // --- outbound_block_label: additional coverage ------------------------------
+
+    #[tokio::test]
+    async fn outbound_guard_rejects_non_http_schemes() {
+        let ctx = test_ctx();
+        // Not in the {data, blob, about} allowlist and not http(s) → policy block.
+        assert!(
+            outbound_block_label("file:///etc/passwd", &ctx)
+                .await
+                .is_some()
+        );
+        assert!(
+            outbound_block_label("ftp://example.com/file", &ctx)
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_guard_allows_about_scheme() {
+        let ctx = test_ctx();
+        assert!(outbound_block_label("about:blank", &ctx).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn outbound_guard_rejects_ipv6_loopback_with_port() {
+        let ctx = test_ctx();
+        assert!(
+            outbound_block_label("http://[::1]:9999/admin", &ctx)
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_guard_rejects_link_local_metadata_service_https() {
+        let ctx = test_ctx();
+        assert!(
+            outbound_block_label("https://169.254.169.254/latest/meta-data/", &ctx)
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_guard_empty_url_is_rejected() {
+        let ctx = test_ctx();
+        assert!(outbound_block_label("", &ctx).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn outbound_guard_rejects_192_168_private_range() {
+        let ctx = test_ctx();
+        assert!(
+            outbound_block_label("http://192.168.0.1/", &ctx)
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_guard_rejects_172_16_private_range() {
+        let ctx = test_ctx();
+        assert!(
+            outbound_block_label("http://172.16.5.5/", &ctx)
+                .await
+                .is_some()
+        );
+    }
+
+    // --- split_caller_headers: additional coverage ------------------------------
+
+    #[test]
+    fn split_caller_headers_preserves_multiple_non_ua_headers() {
+        let mut h = HashMap::new();
+        h.insert("Cookie".to_string(), "a=b; c=d".to_string());
+        h.insert("Referer".to_string(), "https://example.com/".to_string());
+        h.insert("X-Custom-Thing".to_string(), "v1".to_string());
+        let (ua, extra) = split_caller_headers(&h);
+        assert!(ua.is_none());
+        assert_eq!(extra.len(), 3);
+        assert_eq!(
+            extra.get("Cookie").and_then(|v| v.as_str()),
+            Some("a=b; c=d")
+        );
+    }
+
+    #[test]
+    fn split_caller_headers_mixed_case_user_agent_key() {
+        let mut h = HashMap::new();
+        h.insert("UsEr-AgEnT".to_string(), "Weird/1.0".to_string());
+        let (ua, extra) = split_caller_headers(&h);
+        assert_eq!(ua.as_deref(), Some("Weird/1.0"));
+        assert!(extra.is_empty());
+    }
+
+    #[test]
+    fn split_caller_headers_unicode_header_value_preserved() {
+        let mut h = HashMap::new();
+        h.insert("X-Lang".to_string(), "türkçe".to_string());
+        let (_, extra) = split_caller_headers(&h);
+        assert_eq!(extra.get("X-Lang").and_then(|v| v.as_str()), Some("türkçe"));
+    }
+
+    // --- lightpanda_safe_ua: additional coverage --------------------------------
+
+    #[test]
+    fn lightpanda_safe_ua_empty_string_is_unchanged() {
+        assert_eq!(lightpanda_safe_ua(""), "");
+    }
+
+    #[test]
+    fn lightpanda_safe_ua_only_strips_leading_prefix_not_mid_string_occurrence() {
+        // A second, later "Mozilla/5.0 " occurrence (unrealistic but possible in
+        // a crafted header) must survive — only the leading prefix is stripped.
+        let ua = "Mozilla/5.0 (compatible) extra Mozilla/5.0 tail";
+        assert_eq!(
+            lightpanda_safe_ua(ua),
+            "(compatible) extra Mozilla/5.0 tail"
         );
     }
 }

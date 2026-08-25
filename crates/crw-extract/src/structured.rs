@@ -809,6 +809,39 @@ fn truncate_for_error(text: &str) -> &str {
 mod tests {
     use super::*;
     use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn mock_llm(provider: &str, base_url: String) -> LlmConfig {
+        LlmConfig {
+            provider: provider.into(),
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: Some(base_url),
+            max_tokens: 4096,
+            ..Default::default()
+        }
+    }
+
+    fn anthropic_tool_use_response(value: serde_json::Value) -> serde_json::Value {
+        json!({
+            "content": [{ "type": "tool_use", "id": "t1", "name": "extract_data", "input": value }],
+            "usage": { "input_tokens": 20, "output_tokens": 10 }
+        })
+    }
+
+    fn openai_tool_call_response(value: &serde_json::Value) -> serde_json::Value {
+        json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": { "name": "extract_data", "arguments": value.to_string() }
+                    }]
+                }
+            }],
+            "usage": { "prompt_tokens": 30, "completion_tokens": 15, "total_tokens": 45 }
+        })
+    }
 
     #[test]
     fn test_validate_against_schema_success() {
@@ -1051,5 +1084,1417 @@ mod tests {
             ),
             "https://proxy.internal/v1/messages"
         );
+    }
+
+    // ── validate_against_schema: nested / arrays / additionalProperties ────
+
+    #[test]
+    fn validate_schema_nested_object_missing_required_child_field() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "object",
+                    "properties": { "city": { "type": "string" } },
+                    "required": ["city"]
+                }
+            },
+            "required": ["address"]
+        });
+        let err = validate_against_schema(&json!({ "address": {} }), &schema).unwrap_err();
+        assert!(err.to_string().contains("schema validation"));
+        assert!(
+            validate_against_schema(&json!({ "address": { "city": "Belgrade" } }), &schema).is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_schema_recursive_via_refs() {
+        // Self-referencing schema: a tree node with optional `children`.
+        let schema = json!({
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "children": {
+                            "type": "array",
+                            "items": { "$ref": "#/$defs/Node" }
+                        }
+                    },
+                    "required": ["name"]
+                }
+            },
+            "$ref": "#/$defs/Node"
+        });
+        let good = json!({
+            "name": "root",
+            "children": [{ "name": "child", "children": [] }]
+        });
+        assert!(validate_against_schema(&good, &schema).is_ok());
+
+        // A grandchild missing the required `name` must fail, several levels deep.
+        let bad = json!({
+            "name": "root",
+            "children": [{ "name": "child", "children": [{}] }]
+        });
+        assert!(validate_against_schema(&bad, &schema).is_err());
+    }
+
+    #[test]
+    fn validate_schema_array_item_type_mismatch() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tags": { "type": "array", "items": { "type": "string" } }
+            }
+        });
+        let err =
+            validate_against_schema(&json!({ "tags": ["ok", 5, "also ok"] }), &schema).unwrap_err();
+        assert!(err.to_string().contains("schema validation"));
+        assert!(validate_against_schema(&json!({ "tags": ["a", "b"] }), &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_schema_array_min_max_items() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "tags": { "type": "array", "minItems": 1, "maxItems": 2 }
+            }
+        });
+        assert!(validate_against_schema(&json!({ "tags": [] }), &schema).is_err());
+        assert!(validate_against_schema(&json!({ "tags": [1, 2, 3] }), &schema).is_err());
+        assert!(validate_against_schema(&json!({ "tags": [1, 2] }), &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_schema_additional_properties_false_rejects_extra_field() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "additionalProperties": false
+        });
+        let err =
+            validate_against_schema(&json!({ "name": "a", "extra": "nope" }), &schema).unwrap_err();
+        assert!(err.to_string().contains("schema validation"));
+        assert!(validate_against_schema(&json!({ "name": "a" }), &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_schema_additional_properties_default_allows_extra_field() {
+        // No `additionalProperties` key at all -> the JSON Schema default is
+        // permissive, so an extra field must NOT fail validation.
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } }
+        });
+        assert!(validate_against_schema(&json!({ "name": "a", "extra": 1 }), &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_schema_no_type_coercion_string_for_integer() {
+        // JSON Schema does not coerce a numeric-looking string into an integer.
+        let schema = json!({
+            "type": "object",
+            "properties": { "age": { "type": "integer" } },
+            "required": ["age"]
+        });
+        assert!(validate_against_schema(&json!({ "age": "30" }), &schema).is_err());
+        assert!(validate_against_schema(&json!({ "age": 30 }), &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_schema_enum_mismatch() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "status": { "enum": ["active", "inactive"] } }
+        });
+        assert!(validate_against_schema(&json!({ "status": "unknown" }), &schema).is_err());
+        assert!(validate_against_schema(&json!({ "status": "active" }), &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_schema_one_of_exclusive_match() {
+        let schema = json!({
+            "oneOf": [
+                { "type": "object", "properties": { "kind": { "const": "a" } }, "required": ["kind"] },
+                { "type": "object", "properties": { "kind": { "const": "b" } }, "required": ["kind"] }
+            ]
+        });
+        assert!(validate_against_schema(&json!({ "kind": "a" }), &schema).is_ok());
+        assert!(validate_against_schema(&json!({ "kind": "c" }), &schema).is_err());
+    }
+
+    #[test]
+    fn validate_schema_invalid_schema_itself_errors() {
+        // `type` is not a recognized JSON Schema type name — the schema itself
+        // is invalid, which must surface as "Invalid JSON schema", distinct
+        // from a validation-failure error on the *value*.
+        let bogus_schema = json!({ "type": "not-a-real-type" });
+        let err = validate_against_schema(&json!({}), &bogus_schema).unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid JSON schema"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_schema_deeply_nested_three_levels() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "a": { "type": "object", "properties": { "b": { "type": "object",
+                    "properties": { "c": { "type": "string" } }, "required": ["c"] } },
+                    "required": ["b"] }
+            },
+            "required": ["a"]
+        });
+        assert!(
+            validate_against_schema(&json!({ "a": { "b": { "c": "leaf" } } }), &schema).is_ok()
+        );
+        assert!(validate_against_schema(&json!({ "a": { "b": {} } }), &schema).is_err());
+    }
+
+    // ── parse_json_response ─────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_json_response_fenced_without_language_tag() {
+        let result = parse_json_response("```\n{\"key\": \"value\"}\n```").unwrap();
+        assert_eq!(result, json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_parse_json_response_trims_surrounding_whitespace() {
+        let result = parse_json_response("   \n  {\"key\": \"value\"}  \n\n  ").unwrap();
+        assert_eq!(result, json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_parse_json_response_empty_string_errors() {
+        let err = parse_json_response("").unwrap_err();
+        assert!(err.to_string().contains("LLM returned invalid JSON"));
+    }
+
+    #[test]
+    fn test_parse_json_response_trailing_garbage_after_object_errors() {
+        let err = parse_json_response(r#"{"key": "value"} trailing junk"#).unwrap_err();
+        assert!(err.to_string().contains("LLM returned invalid JSON"));
+    }
+
+    #[test]
+    fn test_parse_json_response_error_preview_is_truncated_and_included() {
+        // A long non-JSON response must fail with a message that includes a
+        // *truncated* preview, not the full multi-kilobyte body.
+        let long = "not json ".repeat(200);
+        let err = parse_json_response(&long).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Response preview:"), "got: {msg}");
+        assert!(
+            msg.len() < long.len(),
+            "error message must not embed the full body verbatim"
+        );
+    }
+
+    #[test]
+    fn test_parse_json_response_preserves_unicode() {
+        let result = parse_json_response(r#"{"city": "Beograd — Београд 🇷🇸"}"#).unwrap();
+        assert_eq!(result["city"], "Beograd — Београд 🇷🇸");
+    }
+
+    #[test]
+    fn test_parse_json_response_array_root() {
+        let result = parse_json_response("[1, 2, 3]").unwrap();
+        assert_eq!(result, json!([1, 2, 3]));
+    }
+
+    // ── truncate_md extras ───────────────────────────────────────────────
+
+    #[test]
+    fn truncate_md_zero_cap_yields_empty() {
+        let (out, was) = truncate_md("anything", 0);
+        assert_eq!(out, "");
+        assert!(was);
+    }
+
+    #[test]
+    fn truncate_md_cap_exactly_at_length_is_not_truncated() {
+        let s = "exactly ten";
+        let (out, was) = truncate_md(s, s.len());
+        assert_eq!(out, s);
+        assert!(!was);
+    }
+
+    // ── basis::reject_reason, exercised through the public entrypoint ──────
+    // (extract_structured_with_basis rejects a bad schema BEFORE any network
+    // call, so these are fully hermetic despite calling an `async fn`.)
+
+    #[tokio::test]
+    async fn basis_rejects_non_object_root_schema() {
+        let llm = mock_llm("anthropic", "http://unused.invalid".into());
+        let schema = json!({ "type": "array", "items": { "type": "string" } });
+        let err =
+            extract_structured_with_basis("md", &schema, None, &llm, None, "https://x.example")
+                .await
+                .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("basis requires a 'jsonSchema' of type 'object'"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn basis_rejects_schema_with_basis_property_collision() {
+        let llm = mock_llm("anthropic", "http://unused.invalid".into());
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "basis": { "type": "string" }
+            }
+        });
+        let err =
+            extract_structured_with_basis("md", &schema, None, &llm, None, "https://x.example")
+                .await
+                .unwrap_err();
+        assert!(err.to_string().contains("name collision"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn basis_rejects_schema_with_zero_scalar_leaves() {
+        let llm = mock_llm("anthropic", "http://unused.invalid".into());
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "meta": { "type": "object", "properties": { "x": { "type": "string" } } }
+            }
+        });
+        let err =
+            extract_structured_with_basis("md", &schema, None, &llm, None, "https://x.example")
+                .await
+                .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("at least one top-level scalar property"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn basis_rejects_schema_too_large_for_max_tokens() {
+        let mut llm = mock_llm("anthropic", "http://unused.invalid".into());
+        llm.max_tokens = 100; // far below the ~890-token cost of even one leaf
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } }
+        });
+        let err =
+            extract_structured_with_basis("md", &schema, None, &llm, None, "https://x.example")
+                .await
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("basis_schema_too_large"), "got: {msg}");
+        assert!(msg.contains("100"), "must name the configured limit: {msg}");
+    }
+
+    #[tokio::test]
+    async fn basis_rejects_empty_api_key_before_reject_reason() {
+        // Empty api_key is checked in `extract_inner`, reached AFTER the
+        // `reject_reason` preflight — verify the schema-eligible case still
+        // surfaces the api_key error, not a basis error.
+        let llm = mock_llm("anthropic", "http://unused.invalid".into());
+        let mut llm = llm;
+        llm.api_key = String::new();
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let err =
+            extract_structured_with_basis("md", &schema, None, &llm, None, "https://x.example")
+                .await
+                .unwrap_err();
+        assert!(
+            err.to_string().contains("LLM API key is empty"),
+            "got: {err}"
+        );
+    }
+
+    // ── extract_inner: empty api_key / unsupported provider (no network) ──
+
+    #[tokio::test]
+    async fn extract_structured_empty_api_key_errors() {
+        let llm = mock_llm("anthropic", "http://unused.invalid".into());
+        let mut llm = llm;
+        llm.api_key = String::new();
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("content", &schema, &llm)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("LLM API key is empty"));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_unsupported_provider_lists_supported_ones() {
+        let llm = mock_llm("gemini", "http://unused.invalid".into());
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("content", &schema, &llm)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Unsupported LLM provider: gemini"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("anthropic"), "got: {msg}");
+        assert!(msg.contains("openai-responses"), "got: {msg}");
+    }
+
+    // ── Full round trip: anthropic tool_use ────────────────────────────────
+
+    #[tokio::test]
+    async fn extract_structured_anthropic_tool_use_round_trip() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(
+                    json!({ "name": "Alice", "age": 30 }),
+                )),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" }, "age": { "type": "integer" } },
+            "required": ["name"]
+        });
+        let value = extract_structured("Alice is 30 years old.", &schema, &llm)
+            .await
+            .expect("extraction succeeds");
+        assert_eq!(value, json!({ "name": "Alice", "age": 30 }));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_anthropic_text_fallback_when_no_tool_use_block() {
+        // A model that ignores the forced tool and answers in plain text: the
+        // fallback path must still recover valid JSON from the text block.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{ "type": "text", "text": "```json\n{\"name\": \"Bob\"}\n```" }],
+                "usage": { "input_tokens": 5, "output_tokens": 5 }
+            })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let value = extract_structured("Bob.", &schema, &llm).await.unwrap();
+        assert_eq!(value, json!({ "name": "Bob" }));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_anthropic_text_fallback_invalid_json_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{ "type": "text", "text": "I cannot extract that." }],
+                "usage": { "input_tokens": 5, "output_tokens": 5 }
+            })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("x", &schema, &llm).await.unwrap_err();
+        assert!(err.to_string().contains("LLM returned invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_anthropic_error_status_not_echoed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(429).set_body_string("rate limited, retry-after: 5s"),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("x", &schema, &llm).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("429"), "got: {msg}");
+        assert!(
+            !msg.contains("retry-after"),
+            "body must not be echoed: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_structured_anthropic_malformed_json_body_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("{{{not json", "application/json"),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("x", &schema, &llm).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Failed to parse Anthropic response")
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_structured_anthropic_usage_without_cache_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(anthropic_tool_use_response(json!({ "name": "Cara" }))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let res = extract_structured_with_usage("Cara.", Some(&schema), None, &llm, None)
+            .await
+            .unwrap();
+        let usage = res.usage.unwrap();
+        assert_eq!(usage.input_tokens, 20);
+        assert_eq!(usage.output_tokens, 10);
+        assert!(usage.cache_hit_input_tokens.is_none());
+        assert!(usage.cache_miss_input_tokens.is_none());
+        assert_eq!(usage.provider, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn extract_structured_anthropic_usage_with_cache_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "content": [{ "type": "tool_use", "id": "t1", "name": "extract_data", "input": { "name": "D" } }],
+                "usage": {
+                    "input_tokens": 50, "output_tokens": 10,
+                    "cache_read_input_tokens": 200, "cache_creation_input_tokens": 30
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let res = extract_structured_with_usage("D.", Some(&schema), None, &llm, None)
+            .await
+            .unwrap();
+        let usage = res.usage.unwrap();
+        assert_eq!(usage.cache_hit_input_tokens, Some(200));
+        // miss = plain input_tokens (50) + cache_creation (30)
+        assert_eq!(usage.cache_miss_input_tokens, Some(80));
+    }
+
+    // ── Full round trip: OpenAI-compatible function calling ────────────────
+
+    #[tokio::test]
+    async fn extract_structured_openai_tool_calls_round_trip() {
+        let server = MockServer::start().await;
+        let value = json!({ "name": "Eve", "age": 22 });
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_tool_call_response(&value)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" }, "age": { "type": "integer" } }
+        });
+        let got = extract_structured("Eve is 22.", &schema, &llm)
+            .await
+            .unwrap();
+        assert_eq!(got, value);
+    }
+
+    #[tokio::test]
+    async fn extract_structured_deepseek_provider_tag_routes_through_openai_path() {
+        let server = MockServer::start().await;
+        let value = json!({ "name": "Deep" });
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_tool_call_response(&value)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("deepseek", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let res = extract_structured_with_usage("Deep.", Some(&schema), None, &llm, None)
+            .await
+            .unwrap();
+        assert_eq!(res.value, value);
+        assert_eq!(res.usage.unwrap().provider, "deepseek");
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_compatible_provider_tag_routes_through_openai_path() {
+        let server = MockServer::start().await;
+        let value = json!({ "name": "Compat" });
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_tool_call_response(&value)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai-compatible", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        extract_structured("x", &schema, &llm).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_fallback_to_content_when_no_tool_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{ "message": { "content": "{\"name\": \"Fallback\"}" } }],
+                "usage": { "prompt_tokens": 10, "completion_tokens": 5 }
+            })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let got = extract_structured("x", &schema, &llm).await.unwrap();
+        assert_eq!(got, json!({ "name": "Fallback" }));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_no_choices_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "choices": [] })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("x", &schema, &llm).await.unwrap_err();
+        assert!(err.to_string().contains("OpenAI returned no choices"));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_malformed_tool_call_arguments_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{
+                    "message": {
+                        "tool_calls": [{
+                            "function": { "name": "extract_data", "arguments": "{not valid" }
+                        }]
+                    }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("x", &schema, &llm).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Failed to parse OpenAI function call arguments")
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_error_status_not_echoed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_string("Authorization: Bearer SENTINEL"),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("x", &schema, &llm).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("401"));
+        assert!(!msg.contains("SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_usage_total_tokens_falls_back_to_sum() {
+        let server = MockServer::start().await;
+        let value = json!({ "name": "X" });
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{
+                    "message": { "tool_calls": [{
+                        "function": { "name": "extract_data", "arguments": value.to_string() }
+                    }] }
+                }],
+                "usage": { "prompt_tokens": 7, "completion_tokens": 3 }
+            })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let res = extract_structured_with_usage("x", Some(&schema), None, &llm, None)
+            .await
+            .unwrap();
+        assert_eq!(res.usage.unwrap().total_tokens, 10);
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_usage_deepseek_style_cache_fields() {
+        let server = MockServer::start().await;
+        let value = json!({ "name": "X" });
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{
+                    "message": { "tool_calls": [{
+                        "function": { "name": "extract_data", "arguments": value.to_string() }
+                    }] }
+                }],
+                "usage": {
+                    "prompt_tokens": 1000, "completion_tokens": 20,
+                    "prompt_cache_hit_tokens": 800, "prompt_cache_miss_tokens": 200
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("deepseek", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let res = extract_structured_with_usage("x", Some(&schema), None, &llm, None)
+            .await
+            .unwrap();
+        let usage = res.usage.unwrap();
+        assert_eq!(usage.cache_hit_input_tokens, Some(800));
+        assert_eq!(usage.cache_miss_input_tokens, Some(200));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_usage_compat_cached_tokens_style() {
+        let server = MockServer::start().await;
+        let value = json!({ "name": "X" });
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{
+                    "message": { "tool_calls": [{
+                        "function": { "name": "extract_data", "arguments": value.to_string() }
+                    }] }
+                }],
+                "usage": {
+                    "prompt_tokens": 500, "completion_tokens": 20,
+                    "prompt_tokens_details": { "cached_tokens": 100 }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let res = extract_structured_with_usage("x", Some(&schema), None, &llm, None)
+            .await
+            .unwrap();
+        let usage = res.usage.unwrap();
+        assert_eq!(usage.cache_hit_input_tokens, Some(100));
+        assert_eq!(usage.cache_miss_input_tokens, Some(400));
+    }
+
+    // ── truncation flag threading ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn extract_structured_truncation_flag_set_on_result_and_usage() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(anthropic_tool_use_response(json!({ "name": "Truncated" }))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let long_markdown = "word ".repeat(1000); // way over a tiny override cap
+        let res =
+            extract_structured_with_usage(&long_markdown, Some(&schema), None, &llm, Some(50))
+                .await
+                .unwrap();
+        assert!(res.truncated);
+        assert!(res.usage.unwrap().truncated);
+    }
+
+    #[tokio::test]
+    async fn extract_structured_no_truncation_when_within_cap() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(anthropic_tool_use_response(json!({ "name": "Short" }))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let res = extract_structured_with_usage("short text", Some(&schema), None, &llm, None)
+            .await
+            .unwrap();
+        assert!(!res.truncated);
+        assert!(!res.usage.unwrap().truncated);
+    }
+
+    // ── user_prompt threading ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn extract_structured_user_prompt_is_included_in_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(anthropic_tool_use_response(json!({ "name": "P" }))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        extract_structured_with_usage(
+            "content",
+            Some(&schema),
+            Some("Only extract the first name, uppercase it."),
+            &llm,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let sent = body["messages"][0]["content"].as_str().unwrap();
+        assert!(sent.contains("Only extract the first name, uppercase it."));
+        assert!(sent.contains("Follow this instruction"));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_blank_user_prompt_falls_back_to_generic_instruction() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(anthropic_tool_use_response(json!({ "name": "P" }))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        extract_structured_with_usage("content", Some(&schema), Some("   "), &llm, None)
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let sent = body["messages"][0]["content"].as_str().unwrap();
+        assert!(sent.contains("according to the JSON schema"));
+    }
+
+    // ── basis end-to-end: attribution lifted out before schema validation ─
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_lifts_basis_out_of_returned_value() {
+        let server = MockServer::start().await;
+        let source_url = "https://example.com/article";
+        let model_output = json!({
+            "name": "Grace",
+            "basis": {
+                "name": {
+                    "value": "Grace",
+                    "sourceUrl": source_url,
+                    "excerpt": "Her name is Grace.",
+                    "confidence": "high"
+                }
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(model_output)),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        });
+        let res = extract_structured_with_basis(
+            "Her name is Grace.",
+            &schema,
+            None,
+            &llm,
+            None,
+            source_url,
+        )
+        .await
+        .expect("basis extraction succeeds");
+
+        // The caller's own schema describes ONLY `name` — `basis` must be
+        // stripped out before schema validation and before being returned.
+        assert_eq!(res.value, json!({ "name": "Grace" }));
+        assert!(res.value.get("basis").is_none());
+        assert_eq!(res.basis.len(), 1);
+        assert!(res.llm_input_hash.unwrap().starts_with("sha256:"));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_model_that_ignores_basis_still_validates() {
+        // A model that ignores the basis instruction entirely: the caller's
+        // own object is still valid, every leaf just degrades to unsupported
+        // rather than hard-failing the whole extraction.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(anthropic_tool_use_response(json!({ "name": "NoBasis" }))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        });
+        let res = extract_structured_with_basis(
+            "content",
+            &schema,
+            None,
+            &llm,
+            None,
+            "https://example.com",
+        )
+        .await
+        .expect("must not hard-fail when the model omits basis");
+        assert_eq!(res.value, json!({ "name": "NoBasis" }));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_invalid_extraction_still_fails_schema() {
+        // Basis mode does not weaken schema validation: a missing required
+        // field still errors, same as the non-basis path.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(json!({}))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        });
+        let err = extract_structured_with_basis(
+            "content",
+            &schema,
+            None,
+            &llm,
+            None,
+            "https://example.com",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("schema validation"));
+    }
+
+    // ── call_anthropic / call_openai direct unit coverage ──────────────────
+
+    #[tokio::test]
+    async fn call_anthropic_direct_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(anthropic_tool_use_response(json!({ "ok": true }))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let (value, usage) = call_anthropic(
+            "prompt",
+            &schema,
+            &llm,
+            "extract_data",
+            "desc",
+            LLM_REQUEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(value, json!({ "ok": true }));
+        assert!(usage.is_some());
+    }
+
+    #[tokio::test]
+    async fn call_openai_direct_success() {
+        let server = MockServer::start().await;
+        let value = json!({ "ok": true });
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(openai_tool_call_response(&value)),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let (got, usage) = call_openai(
+            "prompt",
+            &schema,
+            &llm,
+            "extract_data",
+            "desc",
+            LLM_REQUEST_TIMEOUT,
+        )
+        .await
+        .unwrap();
+        assert_eq!(got, value);
+        assert!(usage.is_some());
+    }
+
+    // ── openai-responses provider dispatch ──────────────────────────────
+
+    #[tokio::test]
+    async fn extract_structured_openai_responses_provider_routes_and_extracts() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "output": [{
+                    "type": "function_call",
+                    "name": "extract_data",
+                    "arguments": "{\"name\": \"Resp\"}"
+                }],
+                "usage": { "input_tokens": 8, "output_tokens": 4 }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai-responses", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let got = extract_structured("Resp.", &schema, &llm).await.unwrap();
+        assert_eq!(got, json!({ "name": "Resp" }));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_openai_responses_error_status_not_echoed() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("SENTINEL-BODY"))
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("openai-responses", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object" });
+        let err = extract_structured("x", &schema, &llm).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("400"));
+        assert!(!msg.contains("SENTINEL-BODY"));
+    }
+
+    // ── more schema edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn validate_schema_boolean_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "active": { "type": "boolean" } },
+            "required": ["active"]
+        });
+        assert!(validate_against_schema(&json!({ "active": true }), &schema).is_ok());
+        assert!(validate_against_schema(&json!({ "active": "true" }), &schema).is_err());
+    }
+
+    #[test]
+    fn validate_schema_number_vs_integer_distinction() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "count": { "type": "integer" } }
+        });
+        // A float with a fractional part is not a valid integer.
+        assert!(validate_against_schema(&json!({ "count": 1.5 }), &schema).is_err());
+        // A whole-numbered float IS a valid integer in JSON Schema.
+        assert!(validate_against_schema(&json!({ "count": 2.0 }), &schema).is_ok());
+    }
+
+    #[test]
+    fn validate_schema_null_type_property() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "note": { "type": ["string", "null"] } }
+        });
+        assert!(validate_against_schema(&json!({ "note": null }), &schema).is_ok());
+        assert!(validate_against_schema(&json!({ "note": "hi" }), &schema).is_ok());
+        assert!(validate_against_schema(&json!({ "note": 5 }), &schema).is_err());
+    }
+
+    #[test]
+    fn validate_schema_string_pattern_and_length_constraints() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "code": { "type": "string", "pattern": "^[A-Z]{3}$" },
+                "bio": { "type": "string", "maxLength": 5 }
+            }
+        });
+        assert!(validate_against_schema(&json!({ "code": "ABC" }), &schema).is_ok());
+        assert!(validate_against_schema(&json!({ "code": "abc" }), &schema).is_err());
+        assert!(validate_against_schema(&json!({ "bio": "toolong" }), &schema).is_err());
+    }
+
+    #[test]
+    fn validate_schema_empty_value_against_empty_schema_is_permissive() {
+        // The permissive fallback schema `extract_inner` uses when no caller
+        // schema is supplied.
+        let schema = json!({ "type": "object", "additionalProperties": true });
+        assert!(validate_against_schema(&json!({}), &schema).is_ok());
+        assert!(validate_against_schema(&json!({ "anything": [1, 2, {"x": 1}] }), &schema).is_ok());
+    }
+
+    // ── DEFAULT_MAX_INPUT_BYTES sanity ──────────────────────────────────
+
+    #[test]
+    fn default_max_input_bytes_is_fifty_kb() {
+        assert_eq!(DEFAULT_MAX_INPUT_BYTES, 50_000);
+    }
+
+    // ── basis end-to-end: downgrade paths ──────────────────────────────
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_excerpt_not_in_source_downgrades_to_unverified() {
+        let server = MockServer::start().await;
+        let source_url = "https://example.com/a";
+        let model_output = json!({
+            "name": "Henry",
+            "basis": {
+                "name": {
+                    "value": "Henry",
+                    "sourceUrl": source_url,
+                    "excerpt": "this exact phrase is not in the source text",
+                    "confidence": "high"
+                }
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(model_output)),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        });
+        let res = extract_structured_with_basis(
+            "His name is Henry, born in 1990.",
+            &schema,
+            None,
+            &llm,
+            None,
+            source_url,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            res.basis[0].status,
+            crw_core::evidence::FieldStatus::Unverified
+        );
+        assert!(
+            res.basis_warnings
+                .iter()
+                .any(|w| w.field == "name" && w.code == "excerpt_not_in_source"),
+            "got: {:?}",
+            res.basis_warnings
+        );
+        // Downgraded attribution never blocks the extraction itself.
+        assert_eq!(res.value, json!({ "name": "Henry" }));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_value_mismatch_downgrades_to_unsupported() {
+        let server = MockServer::start().await;
+        let source_url = "https://example.com/b";
+        // The model's own claimed `value` contradicts the actual extracted field.
+        let model_output = json!({
+            "name": "Iris",
+            "basis": {
+                "name": {
+                    "value": "SomeoneElse",
+                    "sourceUrl": source_url,
+                    "excerpt": "Iris",
+                    "confidence": "low"
+                }
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(model_output)),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        });
+        let res =
+            extract_structured_with_basis("Iris is here.", &schema, None, &llm, None, source_url)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            res.basis[0].status,
+            crw_core::evidence::FieldStatus::Unsupported
+        );
+        assert!(
+            res.basis_warnings
+                .iter()
+                .any(|w| w.code == "basis_value_mismatch")
+        );
+        // `data` (schema-validated) wins — never rewritten to match the claim.
+        assert_eq!(res.value["name"], "Iris");
+    }
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_missing_field_attribution_is_unsupported() {
+        let server = MockServer::start().await;
+        let source_url = "https://example.com/c";
+        // The model extracted `name` but supplied no basis entry for it at all.
+        let model_output = json!({ "name": "Jack", "basis": {} });
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(model_output)),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        });
+        let res = extract_structured_with_basis("Jack.", &schema, None, &llm, None, source_url)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            res.basis[0].status,
+            crw_core::evidence::FieldStatus::Unsupported
+        );
+        assert!(res.basis_warnings.iter().any(|w| w.code == "basis_missing"));
+    }
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_field_absent_from_extraction_is_not_found() {
+        let server = MockServer::start().await;
+        let source_url = "https://example.com/d";
+        // The schema declares a scalar `age` leaf the model never populated.
+        let model_output = json!({ "name": "Kim" });
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(model_output)),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "age": { "type": "integer" }
+            }
+        });
+        let res = extract_structured_with_basis("Kim.", &schema, None, &llm, None, source_url)
+            .await
+            .unwrap();
+
+        let age_basis = res.basis.iter().find(|b| b.field == "age").unwrap();
+        assert_eq!(age_basis.status, crw_core::evidence::FieldStatus::NotFound);
+        assert!(age_basis.value.is_none());
+    }
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_wrong_source_url_is_unsupported() {
+        let server = MockServer::start().await;
+        let real_source_url = "https://example.com/real";
+        // The model claims a DIFFERENT document than the one the server fetched.
+        let model_output = json!({
+            "name": "Liam",
+            "basis": {
+                "name": {
+                    "value": "Liam",
+                    "sourceUrl": "https://not-the-real-source.example",
+                    "excerpt": "Liam",
+                    "confidence": "high"
+                }
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(model_output)),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } }
+        });
+        let res =
+            extract_structured_with_basis("Liam.", &schema, None, &llm, None, real_source_url)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            res.basis[0].status,
+            crw_core::evidence::FieldStatus::Unsupported
+        );
+        assert!(
+            res.basis_warnings
+                .iter()
+                .any(|w| w.code == "basis_source_unknown")
+        );
+    }
+
+    // ── extract_structured_with_basis: schema without `required` still works ──
+
+    #[tokio::test]
+    async fn extract_structured_with_basis_schema_without_required_array() {
+        // `tool_schema` must create a `required` array when the caller's schema
+        // has none (every field optional) — otherwise `basis` itself would be
+        // optional and silently skipped by the model.
+        let server = MockServer::start().await;
+        let source_url = "https://example.com/e";
+        let model_output = json!({
+            "title": "Report",
+            "basis": {
+                "title": {
+                    "value": "Report",
+                    "sourceUrl": source_url,
+                    "excerpt": "Report",
+                    "confidence": "medium"
+                }
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(anthropic_tool_use_response(model_output)),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        // No `required` key at all.
+        let schema = json!({
+            "type": "object",
+            "properties": { "title": { "type": "string" } }
+        });
+        let res = extract_structured_with_basis("Report.", &schema, None, &llm, None, source_url)
+            .await
+            .unwrap();
+        assert_eq!(
+            res.basis[0].status,
+            crw_core::evidence::FieldStatus::Supported
+        );
+    }
+
+    // ── max_input_bytes override edge cases ─────────────────────────────
+
+    #[tokio::test]
+    async fn extract_structured_with_usage_zero_max_input_bytes_truncates_everything() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(anthropic_tool_use_response(json!({ "name": "Z" }))),
+            )
+            .mount(&server)
+            .await;
+
+        let llm = mock_llm("anthropic", format!("{}/v1", server.uri()));
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        let res =
+            extract_structured_with_usage("non-empty markdown", Some(&schema), None, &llm, Some(0))
+                .await
+                .unwrap();
+        assert!(res.truncated);
     }
 }

@@ -2015,4 +2015,1724 @@ mod tests {
         assert!(required.iter().any(|v| v == "tokensUsed"));
         assert!(schema["properties"]["creditsUsed"].is_object());
     }
+
+    // ============================================================
+    // Expansion pass: constants, serde framing, per-tool schema
+    // shape, protocol-method dispatch, and boundary coverage of the
+    // private truncation/bounding/stripping helpers.
+    // ============================================================
+
+    // --- Constants ---
+
+    #[test]
+    fn const_protocol_version_is_2025_06_18() {
+        assert_eq!(PROTOCOL_VERSION, "2025-06-18");
+    }
+
+    #[test]
+    fn const_default_max_length_is_15000() {
+        assert_eq!(DEFAULT_MAX_LENGTH, 15_000);
+    }
+
+    #[test]
+    fn const_default_map_limit_is_100() {
+        assert_eq!(DEFAULT_MAP_LIMIT, 100);
+    }
+
+    #[test]
+    fn const_server_instructions_differ_with_and_without_search() {
+        assert_ne!(SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_NO_SEARCH);
+        assert!(SERVER_INSTRUCTIONS.contains("crw_search"));
+        assert!(!SERVER_INSTRUCTIONS_NO_SEARCH.contains("crw_search"));
+    }
+
+    #[test]
+    fn server_instructions_fn_picks_the_matching_variant() {
+        assert_eq!(server_instructions(true), SERVER_INSTRUCTIONS);
+        assert_eq!(server_instructions(false), SERVER_INSTRUCTIONS_NO_SEARCH);
+    }
+
+    // --- JsonRpcRequest deserialization ---
+
+    #[test]
+    fn request_deserializes_numeric_id() {
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":42,"method":"ping"}"#).unwrap();
+        assert_eq!(req.id, Some(json!(42)));
+        assert_eq!(req.method, "ping");
+    }
+
+    #[test]
+    fn request_deserializes_string_id() {
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":"abc-123","method":"ping"}"#).unwrap();
+        assert_eq!(req.id, Some(json!("abc-123")));
+    }
+
+    #[test]
+    fn request_missing_id_is_none() {
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .unwrap();
+        assert_eq!(req.id, None);
+    }
+
+    #[test]
+    fn request_explicit_null_id_collapses_to_none() {
+        // serde_json's Option<Value> deserialization treats a JSON `null` the
+        // same as an absent key (visit_none), so an explicit `"id": null`
+        // is indistinguishable from a missing id at this layer. Downstream
+        // code relies on this: `req.id.clone().unwrap_or(Value::Null)`
+        // produces the same JSON-RPC null id either way.
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#).unwrap();
+        assert_eq!(req.id, None);
+    }
+
+    #[test]
+    fn request_missing_params_defaults_to_null() {
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#).unwrap();
+        assert_eq!(req.params, Value::Null);
+    }
+
+    #[test]
+    fn request_params_object_is_preserved() {
+        let req: JsonRpcRequest = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"crw_scrape"}}"#,
+        )
+        .unwrap();
+        assert_eq!(req.params["name"], json!("crw_scrape"));
+    }
+
+    #[test]
+    fn request_unknown_top_level_field_is_ignored_not_fatal() {
+        let result: Result<JsonRpcRequest, _> = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping","totallyUnknownField":true}"#,
+        );
+        assert!(result.is_ok(), "unrecognized fields must not be fatal");
+    }
+
+    #[test]
+    fn request_missing_jsonrpc_field_errors() {
+        let result: Result<JsonRpcRequest, _> = serde_json::from_str(r#"{"id":1,"method":"ping"}"#);
+        assert!(result.is_err(), "jsonrpc has no default, must be required");
+    }
+
+    #[test]
+    fn request_missing_method_field_errors() {
+        let result: Result<JsonRpcRequest, _> = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#);
+        assert!(result.is_err(), "method has no default, must be required");
+    }
+
+    #[test]
+    fn request_malformed_json_syntax_does_not_panic() {
+        let result: Result<JsonRpcRequest, _> = serde_json::from_str(r#"{"jsonrpc":"2.0","#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn request_batch_array_at_top_level_errors_cleanly() {
+        // This crate's `JsonRpcRequest` does not model JSON-RPC batching; a
+        // batch array must fail to deserialize as a single request rather
+        // than silently misparsing or panicking.
+        let result: Result<JsonRpcRequest, _> =
+            serde_json::from_str(r#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn request_empty_body_errors_cleanly() {
+        let result: Result<JsonRpcRequest, _> = serde_json::from_str("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn request_method_can_be_empty_string() {
+        // Structurally legal (the empty string is still a String); semantic
+        // rejection of an empty method happens in handle_protocol_method's
+        // NotHandled fallthrough, not at deserialization.
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":""}"#).unwrap();
+        assert_eq!(req.method, "");
+    }
+
+    #[test]
+    fn request_unicode_and_emoji_in_params_round_trip() {
+        let req: JsonRpcRequest = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"query":"café 😀 日本"}}"#,
+        )
+        .unwrap();
+        assert_eq!(req.params["query"], json!("café 😀 日本"));
+    }
+
+    // --- JsonRpcResponse / JsonRpcError construction & serde ---
+
+    #[test]
+    fn response_success_serializes_without_error_key() {
+        let resp = JsonRpcResponse::success(json!(1), json!({"ok": true}));
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v.get("error").is_none());
+        assert_eq!(v["result"], json!({"ok": true}));
+        assert_eq!(v["jsonrpc"], json!("2.0"));
+        assert_eq!(v["id"], json!(1));
+    }
+
+    #[test]
+    fn response_error_serializes_without_result_key() {
+        let resp = JsonRpcResponse::error(json!("x"), -32601, "method not found".into());
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v.get("result").is_none());
+        assert_eq!(v["error"]["code"], json!(-32601));
+        assert_eq!(v["error"]["message"], json!("method not found"));
+        assert_eq!(v["id"], json!("x"));
+    }
+
+    #[test]
+    fn response_preserves_null_id() {
+        let resp = JsonRpcResponse::success(Value::Null, json!({}));
+        assert_eq!(resp.id, Value::Null);
+    }
+
+    #[test]
+    fn response_error_code_is_i64_and_can_be_negative_or_large() {
+        let resp = JsonRpcResponse::error(json!(1), i64::MIN, "boom".into());
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["error"]["code"], json!(i64::MIN));
+    }
+
+    // --- tool_definitions(): tool set shape ---
+
+    #[test]
+    fn tool_definitions_has_exactly_9_tools_regardless_of_proxy_mode() {
+        assert_eq!(
+            tool_definitions(false)["tools"].as_array().unwrap().len(),
+            9
+        );
+        assert_eq!(tool_definitions(true)["tools"].as_array().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn tool_definitions_names_are_unique() {
+        let defs = tool_definitions(false);
+        let names: Vec<&str> = defs["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            names.len(),
+            "duplicate tool name in {names:?}"
+        );
+    }
+
+    /// Every tool's `required` array in `inputSchema` lists only names that
+    /// actually appear in `properties` — catches a typo'd required field
+    /// that would make the schema permanently unsatisfiable.
+    #[test]
+    fn every_tool_required_field_exists_in_properties() {
+        let defs = tool_definitions(false);
+        for t in defs["tools"].as_array().unwrap() {
+            let props = t["inputSchema"]["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{} missing properties object", t["name"]));
+            let required = t["inputSchema"]["required"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{} missing required array", t["name"]));
+            for r in required {
+                let name = r.as_str().unwrap();
+                assert!(
+                    props.contains_key(name),
+                    "{}: required field {name} not declared in properties",
+                    t["name"]
+                );
+            }
+        }
+    }
+
+    macro_rules! required_fields_test {
+        ($fn_name:ident, $tool:expr, $expected:expr) => {
+            #[test]
+            fn $fn_name() {
+                let defs = tool_definitions(false);
+                let tool = tool_by_name(&defs, $tool);
+                let required: Vec<&str> = tool["inputSchema"]["required"]
+                    .as_array()
+                    .expect("required array")
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                assert_eq!(required, $expected, "{} required fields", $tool);
+            }
+        };
+    }
+
+    required_fields_test!(crw_scrape_required_is_url_only, "crw_scrape", vec!["url"]);
+    required_fields_test!(crw_crawl_required_is_url_only, "crw_crawl", vec!["url"]);
+    required_fields_test!(
+        crw_check_crawl_status_required_is_id_only,
+        "crw_check_crawl_status",
+        vec!["id"]
+    );
+    required_fields_test!(crw_map_required_is_url_only, "crw_map", vec!["url"]);
+    required_fields_test!(
+        crw_extract_required_is_urls_only,
+        "crw_extract",
+        vec!["urls"]
+    );
+    required_fields_test!(
+        crw_check_extract_status_required_is_id_only,
+        "crw_check_extract_status",
+        vec!["id"]
+    );
+    required_fields_test!(
+        crw_cancel_extract_required_is_id_only,
+        "crw_cancel_extract",
+        vec!["id"]
+    );
+    required_fields_test!(
+        crw_search_required_is_query_only,
+        "crw_search",
+        vec!["query"]
+    );
+    required_fields_test!(
+        crw_parse_file_required_is_content_base64_only,
+        "crw_parse_file",
+        vec!["contentBase64"]
+    );
+
+    #[test]
+    fn crw_scrape_formats_enum_has_the_four_documented_values() {
+        let defs = tool_definitions(false);
+        let scrape = tool_by_name(&defs, "crw_scrape");
+        let enum_vals = scrape["inputSchema"]["properties"]["formats"]["items"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            enum_vals,
+            &vec![
+                json!("markdown"),
+                json!("html"),
+                json!("links"),
+                json!("images")
+            ]
+        );
+    }
+
+    #[test]
+    fn crw_scrape_max_length_has_minimum_zero() {
+        let defs = tool_definitions(false);
+        let scrape = tool_by_name(&defs, "crw_scrape");
+        assert_eq!(
+            scrape["inputSchema"]["properties"]["maxLength"]["minimum"],
+            json!(0)
+        );
+    }
+
+    #[test]
+    fn crw_crawl_json_schema_field_allows_additional_properties() {
+        let defs = tool_definitions(false);
+        let crawl = tool_by_name(&defs, "crw_crawl");
+        assert_eq!(
+            crawl["inputSchema"]["properties"]["jsonSchema"]["additionalProperties"],
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn crw_map_boolean_flags_are_typed_boolean() {
+        let defs = tool_definitions(false);
+        let map = tool_by_name(&defs, "crw_map");
+        let props = &map["inputSchema"]["properties"];
+        assert_eq!(props["useSitemap"]["type"], "boolean");
+        assert_eq!(props["crawlFallback"]["type"], "boolean");
+        assert_eq!(props["limit"]["type"], "integer");
+        assert_eq!(props["limit"]["minimum"], json!(0));
+    }
+
+    #[test]
+    fn crw_extract_optional_byok_fields_are_strings() {
+        let defs = tool_definitions(false);
+        let extract = tool_by_name(&defs, "crw_extract");
+        let props = &extract["inputSchema"]["properties"];
+        for key in ["llmApiKey", "llmProvider", "llmModel"] {
+            assert_eq!(props[key]["type"], "string", "{key} must be a string");
+        }
+        assert_eq!(props["basis"]["type"], "boolean");
+        assert_eq!(props["urls"]["items"]["type"], "string");
+    }
+
+    #[test]
+    fn crw_search_tbs_enum_has_the_five_time_windows() {
+        let defs = tool_definitions(false);
+        let search = tool_by_name(&defs, "crw_search");
+        let enum_vals = search["inputSchema"]["properties"]["tbs"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            enum_vals,
+            &vec![
+                json!("qdr:h"),
+                json!("qdr:d"),
+                json!("qdr:w"),
+                json!("qdr:m"),
+                json!("qdr:y")
+            ]
+        );
+    }
+
+    #[test]
+    fn crw_search_sources_enum_has_web_news_images() {
+        let defs = tool_definitions(false);
+        let search = tool_by_name(&defs, "crw_search");
+        let enum_vals = search["inputSchema"]["properties"]["sources"]["items"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            enum_vals,
+            &vec![json!("web"), json!("news"), json!("images")]
+        );
+    }
+
+    #[test]
+    fn crw_search_scrape_options_formats_include_raw_html() {
+        let defs = tool_definitions(false);
+        let search = tool_by_name(&defs, "crw_search");
+        let formats = search["inputSchema"]["properties"]["scrapeOptions"]["properties"]["formats"]
+            ["items"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(formats.iter().any(|v| v == "rawHtml"));
+        assert!(formats.iter().any(|v| v == "markdown"));
+    }
+
+    #[test]
+    fn crw_parse_file_formats_enum_includes_json_and_summary() {
+        let defs = tool_definitions(false);
+        let parse = tool_by_name(&defs, "crw_parse_file");
+        let enum_vals = parse["inputSchema"]["properties"]["formats"]["items"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(enum_vals.iter().any(|v| v == "json"));
+        assert!(enum_vals.iter().any(|v| v == "summary"));
+        assert!(enum_vals.iter().any(|v| v == "plainText"));
+    }
+
+    #[test]
+    fn crw_parse_file_parsers_enum_is_pdf_only() {
+        let defs = tool_definitions(false);
+        let parse = tool_by_name(&defs, "crw_parse_file");
+        let enum_vals = parse["inputSchema"]["properties"]["parsers"]["items"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(enum_vals, &vec![json!("pdf")]);
+    }
+
+    #[test]
+    fn crw_parse_file_json_schema_field_is_free_form_object() {
+        let defs = tool_definitions(false);
+        let parse = tool_by_name(&defs, "crw_parse_file");
+        assert_eq!(
+            parse["inputSchema"]["properties"]["jsonSchema"]["additionalProperties"],
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn additional_properties_false_absent_from_extra_tools_input_schemas() {
+        // schemas_do_not_set_additional_properties_false above only covers
+        // scrape/crawl/map; extend the same guard to the remaining tools.
+        let defs = tool_definitions(false);
+        for name in [
+            "crw_extract",
+            "crw_check_extract_status",
+            "crw_cancel_extract",
+            "crw_search",
+            "crw_parse_file",
+        ] {
+            let tool = tool_by_name(&defs, name);
+            let ap = tool["inputSchema"].get("additionalProperties");
+            assert!(
+                ap.is_none() || ap.and_then(|v| v.as_bool()) != Some(false),
+                "{name}: inputSchema must not set additionalProperties:false"
+            );
+        }
+    }
+
+    // --- Annotations across the remaining tools (A1 only covered 4) ---
+
+    #[test]
+    fn crw_map_and_check_crawl_status_annotations_are_read_only_idempotent() {
+        let defs = tool_definitions(false);
+        for name in [
+            "crw_map",
+            "crw_check_crawl_status",
+            "crw_check_extract_status",
+        ] {
+            let t = tool_by_name(&defs, name);
+            assert_eq!(t["annotations"]["readOnlyHint"], json!(true), "{name}");
+            assert_eq!(t["annotations"]["idempotentHint"], json!(true), "{name}");
+            assert_eq!(t["annotations"]["openWorldHint"], json!(true), "{name}");
+        }
+    }
+
+    #[test]
+    fn crw_search_annotations_are_read_only_idempotent_open_world() {
+        let defs = tool_definitions(false);
+        let search = tool_by_name(&defs, "crw_search");
+        assert_eq!(search["annotations"]["readOnlyHint"], json!(true));
+        assert_eq!(search["annotations"]["idempotentHint"], json!(true));
+        assert_eq!(search["annotations"]["openWorldHint"], json!(true));
+        assert_eq!(search["annotations"]["destructiveHint"], json!(false));
+    }
+
+    // --- extract_accepted_output_schema / extract_status_output_schema, direct ---
+
+    #[test]
+    fn extract_accepted_schema_compiles_as_valid_json_schema() {
+        let schema = extract_accepted_output_schema();
+        assert!(jsonschema::validator_for(&schema).is_ok());
+    }
+
+    #[test]
+    fn extract_status_schema_compiles_as_valid_json_schema() {
+        let schema = extract_status_output_schema();
+        assert!(jsonschema::validator_for(&schema).is_ok());
+    }
+
+    #[test]
+    fn extract_accepted_schema_validates_a_real_accept_body() {
+        let schema = extract_accepted_output_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let body = json!({"success": true, "id": "job-1", "status": "processing", "urls": 3});
+        assert!(validator.is_valid(&body));
+    }
+
+    #[test]
+    fn extract_accepted_schema_rejects_unknown_status_value() {
+        let schema = extract_accepted_output_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let body = json!({"success": true, "id": "job-1", "status": "done", "urls": 3});
+        assert!(!validator.is_valid(&body));
+    }
+
+    #[test]
+    fn extract_accepted_schema_rejects_extra_field() {
+        let schema = extract_accepted_output_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let body = json!({
+            "success": true, "id": "job-1", "status": "processing", "urls": 3,
+            "unexpectedField": "nope"
+        });
+        assert!(!validator.is_valid(&body));
+    }
+
+    #[test]
+    fn extract_status_schema_validates_minimal_result_item() {
+        let schema = extract_status_output_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let body = json!({
+            "success": true, "id": "job-1", "status": "completed",
+            "results": [{"url": "https://e.com", "status": "completed"}],
+            "expiresAt": "2026-01-01T00:00:00Z", "tokensUsed": 0
+        });
+        assert!(validator.is_valid(&body));
+    }
+
+    #[test]
+    fn extract_status_schema_rejects_result_item_missing_url() {
+        let schema = extract_status_output_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let body = json!({
+            "success": true, "id": "job-1", "status": "completed",
+            "results": [{"status": "completed"}],
+            "expiresAt": "2026-01-01T00:00:00Z", "tokensUsed": 0
+        });
+        assert!(!validator.is_valid(&body));
+    }
+
+    #[test]
+    fn extract_status_schema_accepts_every_declared_status_enum_value() {
+        let schema = extract_status_output_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for status in [
+            "processing",
+            "cancelling",
+            "completed",
+            "failed",
+            "cancelled",
+        ] {
+            let body = json!({
+                "success": true, "id": "job-1", "status": status,
+                "results": [], "expiresAt": "2026-01-01T00:00:00Z", "tokensUsed": 0
+            });
+            assert!(validator.is_valid(&body), "status {status} should validate");
+        }
+    }
+
+    #[test]
+    fn extract_status_schema_rejects_status_outside_enum() {
+        let schema = extract_status_output_schema();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let body = json!({
+            "success": true, "id": "job-1", "status": "queued",
+            "results": [], "expiresAt": "2026-01-01T00:00:00Z", "tokensUsed": 0
+        });
+        assert!(!validator.is_valid(&body));
+    }
+
+    #[test]
+    fn crw_extract_and_check_status_share_the_same_output_schema_shape() {
+        // Both crw_check_extract_status and crw_cancel_extract advertise
+        // extract_status_output_schema(); they must be byte-identical.
+        let defs = tool_definitions(false);
+        let check = tool_by_name(&defs, "crw_check_extract_status");
+        let cancel = tool_by_name(&defs, "crw_cancel_extract");
+        assert_eq!(check["outputSchema"], cancel["outputSchema"]);
+    }
+
+    // --- tool_output_schema ---
+
+    #[test]
+    fn tool_output_schema_present_for_the_four_schema_bearing_tools() {
+        for name in [
+            "crw_extract",
+            "crw_check_extract_status",
+            "crw_cancel_extract",
+            "crw_search",
+        ] {
+            assert!(
+                tool_output_schema(name).is_some(),
+                "{name} should have a schema"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_output_schema_absent_for_schema_free_tools() {
+        for name in [
+            "crw_scrape",
+            "crw_crawl",
+            "crw_check_crawl_status",
+            "crw_map",
+            "crw_parse_file",
+        ] {
+            assert!(
+                tool_output_schema(name).is_none(),
+                "{name} should have no schema"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_output_schema_unknown_tool_name_is_none() {
+        assert!(tool_output_schema("crw_does_not_exist").is_none());
+        assert!(tool_output_schema("").is_none());
+    }
+
+    // --- is_known_tool edge cases ---
+
+    #[test]
+    fn is_known_tool_is_case_sensitive() {
+        assert!(is_known_tool("crw_scrape"));
+        assert!(!is_known_tool("CRW_SCRAPE"));
+        assert!(!is_known_tool("Crw_Scrape"));
+    }
+
+    #[test]
+    fn is_known_tool_rejects_near_miss_names() {
+        assert!(!is_known_tool("crw-scrape"));
+        assert!(!is_known_tool("crw_scrape "));
+        assert!(!is_known_tool(" crw_scrape"));
+        assert!(!is_known_tool("crw_scrape\n"));
+        assert!(!is_known_tool("crw_scrap"));
+    }
+
+    #[test]
+    fn is_known_tool_rejects_unicode_lookalike() {
+        assert!(!is_known_tool("crw_scräpe"));
+    }
+
+    // --- handle_protocol_method ---
+
+    #[test]
+    fn proto_wrong_jsonrpc_version_yields_dash32600_and_echoes_id() {
+        let req = JsonRpcRequest {
+            jsonrpc: "1.0".into(),
+            id: Some(json!("req-9")),
+            method: "ping".into(),
+            params: Value::Null,
+        };
+        let ProtocolResult::Response(resp) = handle_protocol_method("crw", "0", &req, false, true)
+        else {
+            panic!("expected response");
+        };
+        assert_eq!(resp.id, json!("req-9"));
+        let err = resp.error.expect("error present");
+        assert_eq!(err.code, -32600);
+        assert_eq!(err.message, "invalid jsonrpc version");
+        assert!(resp.result.is_none());
+    }
+
+    #[test]
+    fn proto_wrong_jsonrpc_version_missing_id_defaults_to_null() {
+        let req = JsonRpcRequest {
+            jsonrpc: "".into(),
+            id: None,
+            method: "ping".into(),
+            params: Value::Null,
+        };
+        let ProtocolResult::Response(resp) = handle_protocol_method("crw", "0", &req, false, true)
+        else {
+            panic!("expected response");
+        };
+        assert_eq!(resp.id, Value::Null);
+    }
+
+    #[test]
+    fn proto_notifications_initialized_is_a_notification() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: None,
+            method: "notifications/initialized".into(),
+            params: Value::Null,
+        };
+        assert!(matches!(
+            handle_protocol_method("crw", "0", &req, false, true),
+            ProtocolResult::Notification
+        ));
+    }
+
+    #[test]
+    fn proto_notifications_cancelled_is_a_notification() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: None,
+            method: "notifications/cancelled".into(),
+            params: Value::Null,
+        };
+        assert!(matches!(
+            handle_protocol_method("crw", "0", &req, false, true),
+            ProtocolResult::Notification
+        ));
+    }
+
+    #[test]
+    fn proto_ping_returns_empty_object_result() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(7)),
+            method: "ping".into(),
+            params: Value::Null,
+        };
+        let ProtocolResult::Response(resp) = handle_protocol_method("crw", "0", &req, false, true)
+        else {
+            panic!("expected response");
+        };
+        assert_eq!(resp.id, json!(7));
+        assert_eq!(resp.result, Some(json!({})));
+    }
+
+    #[test]
+    fn proto_unknown_method_is_not_handled() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "resources/list".into(),
+            params: Value::Null,
+        };
+        assert!(matches!(
+            handle_protocol_method("crw", "0", &req, false, true),
+            ProtocolResult::NotHandled
+        ));
+    }
+
+    #[test]
+    fn proto_empty_method_string_is_not_handled() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "".into(),
+            params: Value::Null,
+        };
+        assert!(matches!(
+            handle_protocol_method("crw", "0", &req, false, true),
+            ProtocolResult::NotHandled
+        ));
+    }
+
+    #[test]
+    fn proto_initialize_echoes_server_name_and_version() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "initialize".into(),
+            params: Value::Null,
+        };
+        let ProtocolResult::Response(resp) =
+            handle_protocol_method("crw-test-server", "9.9.9", &req, false, true)
+        else {
+            panic!("expected response");
+        };
+        let result = resp.result.unwrap();
+        assert_eq!(result["serverInfo"]["name"], json!("crw-test-server"));
+        assert_eq!(result["serverInfo"]["version"], json!("9.9.9"));
+        assert_eq!(result["protocolVersion"], json!(PROTOCOL_VERSION));
+        assert_eq!(result["capabilities"]["tools"]["listChanged"], json!(false));
+    }
+
+    #[test]
+    fn proto_initialize_missing_id_defaults_to_null() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: None,
+            method: "initialize".into(),
+            params: Value::Null,
+        };
+        let ProtocolResult::Response(resp) = handle_protocol_method("crw", "0", &req, false, true)
+        else {
+            panic!("expected response");
+        };
+        assert_eq!(resp.id, Value::Null);
+    }
+
+    #[test]
+    fn proto_tools_list_proxy_mode_strips_output_schema_end_to_end() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/list".into(),
+            params: Value::Null,
+        };
+        let ProtocolResult::Response(resp) = handle_protocol_method("crw", "0", &req, true, true)
+        else {
+            panic!("expected response");
+        };
+        let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
+        for t in &tools {
+            assert!(
+                t.get("outputSchema").is_none(),
+                "{} kept a schema in proxy mode",
+                t["name"]
+            );
+        }
+        assert_eq!(tools.len(), 9);
+    }
+
+    #[test]
+    fn proto_tools_list_missing_id_defaults_to_null() {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: None,
+            method: "tools/list".into(),
+            params: Value::Null,
+        };
+        let ProtocolResult::Response(resp) = handle_protocol_method("crw", "0", &req, false, true)
+        else {
+            panic!("expected response");
+        };
+        assert_eq!(resp.id, Value::Null);
+    }
+
+    // --- tool_result_response: id handling across id shapes ---
+
+    #[test]
+    fn tool_result_response_preserves_string_id() {
+        let resp = tool_result_response(json!("call-42"), "crw_scrape", Ok(json!({"x": 1})));
+        assert_eq!(resp.id, json!("call-42"));
+    }
+
+    #[test]
+    fn tool_result_response_preserves_null_id() {
+        let resp = tool_result_response(Value::Null, "crw_scrape", Ok(json!({"x": 1})));
+        assert_eq!(resp.id, Value::Null);
+    }
+
+    #[test]
+    fn tool_result_response_err_path_preserves_id_too() {
+        let resp = tool_result_response(json!(99), "crw_scrape", Err("nope".into()));
+        assert_eq!(resp.id, json!(99));
+    }
+
+    #[test]
+    fn tool_result_response_unknown_tool_name_gets_no_structured_content() {
+        // tool_output_schema looks the name up; an unrecognized name simply
+        // has no schema, same as any other schema-free tool.
+        let resp = tool_result_response(json!(1), "crw_totally_made_up", Ok(json!({"a": 1})));
+        let result = resp.result.unwrap();
+        assert!(result.get("structuredContent").is_none());
+    }
+
+    #[test]
+    fn tool_result_response_empty_object_ok_value_still_gets_structured_content() {
+        // crw_search has a schema; an empty object is still an object, so
+        // structuredContent is attached even though it is empty.
+        let resp = tool_result_response(json!(1), "crw_search", Ok(json!({})));
+        let result = resp.result.unwrap();
+        assert_eq!(result["structuredContent"], json!({}));
+    }
+
+    #[test]
+    fn tool_result_response_err_message_with_unicode_is_preserved_verbatim() {
+        let resp = tool_result_response(json!(1), "crw_scrape", Err("caf\u{e9} \u{1f600}".into()));
+        let result = resp.result.unwrap();
+        assert_eq!(result["content"][0]["text"], json!("café 😀"));
+    }
+
+    // --- resolve_bound (private) ---
+
+    #[test]
+    fn resolve_bound_absent_key_returns_default() {
+        assert_eq!(resolve_bound(&json!({}), "maxLength", 15_000), Some(15_000));
+    }
+
+    #[test]
+    fn resolve_bound_explicit_zero_returns_none() {
+        assert_eq!(
+            resolve_bound(&json!({"maxLength": 0}), "maxLength", 15_000),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_bound_positive_value_is_honored() {
+        assert_eq!(resolve_bound(&json!({"limit": 25}), "limit", 100), Some(25));
+    }
+
+    #[test]
+    fn resolve_bound_non_numeric_value_falls_back_to_default() {
+        // as_u64() on a non-number yields None, which resolve_bound treats
+        // the same as an absent key.
+        assert_eq!(
+            resolve_bound(&json!({"limit": "not a number"}), "limit", 100),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn resolve_bound_negative_value_falls_back_to_default() {
+        // as_u64() on a negative i64 returns None.
+        assert_eq!(
+            resolve_bound(&json!({"limit": -5}), "limit", 100),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn resolve_bound_args_not_an_object_falls_back_to_default() {
+        assert_eq!(resolve_bound(&json!([1, 2, 3]), "limit", 100), Some(100));
+        assert_eq!(resolve_bound(&Value::Null, "limit", 100), Some(100));
+    }
+
+    #[test]
+    fn resolve_bound_very_large_value_is_preserved() {
+        assert_eq!(
+            resolve_bound(&json!({"limit": u64::MAX}), "limit", 100),
+            Some(u64::MAX as usize)
+        );
+    }
+
+    // --- truncate_to_chars (private) ---
+
+    #[test]
+    fn truncate_to_chars_returns_none_when_under_the_cap() {
+        assert_eq!(truncate_to_chars("short", 100), None);
+    }
+
+    #[test]
+    fn truncate_to_chars_returns_none_when_exactly_at_the_cap() {
+        let s = "x".repeat(10);
+        assert_eq!(truncate_to_chars(&s, 10), None);
+    }
+
+    #[test]
+    fn truncate_to_chars_truncates_when_one_over_the_cap() {
+        let s = "x".repeat(11);
+        let out = truncate_to_chars(&s, 10).expect("should truncate");
+        assert!(out.starts_with(&"x".repeat(10)));
+        assert!(out.contains("[truncated by crw-mcp maxLength]"));
+    }
+
+    #[test]
+    fn truncate_to_chars_empty_string_never_truncates() {
+        assert_eq!(truncate_to_chars("", 0), None);
+        assert_eq!(truncate_to_chars("", 10), None);
+    }
+
+    #[test]
+    fn truncate_to_chars_zero_cap_on_nonempty_string_truncates_to_nothing() {
+        let out = truncate_to_chars("hello", 0).expect("should truncate");
+        assert!(
+            out.starts_with('\n'),
+            "0-char cap keeps no content before the marker"
+        );
+    }
+
+    #[test]
+    fn truncate_to_chars_is_char_boundary_safe_with_multibyte_content() {
+        let s = "é".repeat(20); // each é is 2 UTF-8 bytes
+        let out = truncate_to_chars(&s, 5).expect("should truncate");
+        assert!(out.starts_with(&"é".repeat(5)));
+    }
+
+    #[test]
+    fn truncate_to_chars_handles_emoji_and_combining_marks_without_panicking() {
+        let s = "👨‍👩‍👧‍👦".repeat(50); // family emoji, ZWJ sequences
+        // Must not panic regardless of where the char cut lands.
+        let _ = truncate_to_chars(&s, 3);
+        let _ = truncate_to_chars(&s, 1);
+        let _ = truncate_to_chars(&s, 0);
+    }
+
+    #[test]
+    fn truncate_to_chars_very_long_string_truncates_correctly() {
+        let s = "a".repeat(1_000_000);
+        let out = truncate_to_chars(&s, 15_000).expect("should truncate");
+        let prefix_len = out.find('\n').unwrap();
+        assert_eq!(prefix_len, 15_000);
+    }
+
+    // --- truncate_scrape_obj (private) ---
+
+    #[test]
+    fn truncate_scrape_obj_only_touches_known_fields() {
+        let mut v = json!({
+            "markdown": "x".repeat(20),
+            "unrelatedLongField": "y".repeat(20),
+        });
+        truncate_scrape_obj(&mut v, 5);
+        assert!(v["markdown"].as_str().unwrap().contains("[truncated"));
+        assert_eq!(v["unrelatedLongField"], json!("y".repeat(20)));
+    }
+
+    #[test]
+    fn truncate_scrape_obj_truncates_multiple_fields_independently() {
+        let mut v = json!({
+            "markdown": "m".repeat(20),
+            "html": "h".repeat(20),
+            "rawHtml": "r".repeat(3),
+            "plainText": "p".repeat(20),
+            "summary": "s".repeat(20),
+        });
+        truncate_scrape_obj(&mut v, 5);
+        assert!(v["markdown"].as_str().unwrap().contains("[truncated"));
+        assert!(v["html"].as_str().unwrap().contains("[truncated"));
+        assert!(
+            !v["rawHtml"].as_str().unwrap().contains("[truncated"),
+            "under cap, untouched"
+        );
+        assert!(v["plainText"].as_str().unwrap().contains("[truncated"));
+        assert!(v["summary"].as_str().unwrap().contains("[truncated"));
+        assert_eq!(v["truncated"], json!(true));
+    }
+
+    #[test]
+    fn truncate_scrape_obj_non_string_field_is_skipped_without_panic() {
+        let mut v = json!({ "markdown": 12345, "html": null, "rawHtml": ["not", "a", "string"] });
+        truncate_scrape_obj(&mut v, 1);
+        assert_eq!(v["markdown"], json!(12345));
+        assert_eq!(v["html"], Value::Null);
+        assert!(v.get("truncated").is_none());
+    }
+
+    #[test]
+    fn truncate_scrape_obj_on_non_object_value_is_a_no_op() {
+        let mut v = json!(["not", "an", "object"]);
+        let before = v.clone();
+        truncate_scrape_obj(&mut v, 5);
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn truncate_scrape_obj_missing_fields_do_not_add_truncated_flag() {
+        let mut v = json!({ "url": "https://e.com" });
+        truncate_scrape_obj(&mut v, 5);
+        assert!(v.get("truncated").is_none());
+    }
+
+    // --- scrape_target_mut (private) ---
+
+    #[test]
+    fn scrape_target_mut_returns_data_when_data_is_an_object() {
+        let mut v = json!({ "success": true, "data": { "markdown": "hi" } });
+        let target = scrape_target_mut(&mut v).expect("target");
+        assert_eq!(target["markdown"], json!("hi"));
+    }
+
+    #[test]
+    fn scrape_target_mut_returns_self_when_bare_object_with_no_data() {
+        let mut v = json!({ "markdown": "hi" });
+        let target = scrape_target_mut(&mut v).expect("target");
+        assert_eq!(target["markdown"], json!("hi"));
+    }
+
+    #[test]
+    fn scrape_target_mut_falls_back_to_self_when_data_is_not_an_object() {
+        // `data` present but not an object (e.g. an array) does not satisfy
+        // the `is_object()` guard, so the whole value (still an object) is
+        // used as the target instead.
+        let mut v = json!({ "data": [1, 2, 3] });
+        let target = scrape_target_mut(&mut v).expect("target");
+        assert_eq!(target["data"], json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn scrape_target_mut_none_for_non_object_root() {
+        let mut arr = json!([1, 2, 3]);
+        assert!(scrape_target_mut(&mut arr).is_none());
+        let mut s = json!("just a string");
+        assert!(scrape_target_mut(&mut s).is_none());
+        let mut n = Value::Null;
+        assert!(scrape_target_mut(&mut n).is_none());
+    }
+
+    // --- bound_map_links (private) ---
+
+    #[test]
+    fn bound_map_links_exactly_at_limit_is_untouched() {
+        let links: Vec<Value> = (0..100).map(|i| json!(format!("u{i}"))).collect();
+        let mut v = json!({ "links": links });
+        bound_map_links(&mut v, 100);
+        assert_eq!(v["links"].as_array().unwrap().len(), 100);
+        assert!(v.get("truncated").is_none());
+    }
+
+    #[test]
+    fn bound_map_links_one_over_limit_truncates() {
+        let links: Vec<Value> = (0..101).map(|i| json!(format!("u{i}"))).collect();
+        let mut v = json!({ "links": links });
+        bound_map_links(&mut v, 100);
+        assert_eq!(v["links"].as_array().unwrap().len(), 100);
+        assert_eq!(v["totalDiscovered"], json!(101));
+        assert_eq!(v["truncated"], json!(true));
+    }
+
+    #[test]
+    fn bound_map_links_no_links_or_sitemaps_key_is_a_no_op() {
+        let mut v = json!({ "success": true });
+        bound_map_links(&mut v, 10);
+        assert_eq!(v, json!({ "success": true }));
+    }
+
+    #[test]
+    fn bound_map_links_on_non_object_value_is_a_no_op() {
+        let mut v = json!([1, 2, 3]);
+        let before = v.clone();
+        bound_map_links(&mut v, 10);
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn bound_map_links_proxy_envelope_at_data_is_bound_independently() {
+        let links: Vec<Value> = (0..5).map(|i| json!(format!("u{i}"))).collect();
+        let mut v = json!({ "success": true, "data": { "links": links } });
+        bound_map_links(&mut v, 2);
+        assert_eq!(v["data"]["links"].as_array().unwrap().len(), 2);
+        assert_eq!(v["data"]["totalDiscovered"], json!(5));
+        // The top-level object must not gain the markers meant for `data`.
+        assert!(v.get("truncated").is_none());
+    }
+
+    // --- bound_search_results (private) ---
+
+    #[test]
+    fn bound_search_results_missing_data_key_is_a_no_op() {
+        let mut v = json!({ "success": true });
+        bound_search_results(&mut v, 5);
+        assert_eq!(v, json!({ "success": true }));
+    }
+
+    #[test]
+    fn bound_search_results_data_neither_array_nor_object_with_results_is_a_no_op() {
+        let mut v = json!({ "data": "unexpected string shape" });
+        bound_search_results(&mut v, 5);
+        assert_eq!(v["data"], json!("unexpected string shape"));
+    }
+
+    #[test]
+    fn bound_search_results_empty_results_array_is_a_no_op() {
+        let mut v = json!({ "data": { "results": [] } });
+        bound_search_results(&mut v, 5);
+        assert_eq!(v["data"]["results"], json!([]));
+    }
+
+    #[test]
+    fn bound_search_results_grouped_with_an_empty_group_does_not_panic() {
+        let mut v = json!({ "data": { "results": { "web": [], "news": [] } } });
+        bound_search_results(&mut v, 5);
+        assert_eq!(v["data"]["results"]["web"], json!([]));
+    }
+
+    // --- apply_bounds: remaining tool coverage ---
+
+    #[test]
+    fn apply_bounds_crw_parse_file_shares_the_scrape_truncation_path() {
+        let value = json!({ "markdown": long_md(DEFAULT_MAX_LENGTH + 50) });
+        let out = apply_bounds("crw_parse_file", &json!({}), value);
+        assert!(out["markdown"].as_str().unwrap().contains("[truncated"));
+        assert_eq!(out["truncated"], json!(true));
+    }
+
+    #[test]
+    fn apply_bounds_crw_extract_is_untouched_passthrough() {
+        let value = json!({ "id": "job-1", "status": "processing", "urls": 3 });
+        let out = apply_bounds("crw_extract", &json!({}), value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn apply_bounds_crw_cancel_extract_is_untouched_passthrough() {
+        let value = json!({ "id": "job-1", "status": "cancelling" });
+        let out = apply_bounds("crw_cancel_extract", &json!({}), value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn apply_bounds_crw_check_extract_status_is_untouched_passthrough() {
+        let value = json!({ "id": "job-1", "status": "completed", "results": [] });
+        let out = apply_bounds("crw_check_extract_status", &json!({}), value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn apply_bounds_unrecognized_tool_name_is_untouched_passthrough() {
+        let value = json!({ "anything": true });
+        let out = apply_bounds("not_a_real_tool", &json!({}), value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn apply_bounds_scrape_at_exactly_the_default_cap_is_untouched() {
+        let value = json!({ "markdown": long_md(DEFAULT_MAX_LENGTH) });
+        let out = apply_bounds("crw_scrape", &json!({}), value);
+        assert!(out.get("truncated").is_none());
+    }
+
+    #[test]
+    fn apply_bounds_map_default_limit_zero_link_list_is_a_no_op() {
+        let value = json!({ "links": [] });
+        let out = apply_bounds("crw_map", &json!({}), value);
+        assert!(out.get("truncated").is_none());
+    }
+
+    #[test]
+    fn apply_bounds_check_crawl_status_missing_data_field_is_a_no_op() {
+        let value = json!({ "status": "processing" });
+        let out = apply_bounds("crw_check_crawl_status", &json!({}), value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn apply_bounds_check_crawl_status_max_length_zero_is_unbounded() {
+        let value = json!({
+            "data": [{ "markdown": long_md(DEFAULT_MAX_LENGTH * 2), "url": "https://e.com" }]
+        });
+        let out = apply_bounds("crw_check_crawl_status", &json!({ "maxLength": 0 }), value);
+        assert!(out["data"][0].get("truncated").is_none());
+    }
+
+    // --- strip_mcp_only_args: exhaustive per tool ---
+
+    #[test]
+    fn strip_mcp_only_args_crw_parse_file_strips_max_length() {
+        let out = strip_mcp_only_args(
+            "crw_parse_file",
+            json!({ "contentBase64": "abc", "maxLength": 10 }),
+        );
+        assert!(out.get("maxLength").is_none());
+        assert_eq!(out["contentBase64"], json!("abc"));
+    }
+
+    #[test]
+    fn strip_mcp_only_args_crw_check_crawl_status_strips_max_length() {
+        let out = strip_mcp_only_args(
+            "crw_check_crawl_status",
+            json!({ "id": "j1", "maxLength": 10 }),
+        );
+        assert!(out.get("maxLength").is_none());
+    }
+
+    #[test]
+    fn strip_mcp_only_args_crw_crawl_is_passthrough_unchanged() {
+        let value = json!({ "url": "u", "maxDepth": 2 });
+        let out = strip_mcp_only_args("crw_crawl", value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn strip_mcp_only_args_crw_extract_is_passthrough_unchanged() {
+        let value = json!({ "urls": ["u"], "prompt": "p" });
+        let out = strip_mcp_only_args("crw_extract", value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn strip_mcp_only_args_crw_check_extract_status_is_passthrough_unchanged() {
+        let value = json!({ "id": "j1" });
+        let out = strip_mcp_only_args("crw_check_extract_status", value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn strip_mcp_only_args_crw_cancel_extract_is_passthrough_unchanged() {
+        let value = json!({ "id": "j1" });
+        let out = strip_mcp_only_args("crw_cancel_extract", value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn strip_mcp_only_args_crw_map_does_not_strip_max_length_either() {
+        // crw_map is not in the stripped-tool match arm at all: it has no
+        // maxLength knob to strip in the first place, but if a caller sends
+        // one anyway it is not this function's job to remove it.
+        let out = strip_mcp_only_args("crw_map", json!({ "url": "u", "maxLength": 10 }));
+        assert_eq!(out["maxLength"], json!(10));
+    }
+
+    #[test]
+    fn strip_mcp_only_args_on_non_object_args_is_a_no_op() {
+        let arr = json!([1, 2, 3]);
+        assert_eq!(strip_mcp_only_args("crw_scrape", arr.clone()), arr);
+        assert_eq!(strip_mcp_only_args("crw_scrape", Value::Null), Value::Null);
+    }
+
+    #[test]
+    fn strip_mcp_only_args_absent_max_length_is_a_no_op() {
+        let value = json!({ "url": "u" });
+        let out = strip_mcp_only_args("crw_scrape", value.clone());
+        assert_eq!(out, value);
+    }
+
+    // --- strip_credit_fields_inner (private): edge cases ---
+
+    #[test]
+    fn strip_credit_fields_inner_on_scalar_root_does_not_panic() {
+        let mut v = json!(42);
+        strip_credit_fields_inner(&mut v, false);
+        assert_eq!(v, json!(42));
+
+        let mut s = json!("just text");
+        strip_credit_fields_inner(&mut s, false);
+        assert_eq!(s, json!("just text"));
+
+        let mut n = Value::Null;
+        strip_credit_fields_inner(&mut n, false);
+        assert_eq!(n, Value::Null);
+
+        let mut b = json!(true);
+        strip_credit_fields_inner(&mut b, false);
+        assert_eq!(b, json!(true));
+    }
+
+    #[test]
+    fn strip_credit_fields_handles_nested_arrays_of_arrays() {
+        let mut v = json!({
+            "data": [
+                [
+                    { "url": "a", "creditCost": 1 },
+                    { "url": "b", "creditCost": 2 }
+                ]
+            ]
+        });
+        strip_credit_fields(&mut v);
+        assert!(v["data"][0][0].get("creditCost").is_none());
+        assert!(v["data"][0][1].get("creditCost").is_none());
+        assert_eq!(v["data"][0][0]["url"], json!("a"));
+    }
+
+    #[test]
+    fn strip_credit_fields_on_empty_object_is_a_no_op() {
+        let mut v = json!({});
+        strip_credit_fields(&mut v);
+        assert_eq!(v, json!({}));
+    }
+
+    #[test]
+    fn strip_credit_fields_on_empty_array_is_a_no_op() {
+        let mut v = json!([]);
+        strip_credit_fields(&mut v);
+        assert_eq!(v, json!([]));
+    }
+
+    #[test]
+    fn strip_credit_fields_top_level_array_of_objects() {
+        let mut v = json!([
+            { "url": "a", "creditsUsed": 1 },
+            { "url": "b", "creditsUsed": 2 }
+        ]);
+        strip_credit_fields(&mut v);
+        assert!(v[0].get("creditsUsed").is_none());
+        assert!(v[1].get("creditsUsed").is_none());
+    }
+
+    #[test]
+    fn strip_credit_fields_results_data_string_value_is_left_alone() {
+        // `data` under `results[]` is treated as caller-shaped and skipped
+        // entirely (not just its creditCost key) — including when it is not
+        // even an object.
+        let mut v = json!({
+            "results": [{ "url": "a", "data": "raw string value with creditCost inside" }]
+        });
+        strip_credit_fields(&mut v);
+        assert_eq!(
+            v["results"][0]["data"],
+            json!("raw string value with creditCost inside")
+        );
+    }
+
+    // --- More per-tool schema field types ---
+
+    #[test]
+    fn crw_crawl_max_depth_and_max_pages_are_integers() {
+        let defs = tool_definitions(false);
+        let crawl = tool_by_name(&defs, "crw_crawl");
+        let props = &crawl["inputSchema"]["properties"];
+        assert_eq!(props["maxDepth"]["type"], "integer");
+        assert_eq!(props["maxPages"]["type"], "integer");
+    }
+
+    #[test]
+    fn crw_extract_schema_property_is_object_type() {
+        let defs = tool_definitions(false);
+        let extract = tool_by_name(&defs, "crw_extract");
+        assert_eq!(
+            extract["inputSchema"]["properties"]["schema"]["type"],
+            "object"
+        );
+        assert_eq!(
+            extract["inputSchema"]["properties"]["prompt"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn crw_check_crawl_status_max_length_has_minimum_zero() {
+        let defs = tool_definitions(false);
+        let status = tool_by_name(&defs, "crw_check_crawl_status");
+        assert_eq!(
+            status["inputSchema"]["properties"]["maxLength"]["minimum"],
+            json!(0)
+        );
+    }
+
+    #[test]
+    fn crw_search_scrape_options_nested_field_types() {
+        let defs = tool_definitions(false);
+        let search = tool_by_name(&defs, "crw_search");
+        let opts = &search["inputSchema"]["properties"]["scrapeOptions"]["properties"];
+        assert_eq!(opts["onlyMainContent"]["type"], "boolean");
+        assert_eq!(opts["timeout"]["type"], "integer");
+    }
+
+    #[test]
+    fn crw_parse_file_max_length_has_minimum_zero() {
+        let defs = tool_definitions(false);
+        let parse = tool_by_name(&defs, "crw_parse_file");
+        assert_eq!(
+            parse["inputSchema"]["properties"]["maxLength"]["minimum"],
+            json!(0)
+        );
+    }
+
+    #[test]
+    fn crw_map_url_property_is_a_string() {
+        let defs = tool_definitions(false);
+        let map = tool_by_name(&defs, "crw_map");
+        assert_eq!(map["inputSchema"]["properties"]["url"]["type"], "string");
+    }
+
+    #[test]
+    fn crw_scrape_include_and_exclude_tags_are_string_arrays() {
+        let defs = tool_definitions(false);
+        let scrape = tool_by_name(&defs, "crw_scrape");
+        let props = &scrape["inputSchema"]["properties"];
+        assert_eq!(props["includeTags"]["type"], "array");
+        assert_eq!(props["includeTags"]["items"]["type"], "string");
+        assert_eq!(props["excludeTags"]["type"], "array");
+        assert_eq!(props["excludeTags"]["items"]["type"], "string");
+    }
+
+    #[test]
+    fn crw_scrape_only_main_content_is_boolean() {
+        let defs = tool_definitions(false);
+        let scrape = tool_by_name(&defs, "crw_scrape");
+        assert_eq!(
+            scrape["inputSchema"]["properties"]["onlyMainContent"]["type"],
+            "boolean"
+        );
+    }
+
+    // --- Determinism / purity of tool_definitions ---
+
+    #[test]
+    fn tool_definitions_false_is_deterministic_across_calls() {
+        assert_eq!(tool_definitions(false), tool_definitions(false));
+    }
+
+    #[test]
+    fn tool_definitions_true_is_deterministic_across_calls() {
+        assert_eq!(tool_definitions(true), tool_definitions(true));
+    }
+
+    // --- is_known_tool: one assertion per real tool name (isolated failure attribution) ---
+
+    macro_rules! known_tool_test {
+        ($fn_name:ident, $name:expr) => {
+            #[test]
+            fn $fn_name() {
+                assert!(is_known_tool($name));
+            }
+        };
+    }
+
+    known_tool_test!(known_tool_crw_scrape, "crw_scrape");
+    known_tool_test!(known_tool_crw_crawl, "crw_crawl");
+    known_tool_test!(known_tool_crw_check_crawl_status, "crw_check_crawl_status");
+    known_tool_test!(known_tool_crw_map, "crw_map");
+    known_tool_test!(known_tool_crw_search, "crw_search");
+    known_tool_test!(known_tool_crw_parse_file, "crw_parse_file");
+    known_tool_test!(known_tool_crw_extract, "crw_extract");
+    known_tool_test!(
+        known_tool_crw_check_extract_status,
+        "crw_check_extract_status"
+    );
+    known_tool_test!(known_tool_crw_cancel_extract, "crw_cancel_extract");
+
+    // --- apply_bounds: additional boundary coverage via the public entry point ---
+
+    #[test]
+    fn apply_bounds_map_exactly_at_default_limit_is_untouched() {
+        let links: Vec<Value> = (0..DEFAULT_MAP_LIMIT)
+            .map(|i| json!(format!("u{i}")))
+            .collect();
+        let value = json!({ "links": links });
+        let out = apply_bounds("crw_map", &json!({}), value);
+        assert_eq!(out["links"].as_array().unwrap().len(), DEFAULT_MAP_LIMIT);
+        assert!(out.get("truncated").is_none());
+    }
+
+    #[test]
+    fn apply_bounds_search_max_length_zero_is_unbounded() {
+        let big = long_md(DEFAULT_MAX_LENGTH * 2);
+        let value = json!({ "data": { "results": [{ "url": "u", "markdown": big.clone() }] } });
+        let out = apply_bounds("crw_search", &json!({ "maxLength": 0 }), value);
+        assert_eq!(
+            out["data"]["results"][0]["markdown"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count(),
+            big.chars().count()
+        );
+        assert!(out["data"]["results"][0].get("truncated").is_none());
+    }
+
+    #[test]
+    fn apply_bounds_scrape_negative_max_length_falls_back_to_default() {
+        // A negative maxLength cannot be represented as u64, so resolve_bound
+        // treats it as absent and the default cap still applies.
+        let value = json!({ "markdown": long_md(DEFAULT_MAX_LENGTH + 500) });
+        let out = apply_bounds("crw_scrape", &json!({ "maxLength": -1 }), value);
+        assert!(out["markdown"].as_str().unwrap().contains("[truncated"));
+    }
+
+    #[test]
+    fn apply_bounds_check_crawl_status_empty_pages_array_is_untouched() {
+        let value = json!({ "status": "completed", "data": [] });
+        let out = apply_bounds("crw_check_crawl_status", &json!({}), value.clone());
+        assert_eq!(out, value);
+    }
+
+    #[test]
+    fn apply_bounds_map_links_and_sitemaps_both_over_limit_via_public_entry_point() {
+        let links: Vec<Value> = (0..150).map(|i| json!(format!("l{i}"))).collect();
+        let sitemaps: Vec<Value> = (0..150).map(|i| json!(format!("s{i}"))).collect();
+        let value = json!({ "links": links, "sitemaps": sitemaps });
+        let out = apply_bounds("crw_map", &json!({ "limit": 50 }), value);
+        assert_eq!(out["links"].as_array().unwrap().len(), 50);
+        assert_eq!(out["sitemaps"].as_array().unwrap().len(), 50);
+        assert_eq!(out["totalDiscovered"], json!(150));
+        assert_eq!(out["totalSitemaps"], json!(150));
+    }
+
+    // --- strip_credit_fields: additional placements ---
+
+    #[test]
+    fn strip_credit_fields_results_item_without_a_data_field_still_strips_its_own_credits() {
+        let mut v = json!({ "results": [{ "url": "a", "status": "completed", "creditsUsed": 1 }] });
+        strip_credit_fields(&mut v);
+        assert!(v["results"][0].get("creditsUsed").is_none());
+        assert_eq!(v["results"][0]["url"], json!("a"));
+    }
+
+    #[test]
+    fn strip_credit_fields_metadata_block_at_top_level_is_stripped() {
+        let mut v = json!({ "metadata": { "creditCost": 1, "title": "t" } });
+        strip_credit_fields(&mut v);
+        assert!(v["metadata"].get("creditCost").is_none());
+        assert_eq!(v["metadata"]["title"], json!("t"));
+    }
+
+    #[test]
+    fn strip_credit_fields_five_levels_deep() {
+        let mut v =
+            json!({ "a": { "b": { "c": { "d": { "e": { "creditCost": 9, "keep": 1 } } } } } });
+        strip_credit_fields(&mut v);
+        assert!(v["a"]["b"]["c"]["d"]["e"].get("creditCost").is_none());
+        assert_eq!(v["a"]["b"]["c"]["d"]["e"]["keep"], json!(1));
+    }
+
+    // --- JsonRpcError / JsonRpcResponse: direct struct-field checks ---
+
+    #[test]
+    fn jsonrpc_error_struct_carries_code_and_message_verbatim() {
+        let err = JsonRpcError {
+            code: -32602,
+            message: "invalid params".into(),
+        };
+        assert_eq!(err.code, -32602);
+        assert_eq!(err.message, "invalid params");
+    }
+
+    #[test]
+    fn jsonrpc_response_success_variant_has_none_error_field() {
+        let resp = JsonRpcResponse::success(json!(1), json!({}));
+        assert!(resp.error.is_none());
+        assert!(resp.result.is_some());
+    }
+
+    #[test]
+    fn jsonrpc_response_error_variant_has_none_result_field() {
+        let resp = JsonRpcResponse::error(json!(1), -1, "x".into());
+        assert!(resp.result.is_none());
+        assert!(resp.error.is_some());
+    }
+
+    // --- JsonRpcRequest: id accepts any JSON type structurally ---
+
+    #[test]
+    fn request_id_can_be_a_boolean_value() {
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":true,"method":"ping"}"#).unwrap();
+        assert_eq!(req.id, Some(json!(true)));
+    }
+
+    #[test]
+    fn request_id_can_be_a_floating_point_number() {
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#).unwrap();
+        assert_eq!(req.id, Some(json!(1.5)));
+    }
+
+    #[test]
+    fn request_id_can_be_an_array_or_object_structurally() {
+        // JSON-RPC forbids non-scalar ids, but `Option<Value>` places no such
+        // constraint at the deserialization layer; that validation, if any,
+        // belongs to a higher layer than this crate's framing types.
+        let req: JsonRpcRequest =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":[1,2],"method":"ping"}"#).unwrap();
+        assert_eq!(req.id, Some(json!([1, 2])));
+    }
+
+    #[test]
+    fn request_jsonrpc_field_wrong_type_errors() {
+        let result: Result<JsonRpcRequest, _> =
+            serde_json::from_str(r#"{"jsonrpc":2.0,"id":1,"method":"ping"}"#);
+        assert!(result.is_err(), "jsonrpc must be a string, not a number");
+    }
+
+    #[test]
+    fn request_method_field_wrong_type_errors() {
+        let result: Result<JsonRpcRequest, _> =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":1,"method":123}"#);
+        assert!(result.is_err(), "method must be a string, not a number");
+    }
+
+    #[test]
+    fn extract_status_schema_result_item_optional_field_types() {
+        let schema = extract_status_output_schema();
+        let item = &schema["properties"]["results"]["items"]["properties"];
+        assert_eq!(item["llmUsage"]["type"], "object");
+        assert_eq!(item["basis"]["type"], "array");
+        assert_eq!(item["basisWarnings"]["type"], "array");
+        assert_eq!(item["llmInputHash"]["type"], "string");
+        assert_eq!(item["error"]["type"], "string");
+    }
+
+    #[test]
+    fn extract_status_schema_result_item_status_enum_has_four_values() {
+        let schema = extract_status_output_schema();
+        let enum_vals = schema["properties"]["results"]["items"]["properties"]["status"]["enum"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            enum_vals,
+            &vec![
+                json!("processing"),
+                json!("completed"),
+                json!("failed"),
+                json!("cancelled")
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_status_schema_top_level_expires_at_is_date_time_format() {
+        let schema = extract_status_output_schema();
+        assert_eq!(schema["properties"]["expiresAt"]["format"], "date-time");
+    }
+
+    #[test]
+    fn tool_definitions_proxy_and_embedded_modes_have_the_same_tool_names_in_the_same_order() {
+        let names = |defs: &Value| -> Vec<String> {
+            defs["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            names(&tool_definitions(false)),
+            names(&tool_definitions(true))
+        );
+    }
+
+    #[test]
+    fn crw_search_limit_property_is_an_integer() {
+        let defs = tool_definitions(false);
+        let search = tool_by_name(&defs, "crw_search");
+        assert_eq!(
+            search["inputSchema"]["properties"]["limit"]["type"],
+            "integer"
+        );
+    }
+
+    #[test]
+    fn crw_search_lang_and_query_are_strings() {
+        let defs = tool_definitions(false);
+        let search = tool_by_name(&defs, "crw_search");
+        let props = &search["inputSchema"]["properties"];
+        assert_eq!(props["lang"]["type"], "string");
+        assert_eq!(props["query"]["type"], "string");
+    }
+
+    #[test]
+    fn extract_accepted_schema_urls_field_is_a_nonnegative_integer() {
+        let schema = extract_accepted_output_schema();
+        assert_eq!(schema["properties"]["urls"]["type"], "integer");
+        assert_eq!(schema["properties"]["urls"]["minimum"], json!(0));
+    }
+
+    #[test]
+    fn extract_accepted_schema_status_enum_is_processing_only() {
+        let schema = extract_accepted_output_schema();
+        let enum_vals = schema["properties"]["status"]["enum"].as_array().unwrap();
+        assert_eq!(enum_vals, &vec![json!("processing")]);
+    }
 }

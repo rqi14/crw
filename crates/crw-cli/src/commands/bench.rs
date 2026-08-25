@@ -627,4 +627,321 @@ mod tests {
         // Deterministic under a fixed seed.
         assert_eq!((lo, hi), bootstrap_ci(&results, 42));
     }
+
+    fn mk_result(pass: bool) -> ItemResult {
+        ItemResult {
+            prompt: String::new(),
+            truth: String::new(),
+            prediction: String::new(),
+            passed: pass,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn bootstrap_ci_empty_results_returns_zero_zero() {
+        assert_eq!(bootstrap_ci(&[], 42), (0.0, 0.0));
+    }
+
+    #[test]
+    fn bootstrap_ci_all_pass_is_a_point_mass_at_one() {
+        let results: Vec<ItemResult> = (0..20).map(|_| mk_result(true)).collect();
+        assert_eq!(bootstrap_ci(&results, 1), (1.0, 1.0));
+    }
+
+    #[test]
+    fn bootstrap_ci_all_fail_is_a_point_mass_at_zero() {
+        let results: Vec<ItemResult> = (0..20).map(|_| mk_result(false)).collect();
+        assert_eq!(bootstrap_ci(&results, 1), (0.0, 0.0));
+    }
+
+    #[test]
+    fn bootstrap_ci_single_item_matches_its_own_flag() {
+        assert_eq!(bootstrap_ci(&[mk_result(true)], 7), (1.0, 1.0));
+        assert_eq!(bootstrap_ci(&[mk_result(false)], 7), (0.0, 0.0));
+    }
+
+    #[test]
+    fn bootstrap_ci_different_seeds_can_differ_but_stay_in_bounds() {
+        let results: Vec<ItemResult> = (0..50).map(|i| mk_result(i % 3 == 0)).collect();
+        let (lo1, hi1) = bootstrap_ci(&results, 1);
+        let (lo2, hi2) = bootstrap_ci(&results, 2);
+        for (lo, hi) in [(lo1, hi1), (lo2, hi2)] {
+            assert!((0.0..=1.0).contains(&lo));
+            assert!((0.0..=1.0).contains(&hi));
+            assert!(lo <= hi);
+        }
+    }
+
+    #[test]
+    fn parse_tsv_empty_input_is_an_error() {
+        let err = parse_tsv("").unwrap_err();
+        assert_eq!(err, "empty TSV");
+    }
+
+    #[test]
+    fn parse_tsv_missing_prompt_column_is_an_error() {
+        let err = parse_tsv("Answer\tFoo\nbar\tbaz\n").unwrap_err();
+        assert!(err.contains("Prompt"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_tsv_missing_answer_column_is_an_error() {
+        let err = parse_tsv("Prompt\tFoo\nbar\tbaz\n").unwrap_err();
+        assert!(err.contains("Answer"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_tsv_header_column_match_is_case_insensitive() {
+        let items = parse_tsv("PROMPT\tANSWER\nq\ta\n").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].prompt, "q");
+        assert_eq!(items[0].answer, "a");
+    }
+
+    #[test]
+    fn parse_tsv_columns_out_of_declared_order_still_resolve_by_header() {
+        let items = parse_tsv("Answer\tPrompt\tExtra\n4\twhat is 2+2\tignored\n").unwrap();
+        assert_eq!(items[0].prompt, "what is 2+2");
+        assert_eq!(items[0].answer, "4");
+    }
+
+    #[test]
+    fn parse_tsv_row_shorter_than_header_is_skipped() {
+        // `f.get(pi)`/`f.get(ai)` return None for a truncated row rather than
+        // panicking, and the row is silently dropped.
+        let tsv = "Prompt\tAnswer\tExtra\nonly-one-field\nq\ta\tx\n";
+        let items = parse_tsv(tsv).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].prompt, "q");
+    }
+
+    #[test]
+    fn parse_tsv_skips_rows_with_blank_prompt() {
+        let tsv = "Prompt\tAnswer\n\tsome answer\nreal question\treal answer\n";
+        let items = parse_tsv(tsv).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].prompt, "real question");
+    }
+
+    #[test]
+    fn parse_tsv_trims_whitespace_around_fields() {
+        let items = parse_tsv("Prompt\tAnswer\n  padded q  \t  padded a  \n").unwrap();
+        assert_eq!(items[0].prompt, "padded q");
+        assert_eq!(items[0].answer, "padded a");
+    }
+
+    #[test]
+    fn parse_tsv_preserves_unicode() {
+        let items = parse_tsv("Prompt\tAnswer\n日本語の質問\t答え🎉\n").unwrap();
+        assert_eq!(items[0].prompt, "日本語の質問");
+        assert_eq!(items[0].answer, "答え🎉");
+    }
+
+    #[test]
+    fn parse_jsonl_skips_blank_lines() {
+        let jsonl =
+            "{\"prompt\":\"q1\",\"answer\":\"a1\"}\n\n\n{\"prompt\":\"q2\",\"answer\":\"a2\"}\n";
+        let items = parse_jsonl(jsonl).unwrap();
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn parse_jsonl_skips_rows_missing_prompt_or_answer() {
+        let jsonl = "{\"prompt\":\"only prompt\"}\n{\"answer\":\"only answer\"}\n{\"prompt\":\"q\",\"answer\":\"a\"}\n";
+        let items = parse_jsonl(jsonl).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].prompt, "q");
+    }
+
+    #[test]
+    fn parse_jsonl_skips_blank_prompt() {
+        let jsonl = "{\"prompt\":\"  \",\"answer\":\"a\"}\n{\"prompt\":\"q\",\"answer\":\"a\"}\n";
+        let items = parse_jsonl(jsonl).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].prompt, "q");
+    }
+
+    #[test]
+    fn parse_jsonl_malformed_line_reports_one_based_line_number() {
+        let jsonl = "{\"prompt\":\"q1\",\"answer\":\"a1\"}\nnot json at all\n";
+        let err = parse_jsonl(jsonl).unwrap_err();
+        assert!(err.starts_with("line 2:"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_jsonl_empty_input_yields_no_items() {
+        assert_eq!(parse_jsonl("").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn load_dataset_dispatches_on_tsv_extension() {
+        let dir = std::env::temp_dir().join(format!("crw-bench-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.tsv");
+        std::fs::write(&path, "Prompt\tAnswer\nq\ta\n").unwrap();
+        let items = load_dataset(&path).unwrap();
+        assert_eq!(items.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_dataset_defaults_to_jsonl_for_other_extensions() {
+        let dir = std::env::temp_dir().join(format!("crw-bench-load-jsonl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("data.jsonl");
+        std::fs::write(&path, "{\"prompt\":\"q\",\"answer\":\"a\"}\n").unwrap();
+        let items = load_dataset(&path).unwrap();
+        assert_eq!(items.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_dataset_missing_file_is_an_error() {
+        let path = std::env::temp_dir().join("crw-bench-does-not-exist.tsv");
+        let err = load_dataset(&path).unwrap_err();
+        assert!(err.contains("read"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn ensure_dataset_unknown_name_without_file_is_an_error() {
+        let args = BenchArgs {
+            dataset: "not-a-real-dataset".to_string(),
+            dataset_file: None,
+            server: "http://localhost:3000".to_string(),
+            api_key: None,
+            limit: 0,
+            search_limit: 10,
+            judge_model: None,
+            output: PathBuf::from("bench/runs"),
+            timeout_secs: 120,
+            seed: 42,
+            multi_round: false,
+            query_expand: None,
+            concurrency: 1,
+        };
+        let err = ensure_dataset(&args).await.unwrap_err();
+        assert!(err.contains("not-a-real-dataset"));
+        assert!(err.contains("--dataset-file"));
+    }
+
+    #[tokio::test]
+    async fn ensure_dataset_explicit_file_short_circuits_download() {
+        let args = BenchArgs {
+            dataset: "frames".to_string(),
+            dataset_file: Some(PathBuf::from("/tmp/whatever-not-touched.tsv")),
+            server: "http://localhost:3000".to_string(),
+            api_key: None,
+            limit: 0,
+            search_limit: 10,
+            judge_model: None,
+            output: PathBuf::from("bench/runs"),
+            timeout_secs: 120,
+            seed: 42,
+            multi_round: false,
+            query_expand: None,
+            concurrency: 1,
+        };
+        // Must return the explicit path as-is without ever touching the
+        // network, even though `dataset` names the downloadable "frames" set.
+        let resolved = ensure_dataset(&args).await.unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/whatever-not-touched.tsv"));
+    }
+
+    #[test]
+    fn report_md_renders_all_fields() {
+        let r = Report {
+            dataset: "frames".to_string(),
+            provider: "crw".to_string(),
+            server: "http://localhost:3000".to_string(),
+            judge_model: "deepseek-chat".to_string(),
+            n: 100,
+            passed: 76,
+            score: 0.76,
+            ci_low: 0.68,
+            ci_high: 0.84,
+            seed: 42,
+            multi_round: true,
+            query_expand: Some(3),
+            timestamp_unix: 1_700_000_000,
+        };
+        let md = report_md(&r);
+        assert!(md.contains("crw bench — frames"));
+        assert!(md.contains("`crw` @ `http://localhost:3000`"));
+        assert!(md.contains("judge: `deepseek-chat`"));
+        assert!(md.contains("multiRound=true, queryExpand=3"));
+        assert!(md.contains("score: 76.0%** (76/100)"));
+        assert!(md.contains("68.0–84.0%"));
+        assert!(md.contains("seed 42"));
+        assert!(md.contains("1700000000"));
+    }
+
+    #[test]
+    fn report_md_query_expand_off_renders_as_off() {
+        let r = Report {
+            dataset: "frames".to_string(),
+            provider: "crw".to_string(),
+            server: "http://localhost:3000".to_string(),
+            judge_model: "deepseek-chat".to_string(),
+            n: 1,
+            passed: 0,
+            score: 0.0,
+            ci_low: 0.0,
+            ci_high: 0.0,
+            seed: 1,
+            multi_round: false,
+            query_expand: None,
+            timestamp_unix: 0,
+        };
+        let md = report_md(&r);
+        assert!(md.contains("multiRound=false, queryExpand=off"));
+    }
+
+    #[test]
+    fn write_snapshot_creates_all_three_files_with_expected_content() {
+        let dir = std::env::temp_dir().join(format!("crw-bench-snapshot-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let results = vec![mk_result(true), mk_result(false)];
+        let report = Report {
+            dataset: "frames".to_string(),
+            provider: "crw".to_string(),
+            server: "http://localhost:3000".to_string(),
+            judge_model: "deepseek-chat".to_string(),
+            n: 2,
+            passed: 1,
+            score: 0.5,
+            ci_low: 0.0,
+            ci_high: 1.0,
+            seed: 1,
+            multi_round: false,
+            query_expand: None,
+            timestamp_unix: 123,
+        };
+        write_snapshot(&dir, &report, &results).unwrap();
+
+        let jsonl = std::fs::read_to_string(dir.join("frames_results.jsonl")).unwrap();
+        assert_eq!(jsonl.lines().count(), 2);
+
+        let json = std::fs::read_to_string(dir.join("report.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["n"], 2);
+        assert_eq!(parsed["dataset"], "frames");
+
+        let md = std::fs::read_to_string(dir.join("report.md")).unwrap();
+        assert!(md.contains("crw bench — frames"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn item_result_serde_omits_error_when_none_but_keeps_it_when_some() {
+        let ok = mk_result(true);
+        let ok_json = serde_json::to_value(&ok).unwrap();
+        assert!(ok_json.get("error").is_none());
+
+        let mut failed = mk_result(false);
+        failed.error = Some("boom".to_string());
+        let failed_json = serde_json::to_value(&failed).unwrap();
+        assert_eq!(failed_json["error"], "boom");
+    }
 }
