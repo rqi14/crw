@@ -2785,21 +2785,21 @@ mod tests {
 
     // ── union_pools ──────────────────────────────────────────────────────
 
-    fn searxng_row(url: &str) -> crw_search::SearxngResult {
+    fn backend_row(url: &str) -> crw_search::SearxngResult {
         serde_json::from_value(serde_json::json!({"url": url, "title": url, "engine": "google"}))
-            .expect("valid searxng result")
+            .expect("valid upstream result")
     }
 
     #[test]
     fn union_pools_dedups_by_url() {
         let mut merged = SearxngResponse {
-            results: vec![searxng_row("https://example.com/a")],
+            results: vec![backend_row("https://example.com/a")],
             ..Default::default()
         };
         let pools = vec![SearxngResponse {
             results: vec![
-                searxng_row("https://example.com/a"), // duplicate
-                searxng_row("https://example.com/b"),
+                backend_row("https://example.com/a"), // duplicate
+                backend_row("https://example.com/b"),
             ],
             ..Default::default()
         }];
@@ -2816,7 +2816,7 @@ mod tests {
         // no-url row (already in `merged`) is left untouched either way.
         let none_url_row: crw_search::SearxngResult =
             serde_json::from_value(serde_json::json!({"title": "no url", "engine": "google"}))
-                .expect("valid searxng result");
+                .expect("valid upstream result");
         let mut merged = SearxngResponse {
             results: vec![none_url_row.clone()],
             ..Default::default()
@@ -2832,7 +2832,7 @@ mod tests {
     #[test]
     fn union_pools_empty_pools_list_is_noop() {
         let mut merged = SearxngResponse {
-            results: vec![searxng_row("https://example.com/a")],
+            results: vec![backend_row("https://example.com/a")],
             ..Default::default()
         };
         union_pools(&mut merged, vec![]);
@@ -2843,11 +2843,11 @@ mod tests {
     #[test]
     fn union_pools_preserves_original_rows_before_new_ones() {
         let mut merged = SearxngResponse {
-            results: vec![searxng_row("https://example.com/first")],
+            results: vec![backend_row("https://example.com/first")],
             ..Default::default()
         };
         let pools = vec![SearxngResponse {
-            results: vec![searxng_row("https://example.com/second")],
+            results: vec![backend_row("https://example.com/second")],
             ..Default::default()
         }];
         union_pools(&mut merged, pools);
