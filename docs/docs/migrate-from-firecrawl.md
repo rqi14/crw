@@ -10,7 +10,7 @@
 
 The core request shape is intentionally compatible. These work against fastCRW with no modification when you point the client at the right base URL:
 
-- `/v1/scrape` — same body fields (`url`, `formats`, `onlyMainContent`, `waitFor`, etc.)
+- `/v1/scrape` — same body fields (`url`, `formats`, `onlyMainContent`, `waitFor`, `maxAge`, etc.)
 - `/v1/crawl` + `/v1/crawl/{id}` polling
 - `/v1/map`
 - `/v1/search`
