@@ -481,6 +481,12 @@ console.log(body.data.markdown);</code></pre></div><div class="code-tab-panel" d
 <td>Per-request proxy URL</td>
 </tr>
 <tr>
+<td><code>maxAge</code></td>
+<td>number</td>
+<td><code>3600000</code></td>
+<td>Cloud only. How old a cached copy of this exact request may be, in milliseconds. <code>0</code> forces a fresh fetch. Capped at 24 hours. See <a href="#caching">Caching</a></td>
+</tr>
+<tr>
 <td><code>country</code></td>
 <td>string</td>
 <td>--</td>
@@ -565,6 +571,45 @@ console.log(body.data.markdown);</code></pre></div><div class="code-tab-panel" d
 <td>Rejected with a clear error; use <code>cssSelector</code> or <code>xpath</code> instead</td>
 </tr>
 </tbody></table>
+<h2 id="caching">Caching</h2>
+<p>On the hosted API an identical repeat of the same request is served from cache
+for one hour by default. Identical means the whole request body: a different
+<code>formats</code>, <code>renderer</code>, <code>onlyMainContent</code> or <code>country</code> is a different request and
+fetches fresh. Caches are per account, never shared between customers.</p>
+<pre data-lang="json"><code class="language-json">{ &quot;url&quot;: &quot;https://example.com&quot;, &quot;formats&quot;: [&quot;markdown&quot;], &quot;maxAge&quot;: 0 }</code></pre>
+<p>Use <code>maxAge</code> to choose your own trade-off:</p>
+<table>
+<thead>
+<tr>
+<th>You are scraping</th>
+<th>Suggested <code>maxAge</code></th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Live prices, flight positions, availability, anything that moves by the minute</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td>News and feeds</td>
+<td>a few minutes, e.g. <code>300000</code></td>
+</tr>
+<tr>
+<td>Documentation, reference pages, filings, archived records</td>
+<td>hours, up to the 24h ceiling</td>
+</tr>
+</tbody></table>
+<p><code>0</code> disables the cache for that call and always fetches. The ceiling is 24 hours,
+so a page can never be pinned for longer than a day.</p>
+<p>Two things are never cached, whatever you pass:</p>
+<ul>
+<li><strong><code>changeTracking</code>.</strong> It compares a live fetch against the <code>previous</code> snapshot
+you send, so replaying an earlier answer would hide the very change you asked
+about.</li>
+<li><strong>Failed scrapes.</strong> A block page or an error is never stored, so a retry always
+gets a real attempt.</li>
+</ul>
+<p>A cached response is billed the same as a fresh one — caching buys latency, not
+a discount.</p>
 <h2 id="formats">Formats</h2>
 <p>Use the smallest output shape that solves the job:</p>
 <ul>
