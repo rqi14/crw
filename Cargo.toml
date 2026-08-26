@@ -68,7 +68,7 @@ regex = "1"
 # 0.1.6, all of it one document (arXiv 1412.6980) losing pages 6-11 down to
 # 4-13% of their text. 0.1.6 is the best release we have measured: +23,148
 # characters over 0.1.4 across the same corpus. Re-evaluate on 0.1.8.
-pdf-inspector = "=0.1.6"
+pdf-inspector = "=1.17.0"
 
 # Diffing (change-tracking / monitor). Myers diff over lines; the parse-diff
 # AST and the unified text surface are both derived from its op stream.
