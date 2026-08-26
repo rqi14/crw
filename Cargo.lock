@@ -835,7 +835,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "console",
  "crw-browse",
@@ -966,7 +966,7 @@ dependencies = [
 name = "crw-mcp"
 version = "0.32.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "crw-core",
  "crw-renderer",
@@ -1041,7 +1041,7 @@ version = "0.32.0"
 dependencies = [
  "axum",
  "axum-test",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "crw-core",
  "crw-crawl",
