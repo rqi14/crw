@@ -143,6 +143,7 @@ That is the default CRW success shape: requested content plus a compact metadata
 | `filterMode` | string | -- | `bm25` or `cosine` |
 | `topK` | number | `5` | Number of top chunks to keep |
 | `proxy` | string | -- | Per-request proxy URL |
+| `maxAge` | number | `3600000` | Cloud only. How old a cached copy of this exact request may be, in milliseconds. `0` forces a fresh fetch. Capped at 24 hours. See [Caching](#caching) |
 | `country` | string | -- | 2-letter ISO 3166-1 alpha-2 country code (lowercase, e.g. `us`, `gb`, `de`). Routes the request through the named residential pool when the `chrome_proxy` renderer tier is configured. Ignored if no proxy tier is set up. See [JS rendering — Per-request country](#js-rendering) |
 | `stealth` | boolean | -- | Override global stealth setting |
 | `jsonSchema` | object | -- | Schema for structured extraction |
@@ -157,6 +158,39 @@ That is the default CRW success shape: requested content plus a compact metadata
 | `debug` | boolean | `false` | When `true`, includes a `debugExtraction` field in the response with a trace of every extraction candidate considered and why one was selected. |
 | `parsers` | object[] | PDF auto-parsed | Firecrawl-compatible document parser directives. Omit for the default (PDFs auto-converted to markdown). Pass `[]` to disable PDF parsing. Pass `[{"type":"pdf","maxPages":10}]` to cap pages. Accepted fields: `type` (`"pdf"`), `mode` (`"auto"` \| `"fast"` \| `"ocr"`), `maxPages`. |
 | `actions` | any | -- | Rejected with a clear error; use `cssSelector` or `xpath` instead |
+
+## Caching
+
+On the hosted API an identical repeat of the same request is served from cache
+for one hour by default. Identical means the whole request body: a different
+`formats`, `renderer`, `onlyMainContent` or `country` is a different request and
+fetches fresh. Caches are per account, never shared between customers.
+
+```json
+{ "url": "https://example.com", "formats": ["markdown"], "maxAge": 0 }
+```
+
+Use `maxAge` to choose your own trade-off:
+
+| You are scraping | Suggested `maxAge` |
+|---|---|
+| Live prices, flight positions, availability, anything that moves by the minute | `0` |
+| News and feeds | a few minutes, e.g. `300000` |
+| Documentation, reference pages, filings, archived records | hours, up to the 24h ceiling |
+
+`0` disables the cache for that call and always fetches. The ceiling is 24 hours,
+so a page can never be pinned for longer than a day.
+
+Two things are never cached, whatever you pass:
+
+- **`changeTracking`.** It compares a live fetch against the `previous` snapshot
+  you send, so replaying an earlier answer would hide the very change you asked
+  about.
+- **Failed scrapes.** A block page or an error is never stored, so a retry always
+  gets a real attempt.
+
+A cached response is billed the same as a fresh one — caching buys latency, not
+a discount.
 
 ## Formats
 
