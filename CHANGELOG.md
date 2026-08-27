@@ -2,6 +2,14 @@
 
 All notable changes to CRW are documented here.
 
+## [0.32.1](https://github.com/us/crw/compare/v0.32.0...v0.32.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **extract:** enforce structured output on the chat transports ([aeb55ca](https://github.com/us/crw/commit/aeb55ca844b32197859252679d9a28290aab31d7))
+* **scrape:** classify a wall and an empty result as failures ([96a4b43](https://github.com/us/crw/commit/96a4b4395366cafcd1a6314b7a0af8fb6db82cab))
+
 ## [0.32.0](https://github.com/us/crw/compare/v0.31.0...v0.32.0) (2026-08-24)
 
 
