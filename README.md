@@ -95,7 +95,7 @@ product listed on the Artificial Analysis Search Index sits below it.
 
 <p align="center">
   <a href="https://fastcrw.com/benchmarks/aa-omniscience">
-    <img src=".github/benchmarks/bench-omniscience.svg" alt="AA-Omniscience answer accuracy. fastCRW 90.0 percent, ahead of every product on the Artificial Analysis Search Index: Firecrawl 73, Exa 70, You.com 69, Tavily 64, and 38 with no search at all" width="100%">
+    <img src=".github/benchmarks/bench-omniscience.svg" alt="AA-Omniscience answer accuracy. fastCRW 90.0 percent, ahead of every product on the Artificial Analysis Search Index: Firecrawl 73, Exa 70, You.com 69, Parallel 68, Tavily 64, and 38 with no search at all." width="100%">
   </a>
 </p>
 
