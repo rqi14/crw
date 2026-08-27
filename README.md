@@ -89,6 +89,18 @@ Crawl4AI and Firecrawl, matched the fastest median latency, and idled at
 
 <p align="center"><sub><a href="BENCHMARKS.md">Methodology, full numbers, and how to reproduce it</a></sub></p>
 
+On a different benchmark entirely, answer accuracy rather than scrape recall,
+fastCRW answers **90.0%** of the 600 AA-Omniscience questions correctly. Every
+product listed on the Artificial Analysis Search Index sits below it.
+
+<p align="center">
+  <a href="https://fastcrw.com/benchmarks/aa-omniscience">
+    <img src=".github/benchmarks/bench-omniscience.svg" alt="AA-Omniscience answer accuracy. fastCRW 90.0 percent, ahead of every product on the Artificial Analysis Search Index: Firecrawl 73, Exa 70, You.com 69, Tavily 64, and 38 with no search at all" width="100%">
+  </a>
+</p>
+
+<p align="center"><sub><a href="https://fastcrw.com/benchmarks/aa-omniscience">The full 14-product comparison, the control run, and how to reproduce it</a></sub></p>
+
 ## Choose how you use it
 
 ### CLI
