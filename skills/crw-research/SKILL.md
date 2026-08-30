@@ -11,7 +11,7 @@ description: |
 license: AGPL-3.0
 metadata:
   author: us
-  version: "0.1.0"
+  version: "0.2.0"
   homepage: https://fastcrw.com
   repository: https://github.com/us/crw
 allowed-tools: Bash(curl:*) Bash(jq:*) Read
@@ -53,6 +53,11 @@ dataset, and benchmark NAMES, not broad phrases ("MoleculeNet benchmark",
 "Uni-Mol", "ChemBERTa", not "molecular embeddings"). Call `search` on each,
 union the arXiv ids, rank by how many queries surfaced each id. Exact-name
 decomposition is the #1 recall lever — one broad query misses the niche papers.
+Then **expand**: take the 5 ids the most queries agreed on and pull
+`/papers/arxiv:<id>/similar?mode=references` for each, appending any new ids
+below the union. This second pass is not optional and is not the same as (B):
+it runs on EVERY query type, and it is where the papers that no query names
+directly come from.
 
 **B) COMPARE-AGAINST** ("what does X compare to / build on / baseline against")
 → resolve X to its arXiv id, then `/papers/arxiv:<X>/similar?mode=references`.
