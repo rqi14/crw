@@ -44,7 +44,7 @@ python3 bench/arxivqa/score.py --results bench/arxivqa/runs/2026-06-20-hosted-19
 1. Point the tool at an endpoint. Hosted:
 
    ```bash
-   export FASTCRW_API_KEY="crw_live_..."      # a new account includes 500 one-time credits
+   export FASTCRW_API_KEY="crw_live_..."      # free tier at https://fastcrw.com/pricing
    ```
 
    Or self-hosted, no account and no key, since the research endpoints are in
