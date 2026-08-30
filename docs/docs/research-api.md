@@ -106,10 +106,18 @@ await c.research.similarPapers("arxiv:1706.03762", { intent: "efficient transfor
 ## The research skill
 
 The endpoints are stateless primitives. The intelligence that reaches 61.0% on
-ArXivQA — intent routing, exact-name query reframing, reading a leaderboard,
-pulling a paper's self-references for "compare-against" questions — lives in the
-**research skill** over these endpoints, the same way Firecrawl splits its
-Research Index endpoints from its research skill.
+ArXivQA lives in the **research skill** over these endpoints, the same way
+Firecrawl splits its Research Index endpoints from its research skill. Its base
+pass is two steps, and both carry recall: 8-12 exact-name query reframings
+ranked by how many of them surfaced an id, and then `mode=references` on the top
+5 ids to pull in the papers no query names directly. On top of that sit intent
+routing, reading a leaderboard, and pulling a paper's own bibliography for
+"compare-against" questions.
+
+Measured on the first 12 benchmark questions with one raw query each, so the
+expansion is the only variable: 47.0% for the search union alone, 66.5% with the
+reference expansion. Skipping it is the most common way a re-implementation
+lands below the published number.
 
 Install it into your agent (Claude Code, Cursor, Codex, Gemini CLI, …):
 

@@ -1,0 +1,3 @@
+
+# alphaXiv ground truth, downloaded on demand by bench/arxivqa/score.py
+arxivqa_all_train.json
