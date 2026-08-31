@@ -474,6 +474,12 @@ console.log((await status.json()).status);</code></pre></div><div class="code-ta
 <td>Pin every crawled page to a specific renderer: <code>auto</code>, <code>lightpanda</code>, <code>chrome</code>, <code>chrome_proxy</code>, <code>playwright</code>, or <code>camoufox</code>. Non-<code>auto</code> values hard-pin (no fallback) and imply <code>renderJs:true</code> unless <code>renderJs:false</code> is set. Validation runs once at crawl start — invalid combinations return HTTP 400 before the job is queued. Per-page failures of a pinned renderer are logged and skipped, so failed pages may be missing from results — see <a href="/js-rendering">JS rendering</a> for the resilience tradeoff</td>
 </tr>
 <tr>
+<td><code>headers</code></td>
+<td>object</td>
+<td><code>{}</code></td>
+<td>Custom HTTP headers applied to every page the crawl fetches, forwarded on both the HTTP and browser render paths. A <code>User-Agent</code> here overrides the default. On a browser render they apply to every request the page makes (subresources included), so avoid putting cross-origin-sensitive credentials like <code>Authorization</code> here</td>
+</tr>
+<tr>
 <td><code>country</code></td>
 <td>string</td>
 <td>--</td>
