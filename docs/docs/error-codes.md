@@ -24,7 +24,7 @@ You need both to debug real scraping failures.
 | 400 | Invalid request parameters (bad URL, invalid JSON body, invalid selector) |
 | 401 | Invalid or missing API key |
 | 404 | Endpoint not found |
-| 422 | Validation failed (unknown format, invalid schema, extraction error) |
+| 422 | Validation failed (unknown format, invalid schema, extraction error), or the origin returned a body that is not a page (`unsupported_content_type`) |
 | 429 | Rate limit or credit quota exceeded |
 | 502 | Engine internal error |
 | 503 | Server at capacity |
@@ -37,6 +37,7 @@ You need both to debug real scraping failures.
 | HTTP `200` with `warning` | The request succeeded, but the target result is degraded | Inspect `warning` and `metadata.statusCode` |
 | HTTP `400` | Your request body is invalid | Fix fields, selectors, or schema |
 | HTTP `422` | The request shape is valid JSON but semantically invalid | Check format names, schema, or extraction config |
+| `unsupported_content_type` | The origin served an office document, image or archive rather than a page | Fetch the file yourself, or point the request at a PDF or an HTML page |
 | HTTP `429` | Rate limit or credit ceiling hit | Back off and honor `Retry-After` |
 | HTTP `502` / `504` | Upstream or timeout issue | Retry with backoff |
 

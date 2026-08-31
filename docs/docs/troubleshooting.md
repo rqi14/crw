@@ -153,8 +153,9 @@ curl -X POST https://api.fastcrw.com/v1/scrape \
 **Error code mapping** (from `crw-server/src/error.rs`):
 
 ```
-CrwError::TargetUnreachable → HTTP 422, error_code: "target_unreachable"
-CrwError::ExtractionError   → HTTP 422, error_code: "extraction_error"
+CrwError::TargetUnreachable      → HTTP 422, error_code: "target_unreachable"
+CrwError::ExtractionError        → HTTP 422, error_code: "extraction_error"
+CrwError::UnsupportedContentType → HTTP 422, error_code: "unsupported_content_type"
 ```
 
 If the target URL is correct and externally reachable, the issue is intermittent — retry with backoff. If it is consistent, the target host has a problem unrelated to fastCRW.
@@ -411,6 +412,7 @@ if data["balance"] < 100:
 | `invalid_url` | — | Reserved — not emitted in practice; invalid URLs are returned as `invalid_request` (HTTP 400) by all server routes |
 | `target_unreachable` | 422 | DNS failure, connection refused, host down |
 | `extraction_error` | 422 | LLM extraction failed or CSS/XPath selector invalid |
+| `unsupported_content_type` | 422 | The origin answered with a body that is neither a web page nor a PDF (an office document, an image, an archive). Not retryable: no renderer turns one into a page |
 | `http_error` | 502, or 200 with `success: false` | The origin answered with a `>= 400` status and what came back is its error page. The body is kept in `data` so you can read the error page and `metadata.statusCode`. A large page served under an error status is still returned as a success — some sites answer 403/404 while serving the real content. If the page is also recognised as an anti-bot wall, `anti_bot` wins instead and the body is cleared |
 | `no_usable_content` | 200 with `success: false` | The fetch worked and produced nothing you asked for — a parked domain, an un-hydrated JS shell, an error stub, an oversized PDF the decompression-bomb guard refused, or any requested format that came back empty. Not an anti-bot block |
 | `timeout` | 504 | Engine or upstream search timed out |
