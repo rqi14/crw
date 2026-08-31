@@ -324,7 +324,7 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 </tr>
 <tr>
 <td>422</td>
-<td>Validation failed (unknown format, invalid schema, extraction error)</td>
+<td>Validation failed (unknown format, invalid schema, extraction error), or the origin returned a body that is not a page (<code>unsupported_content_type</code>)</td>
 </tr>
 <tr>
 <td>429</td>
@@ -366,6 +366,11 @@ crw search "renewable energy trends 2024" --json --fields title,url,snippet --li
 <td>HTTP <code>422</code></td>
 <td>The request shape is valid JSON but semantically invalid</td>
 <td>Check format names, schema, or extraction config</td>
+</tr>
+<tr>
+<td><code>unsupported_content_type</code></td>
+<td>The origin served an office document, image or archive rather than a page</td>
+<td>Fetch the file yourself, or point the request at a PDF or an HTML page</td>
 </tr>
 <tr>
 <td>HTTP <code>429</code></td>

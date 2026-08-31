@@ -747,7 +747,7 @@ sandbox              = false      # isolate each parse in a child process</code>
 <h2 id="when-to-use-something-else">When to use something else</h2>
 <ul>
 <li>Use <a href="/scraping">Scrape</a> when the document is a web page, not a binary file</li>
-<li>Use <a href="/extract">Extract</a> when you already have a URL to a PDF (scrape fetches and parses automatically when the response is <code>application/pdf</code>)</li>
+<li>Use <a href="/extract">Extract</a> when you already have a URL to a PDF (scrape fetches and parses it automatically, whether the origin labels it <code>application/pdf</code> or ships it as <code>application/octet-stream</code>, which is what S3 and <code>Content-Disposition: attachment</code> endpoints send)</li>
 <li>Use <a href="/crawling">Crawl</a> when you need to discover PDFs across an entire site before parsing them</li>
 </ul>
 </article>

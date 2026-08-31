@@ -398,8 +398,9 @@ curl -X POST https://api.fastcrw.com/v1/scrape \
   -H &quot;Content-Type: application/json&quot; \
   -d '{&quot;url&quot;: &quot;https://your-target.example.com&quot;}' | jq '.error'</code></pre>
 <p><strong>Error code mapping</strong> (from <code>crw-server/src/error.rs</code>):</p>
-<pre><code>CrwError::TargetUnreachable → HTTP 422, error_code: &quot;target_unreachable&quot;
-CrwError::ExtractionError   → HTTP 422, error_code: &quot;extraction_error&quot;</code></pre>
+<pre><code>CrwError::TargetUnreachable      → HTTP 422, error_code: &quot;target_unreachable&quot;
+CrwError::ExtractionError        → HTTP 422, error_code: &quot;extraction_error&quot;
+CrwError::UnsupportedContentType → HTTP 422, error_code: &quot;unsupported_content_type&quot;</code></pre>
 <p>If the target URL is correct and externally reachable, the issue is intermittent — retry with backoff. If it is consistent, the target host has a problem unrelated to fastCRW.</p>
 <hr>
 <h2 id="4-http-401-invalid-api-key">4. HTTP 401 Invalid API key</h2>
@@ -635,6 +636,11 @@ if data[&quot;balance&quot;] &lt; 100:
 <td><code>extraction_error</code></td>
 <td>422</td>
 <td>LLM extraction failed or CSS/XPath selector invalid</td>
+</tr>
+<tr>
+<td><code>unsupported_content_type</code></td>
+<td>422</td>
+<td>The origin answered with a body that is neither a web page nor a PDF (an office document, an image, an archive). Not retryable: no renderer turns one into a page</td>
 </tr>
 <tr>
 <td><code>http_error</code></td>
