@@ -434,5 +434,5 @@ sandbox              = false      # isolate each parse in a child process
 ## When to use something else
 
 - Use [Scrape](#scraping) when the document is a web page, not a binary file
-- Use [Extract](#extract) when you already have a URL to a PDF (scrape fetches and parses automatically when the response is `application/pdf`)
+- Use [Extract](#extract) when you already have a URL to a PDF (scrape fetches and parses it automatically, whether the origin labels it `application/pdf` or ships it as `application/octet-stream`, which is what S3 and `Content-Disposition: attachment` endpoints send)
 - Use [Crawl](#crawling) when you need to discover PDFs across an entire site before parsing them
