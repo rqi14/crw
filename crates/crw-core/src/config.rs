@@ -1608,6 +1608,16 @@ pub struct ExtractionConfig {
     /// returns SPA husks of 90–500B that pass HTML-shape checks).
     #[serde(default = "default_lightpanda_retry_threshold")]
     pub lightpanda_retry_threshold_bytes: usize,
+    /// Renderer forced on a post-extract escalation when the prior tier was
+    /// LightPanda. Upstream hardcodes `"chrome"`; on a deployment that runs no
+    /// Chrome CDP sidecar that turns the escalation into a dead end — the pool
+    /// rejects it ("requested renderer 'chrome' not in pool") and stronger
+    /// tiers such as camoufox are never reached, even when configured and
+    /// healthy. Overridable so the escalation can point at whatever tier the
+    /// deployment actually has.
+    /// Env: `CRW_EXTRACTION__LIGHTPANDA_ESCALATION_RENDERER`.
+    #[serde(default = "default_lightpanda_escalation_renderer")]
+    pub lightpanda_escalation_renderer: String,
     /// Process-wide cap on concurrent HTML → markdown extractions (html5ever +
     /// htmd). Extraction is CPU-bound and runs on the blocking pool; this bound
     /// keeps a burst of concurrent scrapes from oversubscribing the cores and
@@ -1640,6 +1650,10 @@ fn default_lightpanda_retry_threshold() -> usize {
     2000
 }
 
+fn default_lightpanda_escalation_renderer() -> String {
+    "chrome".to_string()
+}
+
 fn default_max_concurrent_extracts() -> usize {
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -1657,6 +1671,7 @@ impl Default for ExtractionConfig {
             llm_fallback: LlmFallbackConfig::default(),
             http_retry_threshold_bytes: default_http_retry_threshold(),
             lightpanda_retry_threshold_bytes: default_lightpanda_retry_threshold(),
+            lightpanda_escalation_renderer: default_lightpanda_escalation_renderer(),
             max_concurrent_extracts: default_max_concurrent_extracts(),
             reserved_interactive_extracts: None,
             normalize_tables: false,
@@ -3784,6 +3799,7 @@ search_backend_url = "http://from-file:8080"
         assert!(e.domain_selectors.is_empty());
         assert_eq!(e.http_retry_threshold_bytes, 100);
         assert_eq!(e.lightpanda_retry_threshold_bytes, 2000);
+        assert_eq!(e.lightpanda_escalation_renderer, "chrome");
         assert!(e.max_concurrent_extracts >= 2, "must be floored at 2");
         assert_eq!(e.reserved_interactive_extracts, None);
         assert!(!e.normalize_tables);
@@ -3826,6 +3842,7 @@ search_backend_url = "http://from-file:8080"
             only_main_content = false
             http_retry_threshold_bytes = 250
             lightpanda_retry_threshold_bytes = 4000
+            lightpanda_escalation_renderer = "camoufox"
             max_concurrent_extracts = 16
             reserved_interactive_extracts = 3
             normalize_tables = true
@@ -3836,6 +3853,7 @@ search_backend_url = "http://from-file:8080"
         assert!(!e.only_main_content);
         assert_eq!(e.http_retry_threshold_bytes, 250);
         assert_eq!(e.lightpanda_retry_threshold_bytes, 4000);
+        assert_eq!(e.lightpanda_escalation_renderer, "camoufox");
         assert_eq!(e.max_concurrent_extracts, 16);
         assert_eq!(e.reserved_interactive_extracts, Some(3));
         assert!(e.normalize_tables);

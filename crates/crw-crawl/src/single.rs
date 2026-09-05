@@ -456,7 +456,7 @@ async fn scrape_url_inner(
             // Otherwise (http tier), let the chain decide so chrome can be reached
             // through the existing failover path.
             let escalation_target: Option<&str> = if prior_renderer == Some("lightpanda") {
-                Some("chrome")
+                Some(extraction_cfg.lightpanda_escalation_renderer.as_str())
             } else {
                 pinned
             };
